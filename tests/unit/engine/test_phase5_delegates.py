@@ -242,3 +242,88 @@ async def test_process_novel_routes_writing_via_run_writing():
     ) as mock_writing:
         await process_novel(host, novel)
         mock_writing.assert_awaited_once_with(host, novel)
+
+
+@pytest.mark.asyncio
+async def test_process_novel_records_last_error_summary_on_failure():
+    from domain.novel.entities.novel import AutopilotStatus, NovelStage
+
+    host = MagicMock()
+    host._is_still_running.return_value = True
+    host.circuit_breaker = MagicMock()
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+    novel.current_stage = NovelStage.MACRO_PLANNING
+    novel.autopilot_status = AutopilotStatus.RUNNING
+    novel.consecutive_error_count = 0
+
+    with patch(
+        "engine.runtime.novel_lifecycle.run_macro_planning",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Error code: 500 - input new_sensitive (1026)"),
+    ):
+        await process_novel(host, novel)
+
+    assert "RuntimeError: Error code: 500 - input new_sensitive (1026)" in novel.last_error_summary
+    assert novel.consecutive_error_count == 1
+    host._save_novel_state.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_process_novel_marks_error_after_three_failures():
+    from domain.novel.entities.novel import AutopilotStatus, NovelStage
+
+    host = MagicMock()
+    host._is_still_running.return_value = True
+    host.circuit_breaker = MagicMock()
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+    novel.current_stage = NovelStage.MACRO_PLANNING
+    novel.autopilot_status = AutopilotStatus.RUNNING
+    novel.consecutive_error_count = 2
+
+    with patch(
+        "engine.runtime.novel_lifecycle.run_macro_planning",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("boom"),
+    ):
+        await process_novel(host, novel)
+
+    assert novel.consecutive_error_count == 3
+    assert novel.autopilot_status == AutopilotStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_process_novel_clears_last_error_summary_on_success():
+    from domain.novel.entities.novel import AutopilotStatus, NovelStage
+
+    host = MagicMock()
+    host._is_still_running.return_value = True
+    host.circuit_breaker = MagicMock()
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+    novel.current_stage = NovelStage.WRITING
+    novel.autopilot_status = AutopilotStatus.RUNNING
+    novel.consecutive_error_count = 5
+    novel.last_error_summary = "RuntimeError: stale"
+
+    with patch(
+        "engine.runtime.writing_delegate.run_writing",
+        new_callable=AsyncMock,
+    ):
+        await process_novel(host, novel)
+
+    assert novel.consecutive_error_count == 0
+    assert novel.last_error_summary == ""
+    host.circuit_breaker.record_success.assert_called_once()
+
+
+def test_summarize_error_collapses_whitespace_and_truncates():
+    from engine.runtime.novel_lifecycle import _summarize_error
+
+    err = RuntimeError("Error code: 500 -\n{'type': 'api_error',\n 'message': 'input new_sensitive'}")
+    summary = _summarize_error(err)
+    assert "\n" not in summary
+    assert summary.startswith("RuntimeError: ")
+    assert "input new_sensitive" in summary
+    assert len(_summarize_error(ValueError("x" * 2000))) == 500

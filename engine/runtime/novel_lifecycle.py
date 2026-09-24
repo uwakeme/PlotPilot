@@ -22,6 +22,12 @@ def _is_novel_deleted(host: Any, novel: Novel) -> bool:
         return False
 
 
+def _summarize_error(exc: BaseException, limit: int = 500) -> str:
+    """压缩异常为单行摘要，随状态接口暴露给前端（AutopilotPanel 恢复提示）。"""
+    text = " ".join(f"{type(exc).__name__}: {exc}".split())
+    return text[:limit]
+
+
 async def process_novel(host: Any, novel: Novel) -> None:
     """处理单个小说（全流程状态机路由）"""
     try:
@@ -117,6 +123,7 @@ async def process_novel(host: Any, novel: Novel) -> None:
             if host.circuit_breaker:
                 host.circuit_breaker.record_success()
             novel.consecutive_error_count = 0
+            novel.last_error_summary = ""
         else:
             logger.info("[%s] 本轮结束（用户已停止，不再计成功/重置熔断）", novel.novel_id)
         host._save_novel_state(novel)
@@ -138,6 +145,7 @@ async def process_novel(host: Any, novel: Novel) -> None:
         if host.circuit_breaker:
             host.circuit_breaker.record_failure()
         novel.consecutive_error_count = (novel.consecutive_error_count or 0) + 1
+        novel.last_error_summary = _summarize_error(e)
 
         if novel.consecutive_error_count >= 3:
             logger.error("[%s] 连续失败 %s 次，挂起等待急救", novel.novel_id, novel.consecutive_error_count)
