@@ -8,6 +8,13 @@ from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
 
 from engine.runtime.act_planning_delegate import run_act_planning
 from engine.runtime.audit_delegate import run_chapter_audit
+from engine.runtime.content_filter_healer import (
+    HealOutcome,
+    content_heal_disabled,
+    heal_latest_chapter,
+    is_content_filter_error,
+    make_llm_probe,
+)
 from engine.runtime.macro_planning_delegate import run_macro_planning
 
 logger = logging.getLogger(__name__)
@@ -146,6 +153,22 @@ async def process_novel(host: Any, novel: Novel) -> None:
             host.circuit_breaker.record_failure()
         novel.consecutive_error_count = (novel.consecutive_error_count or 0) + 1
         novel.last_error_summary = _summarize_error(e)
+
+        # 厂商内容风控(1026/1027)重试永远无效:自动定位触发片段并由 LLM 最小改写
+        if is_content_filter_error(e) and not content_heal_disabled():
+            try:
+                outcome = await heal_latest_chapter(host, novel, make_llm_probe(host))
+            except Exception as heal_exc:
+                outcome = HealOutcome(ok=False, note=f"自修复流程异常: {type(heal_exc).__name__}: {heal_exc}")
+            if outcome.ok:
+                logger.info("[%s] 内容风控已自动修复，清零计数并等待下一轮继续", novel.novel_id)
+                novel.consecutive_error_count = 0
+                novel.last_error_summary = ""
+                host._save_novel_state(novel)
+                return
+            novel.last_error_summary = (
+                f"{_summarize_error(e)} | 自动修复未成功: {outcome.note}"
+            )
 
         if novel.consecutive_error_count >= 3:
             logger.error("[%s] 连续失败 %s 次，挂起等待急救", novel.novel_id, novel.consecutive_error_count)
