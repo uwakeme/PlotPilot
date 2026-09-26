@@ -386,3 +386,45 @@ async def test_process_novel_counts_failure_when_heal_fails():
 
     assert novel.consecutive_error_count == 1
     assert "自动修复未成功" in novel.last_error_summary
+
+
+@pytest.mark.asyncio
+async def test_process_novel_resumes_completed_book_after_target_raise():
+    """已完成的书在目标章节数上调后,下一轮自动回到写作"""
+    from domain.novel.entities.novel import AutopilotStatus, NovelStage
+
+    host = MagicMock()
+    host._is_still_running.return_value = True
+    host.circuit_breaker = None
+    host._count_completed_chapters.return_value = 300
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+    novel.current_stage = NovelStage.COMPLETED
+    novel.autopilot_status = AutopilotStatus.RUNNING
+    novel.target_chapters = 303
+
+    await process_novel(host, novel)
+
+    assert novel.current_stage == NovelStage.WRITING
+    host._save_novel_state.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_process_novel_keeps_completed_book_when_target_met():
+    """完成数已达目标:保持 completed,不误触发续写"""
+    from domain.novel.entities.novel import AutopilotStatus, NovelStage
+
+    host = MagicMock()
+    host._is_still_running.return_value = True
+    host.circuit_breaker = None
+    host._count_completed_chapters.return_value = 303
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+    novel.current_stage = NovelStage.COMPLETED
+    novel.autopilot_status = AutopilotStatus.RUNNING
+    novel.target_chapters = 303
+
+    await process_novel(host, novel)
+
+    assert novel.current_stage == NovelStage.COMPLETED
+    host._save_novel_state.assert_not_called()
