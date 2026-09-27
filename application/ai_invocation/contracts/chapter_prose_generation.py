@@ -7,6 +7,7 @@ from typing import Any
 from application.ai_invocation.continuation import ContinuationContext, register_continuation_handler
 from application.ai_invocation.dtos import InvocationPolicy, InvocationSpec, VariableBinding
 from infrastructure.ai.prompt_keys import CHAPTER_PROSE_GENERATION
+from infrastructure.persistence.database.chapter_draft_repository import snapshot_chapter_before_content_change
 from infrastructure.persistence.database.write_dispatch import sqlite_writes_bypass_queue
 
 
@@ -135,6 +136,9 @@ def project_chapter_prose_to_chapters(db, projection: dict[str, Any]) -> dict[st
         "SELECT id, content FROM chapters WHERE novel_id = ? AND number = ?",
         (novel_id, chapter_number),
     )
+    if existing is not None:
+        # AI 正文生成覆写前留痕
+        snapshot_chapter_before_content_change(db, novel_id, chapter_number, "pre_prose")
     word_count = int(projection.get("word_count") or len(content.replace(" ", "")))
     with db.transaction() as conn:
         if existing is None:

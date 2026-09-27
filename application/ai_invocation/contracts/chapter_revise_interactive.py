@@ -13,6 +13,7 @@ from typing import Any
 from application.ai_invocation.continuation import ContinuationContext, register_continuation_handler
 from application.ai_invocation.dtos import InvocationPolicy, InvocationSpec, VariableBinding
 from infrastructure.ai.prompt_keys import CHAPTER_REVISE
+from infrastructure.persistence.database.chapter_draft_repository import snapshot_chapter_before_content_change
 from infrastructure.persistence.database.write_dispatch import sqlite_writes_bypass_queue
 
 
@@ -132,6 +133,8 @@ def project_chapter_revise_to_chapters(db, projection: dict[str, Any]) -> dict[s
     if not content.strip():
         return {"blocked": True, "reason": "empty_content_refuses_overwrite"}
 
+    # AI 优化覆写前留痕
+    snapshot_chapter_before_content_change(db, novel_id, chapter_number, "pre_revise")
     existing = db.fetch_one(
         "SELECT id, status FROM chapters WHERE novel_id = ? AND number = ?",
         (novel_id, chapter_number),

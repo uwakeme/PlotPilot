@@ -100,6 +100,9 @@
                       <n-button size="small" type="warning" secondary @click="openRevisePanel()">
                         AI 优化
                       </n-button>
+                      <n-button size="small" secondary @click="versionsDrawerShow = true" :disabled="!currentChapter?.number">
+                        历史版本
+                      </n-button>
                       <n-button
                         size="small"
                         type="primary"
@@ -149,6 +152,14 @@
                   :prefill-instruction="pendingReviseInstruction"
                   @close="revisePanelOpen = false"
                   @revised="onChapterRevised"
+                />
+
+                <ChapterVersionsDrawer
+                  v-model:show="versionsDrawerShow"
+                  :novel-id="slug"
+                  :chapter-number="currentChapter.number"
+                  :current-content="editorDisplayContent"
+                  @restored="onChapterRestored"
                 />
 
                 <div class="editor-footer">
@@ -893,6 +904,7 @@ const QualityGuardrailPanel = defineAsyncComponent(() => import('./QualityGuardr
 const TraceRecordPanel = defineAsyncComponent(() => import('./TraceRecordPanel.vue'))
 const AutopilotWorkspace = defineAsyncComponent(() => import('../autopilot/AutopilotWorkspace.vue'))
 const ChapterRevisePanel = defineAsyncComponent(() => import('./ChapterRevisePanel.vue'))
+const ChapterVersionsDrawer = defineAsyncComponent(() => import('./ChapterVersionsDrawer.vue'))
 const AutopilotWritingStream = defineAsyncComponent(() => import('../autopilot/AutopilotWritingStream.vue'))
 
 interface Chapter {
@@ -943,6 +955,12 @@ const managedWorkbenchEnabled = true
 // ── AI 章节优化（交互式） ──────────────────────────────
 const revisePanelOpen = ref(false)
 const pendingReviseInstruction = ref('')
+const versionsDrawerShow = ref(false)
+
+function onChapterRestored(): void {
+  void handleReload()
+  workbenchRefresh.bumpAfterChapterDeskChange()
+}
 
 function openRevisePanel(instruction = ''): void {
   if (!currentChapter.value) {

@@ -213,6 +213,21 @@ export async function listChapterDrafts(
   ) as unknown as Promise<ChapterDraftDTO[]>
 }
 
+/**
+ * POST /api/v1/novels/{novel_id}/chapters/{chapter_number}/drafts/{draft_id}/restore
+ * 恢复章节正文到指定历史版本；恢复前当前内容自动存为 pre_restore 快照。
+ */
+export async function restoreChapterDraft(
+  novelId: string,
+  chapterNumber: number,
+  draftId: string,
+): Promise<ChapterDraftDTO> {
+  return apiClient.post<ChapterDraftDTO>(
+    `/novels/${novelId}/chapters/${chapterNumber}/drafts/${draftId}/restore`,
+    {},
+  ) as unknown as Promise<ChapterDraftDTO>
+}
+
 export interface SceneDirectorAnalysis {
   chapter_number: number
   outline: string

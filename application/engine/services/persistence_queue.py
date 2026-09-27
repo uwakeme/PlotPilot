@@ -18,6 +18,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass, asdict
+from infrastructure.persistence.database.chapter_draft_repository import snapshot_chapter_before_content_change
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
@@ -476,6 +477,11 @@ def register_persistence_handlers() -> None:
             content = payload.get("content", "")
             status = payload.get("status", "draft")
             word_count = int(payload.get("word_count") or len(str(content or "")))
+
+            # 自动驾驶收稿覆写前留痕(内容未变则自动跳过)
+            snapshot_chapter_before_content_change(
+                db, novel_id, chapter_number, "pre_autopilot", skip_extension=True
+            )
 
             # 使用轻量 SQL 更新
             db.execute(

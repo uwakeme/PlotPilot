@@ -274,6 +274,18 @@ class DaemonHostMixin:
         params = []
 
         if content is not None:
+            # 自动驾驶覆写正文前留痕（内容未变/纯增量延伸时自动跳过）
+            try:
+                from infrastructure.persistence.database.connection import get_database
+                from infrastructure.persistence.database.chapter_draft_repository import (
+                    snapshot_chapter_before_content_change,
+                )
+
+                snapshot_chapter_before_content_change(
+                    get_database(), novel_id, chapter_number, "pre_autopilot", skip_extension=True
+                )
+            except Exception as exc:
+                logger.debug(f"[{novel_id}] 收稿快照失败（忽略）: {exc}")
             set_parts.append("content = ?")
             params.append(content)
         if status is not None:

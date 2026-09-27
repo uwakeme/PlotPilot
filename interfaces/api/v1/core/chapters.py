@@ -28,6 +28,7 @@ from interfaces.api.dependencies import (
 )
 from application.world.services.knowledge_service import KnowledgeService
 from infrastructure.persistence.database.chapter_draft_repository import ChapterDraftRepository
+from infrastructure.persistence.database.chapter_draft_repository import snapshot_chapter_before_content_change
 from application.paths import get_db_path
 from domain.shared.exceptions import EntityNotFoundError
 logger = logging.getLogger(__name__)
@@ -277,6 +278,12 @@ async def update_chapter(
 ):
     """更新章节内容，保存成功后后台执行统一章后管线（见 ChapterAftermathPipeline）。"""
     try:
+        # 手动保存留痕:覆写前把当前正文存为 manual_save 快照(内容未变则跳过)
+        from infrastructure.persistence.database.connection import get_database
+
+        snapshot_chapter_before_content_change(
+            get_database(), novel_id, chapter_number, "manual_save"
+        )
         chapter = service.update_chapter_by_novel_and_number(
             novel_id,
             chapter_number,
@@ -581,3 +588,37 @@ async def list_chapter_drafts(
         )
         for r in records
     ]
+
+
+@router.post(
+    "/{novel_id}/chapters/{chapter_number}/drafts/{draft_id}/restore",
+    response_model=ChapterDraftResponse,
+)
+async def restore_chapter_draft(
+    novel_id: str,
+    chapter_number: int = Path(..., gt=0),
+    draft_id: str = Path(...),
+    draft_repo: ChapterDraftRepository = Depends(_get_draft_repo),
+):
+    """恢复章节正文到指定历史版本；恢复前当前内容自动存为 pre_restore 快照。"""
+    try:
+        draft_repo.restore_draft(novel_id, chapter_number, draft_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"恢复失败: {e}")
+
+    restored = draft_repo.get_draft(draft_id)
+    if restored is None:
+        raise HTTPException(status_code=404, detail="草稿不存在")
+    return ChapterDraftResponse(
+        id=restored.id,
+        novel_id=restored.novel_id,
+        chapter_id=restored.chapter_id,
+        chapter_number=restored.chapter_number,
+        content=restored.content,
+        outline=restored.outline,
+        source=restored.source,
+        word_count=restored.word_count,
+        created_at=restored.created_at,
+    )

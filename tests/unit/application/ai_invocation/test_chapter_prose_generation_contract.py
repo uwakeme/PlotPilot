@@ -54,6 +54,17 @@ class _Db:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(novel_id, number)
             );
+            CREATE TABLE IF NOT EXISTS chapter_drafts (
+                id TEXT PRIMARY KEY,
+                novel_id TEXT NOT NULL,
+                chapter_id TEXT NOT NULL,
+                chapter_number INTEGER NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                outline TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'manual',
+                word_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 
@@ -66,9 +77,16 @@ class _Db:
             self.conn.rollback()
             raise
 
+    def execute(self, sql, params=()):
+        self.conn.execute(sql, params)
+        self.conn.commit()
+
     def fetch_one(self, sql, params=()):
         row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
+
+    def fetch_all(self, sql, params=()):
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
 
 def test_project_chapter_prose_updates_existing_chapter():
