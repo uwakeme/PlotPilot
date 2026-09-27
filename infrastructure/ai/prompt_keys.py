@@ -127,6 +127,9 @@ LIFECYCLE_PHASE_DIRECTIVES = "lifecycle-phase-directives"
 REFACTOR_PROPOSAL_MACRO = "refactor-proposal-macro"
 PLANNING_MAIN_PLOT_OPTION = "planning-main-plot-option"
 PLANNING_PLOT_OUTLINE = "planning-plot-outline"
+BOOK_ACT_REVIEW = "book-act-review"
+BOOK_REVIEW_SYNTHESIS = "book-review-synthesis"
+CHAPTER_REVISE = "chapter-revise"
 
 # ── Theme ────────────────────────────────────────────────────────────────
 # Theme keys follow pattern: theme-{genre}-{method}
@@ -188,6 +191,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     BEAT_FOCUS_INSTRUCTIONS, LIFECYCLE_PHASE_DIRECTIVES,
     REFACTOR_PROPOSAL_MACRO, PLANNING_MAIN_PLOT_OPTION,
     PLANNING_PLOT_OUTLINE,
+    BOOK_ACT_REVIEW, BOOK_REVIEW_SYNTHESIS, CHAPTER_REVISE,
 })
 
 

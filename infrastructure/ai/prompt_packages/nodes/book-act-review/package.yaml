@@ -1,0 +1,39 @@
+id: book-act-review
+name: 全书终审·单幕精审
+category: review
+source: application/audit/services/book_review_service.py
+description: 全书终审的第一阶段——把一幕的完整正文连同伏笔上下文交给审读模型，产出结构化问题清单（逻辑/节奏/人设/伏笔/文风）。
+builtin: true
+tags:
+  - 全书终审
+  - 复查
+  - 审读
+variables:
+  - name: act_number
+    desc: 幕序号
+    type: integer
+    required: true
+  - name: act_title
+    desc: 幕标题
+    type: string
+    required: true
+  - name: chapter_range
+    desc: 本幕覆盖的章节范围描述
+    type: string
+    required: true
+  - name: act_text
+    desc: 本幕各章完整正文（带章节标记）
+    type: string
+    required: true
+  - name: foreshadow_context
+    desc: 与本幕相关的伏笔上下文（已埋/应兑/未兑）
+    type: string
+    required: false
+    default: ''
+  - name: character_digest
+    desc: 主要人物卡摘要
+    type: string
+    required: false
+    default: ''
+output_format: json
+sort_order: 10

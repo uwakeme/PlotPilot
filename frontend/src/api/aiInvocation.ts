@@ -190,6 +190,7 @@ export interface InvocationCreatePayload {
 export interface InvocationAcceptPayload {
   attempt_id: string
   accepted_by?: string
+  accepted_content?: string | null
   commit_prompt_version?: boolean
   commit_variable_outputs?: boolean
   commit_variable_bindings?: boolean

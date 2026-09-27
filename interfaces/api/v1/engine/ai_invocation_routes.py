@@ -60,12 +60,14 @@ logger = logging.getLogger(__name__)
 try:
     from application.ai_invocation.autopilot.continuations import register_autopilot_continuations
     from application.ai_invocation.contracts.chapter_prose_generation import register_chapter_prose_generation_continuation
+    from application.ai_invocation.contracts.chapter_revise_interactive import register_chapter_revise_interactive_continuation
     from application.blueprint.services.setup_main_plot_continuation import register_setup_main_plot_continuation
     from application.blueprint.services.setup_plot_outline_continuation import register_setup_plot_outline_continuation
     from application.world.services.bible_setup_continuation import register_bible_setup_continuations
 
     register_autopilot_continuations()
     register_chapter_prose_generation_continuation()
+    register_chapter_revise_interactive_continuation()
     register_setup_main_plot_continuation()
     register_setup_plot_outline_continuation()
     register_bible_setup_continuations()
@@ -89,6 +91,7 @@ class InvocationCreateRequest(BaseModel):
 class AdoptionAcceptRequest(BaseModel):
     attempt_id: str
     accepted_by: str = "user"
+    accepted_content: str | None = None  # 预览微调后的最终稿（可选，覆盖 attempt 原文）
     commit_prompt_version: bool = False
     commit_variable_outputs: bool = False
     commit_variable_bindings: bool = False
@@ -1055,6 +1058,7 @@ async def accept_invocation(session_id: str, request: AdoptionAcceptRequest) -> 
         session=session,
         attempt=attempt,
         accepted_by=request.accepted_by,
+        accepted_content=request.accepted_content,
         commit_prompt_version=request.commit_prompt_version,
         commit_variable_outputs=request.commit_variable_outputs,
         commit_variable_bindings=request.commit_variable_bindings,

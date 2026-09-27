@@ -1,0 +1,40 @@
+id: chapter-revise
+name: 工作台章节优化改写
+category: generation
+source: ai_invocation/chapter.revise.interactive
+description: 交互式章节优化——按用户自由指令对指定章节做最小必要改写，保持情节骨架、字数量级与文风。
+builtin: true
+tags:
+  - 工作台
+  - 章节优化
+  - AI Invocation
+variables:
+  - name: chapter_number
+    desc: 章节编号
+    type: integer
+    required: true
+  - name: chapter_title
+    desc: 章节标题
+    type: string
+    required: false
+    default: ''
+  - name: chapter_content
+    desc: 章节当前完整正文
+    type: string
+    required: true
+  - name: user_instruction
+    desc: 用户的优化指令（自由文本）
+    type: string
+    required: true
+  - name: style_contract
+    desc: 文风契约/创作约束摘要
+    type: string
+    required: false
+    default: ''
+  - name: continuity_context
+    desc: 前后文承接摘要（前一章结尾/后一章开头）
+    type: string
+    required: false
+    default: ''
+output_format: text
+sort_order: 30

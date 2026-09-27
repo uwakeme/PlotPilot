@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from application.ai_invocation.contracts.autopilot_writing import AUTOPILOT_CHAPTER_PROSE_OPERATION
 from application.ai_invocation.dtos import InvocationPolicy, InvocationSpec, VariableBinding
-from infrastructure.ai.prompt_keys import CHAPTER_GENERATION_MAIN, CHAPTER_PROSE_GENERATION
+from infrastructure.ai.prompt_keys import CHAPTER_GENERATION_MAIN, CHAPTER_PROSE_GENERATION, CHAPTER_REVISE
 from infrastructure.persistence.database.write_dispatch import sqlite_writes_bypass_queue
 
 
@@ -96,6 +96,12 @@ class InvocationContractRegistry:
             )
 
             ensure_chapter_prose_generation_contract(self._db)
+        elif operation == "chapter.revise.interactive" and node_key == CHAPTER_REVISE:
+            from application.ai_invocation.contracts.chapter_revise_interactive import (
+                ensure_chapter_revise_interactive_contract,
+            )
+
+            ensure_chapter_revise_interactive_contract(self._db)
         else:
             raise ValueError(f"Unsupported invocation contract: operation={operation}, node_key={node_key}")
 

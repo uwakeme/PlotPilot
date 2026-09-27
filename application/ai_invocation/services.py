@@ -166,6 +166,7 @@ class AdoptionService:
         session: InvocationSession,
         attempt: InvocationAttempt,
         accepted_by: str = "system",
+        accepted_content: str | None = None,
         commit_prompt_version: bool = False,
         commit_variable_outputs: bool = False,
         commit_variable_bindings: bool = False,
@@ -187,6 +188,9 @@ class AdoptionService:
             accepted_by=accepted_by,
             metadata=dict(metadata or {}),
         )
+        if accepted_content is not None and accepted_content.strip():
+            # 用户在预览阶段微调过的最终稿覆盖模型原文
+            decision.accepted_content = accepted_content
         self._decisions[decision.id] = decision
         session.status = InvocationSessionStatus.AWAITING_COMMIT
         return decision
@@ -507,10 +511,18 @@ class AdoptionCommitService:
         if not projection:
             return {"skipped": True, "reason": "no_projection_plan"}
         adapter = str(projection.get("adapter") or "").strip()
-        if adapter != "chapters_table":
+        if adapter not in ("chapters_table", "chapters_table_revise"):
             return {"blocked": True, "reason": "unsupported_projection_adapter", "adapter": adapter}
         try:
             from infrastructure.persistence.database.connection import get_database
+
+            if adapter == "chapters_table_revise":
+                from application.ai_invocation.contracts.chapter_revise_interactive import (
+                    project_chapter_revise_to_chapters,
+                )
+
+                return project_chapter_revise_to_chapters(get_database(), projection)
+
             from application.ai_invocation.contracts.chapter_prose_generation import project_chapter_prose_to_chapters
 
             return project_chapter_prose_to_chapters(get_database(), projection)

@@ -1,0 +1,24 @@
+id: book-review-synthesis
+name: 全书终审·汇总报告
+category: review
+source: application/audit/services/book_review_service.py
+description: 全书终审的第二阶段——汇总各幕精审发现与伏笔账本，产出带优先级的全书终审报告。
+builtin: true
+tags:
+  - 全书终审
+  - 汇总
+variables:
+  - name: book_meta
+    desc: 书籍元信息（标题/梗概/赛道/结构统计）
+    type: string
+    required: true
+  - name: act_findings
+    desc: 各幕精审结果（JSON 摘要）
+    type: string
+    required: true
+  - name: foreshadow_ledger
+    desc: 伏笔账本总览（含未兑承诺清单）
+    type: string
+    required: true
+output_format: json
+sort_order: 20

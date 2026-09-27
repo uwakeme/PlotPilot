@@ -1145,6 +1145,13 @@ def get_chapter_ai_review_service():
     return ChapterAIReviewService(get_llm_service())
 
 
+def get_book_review_service():
+    """获取全书终审服务"""
+    from application.audit.services.book_review_service import BookReviewService
+
+    return BookReviewService(get_llm_service())
+
+
 def get_foreshadow_ledger_service():
     """获取伏笔台账服务
 

@@ -30,6 +30,14 @@
       </section>
 
       <section
+        v-if="workspace.activeTab === 'review'"
+        class="ap-workspace__pane"
+        aria-label="全书终审"
+      >
+        <BookReviewPanel :novel-id="novelId" @go-revise="onGoRevise" />
+      </section>
+
+      <section
         v-if="workspace.activeTab === 'dashboard'"
         class="ap-workspace__pane"
         aria-label="仪表盘"
@@ -64,6 +72,7 @@ import AutopilotShellNav from './AutopilotShellNav.vue'
 import AutopilotPanel from './AutopilotPanel.vue'
 
 const NarrativeGovernanceCockpit = defineAsyncComponent(() => import('./NarrativeGovernanceCockpit.vue'))
+const BookReviewPanel = defineAsyncComponent(() => import('./BookReviewPanel.vue'))
 const AutopilotMetricsDashboard = defineAsyncComponent(() => import('./AutopilotMetricsDashboard.vue'))
 const AutopilotOperationsView = defineAsyncComponent(() => import('./AutopilotOperationsView.vue'))
 
@@ -79,6 +88,7 @@ const emit = defineEmits<{
   'desk-refresh': []
   'beats-planned': [payload: { chapterNumber: number; beats: Array<Record<string, unknown>> }]
   'chapter-metrics-refresh': []
+  'go-revise': [chapterNumber: number, instruction: string]
 }>()
 
 const workspace = useAutopilotWorkspaceStore()
@@ -98,6 +108,10 @@ watch(
     }
   },
 )
+
+function onGoRevise(chapterNumber: number, instruction: string) {
+  emit('go-revise', chapterNumber, instruction)
+}
 
 function onOpsDeskRefresh() {
   emit('desk-refresh')

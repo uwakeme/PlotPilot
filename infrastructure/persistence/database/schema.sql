@@ -913,3 +913,23 @@ CREATE INDEX IF NOT EXISTS idx_dag_versions_novel_version ON dag_versions(novel_
 -- 索引：按更新时间排序（用于清理旧版本）
 CREATE INDEX IF NOT EXISTS idx_dag_versions_updated_at ON dag_versions(novel_id, updated_at DESC);
 
+
+-- ============================================================
+-- 全书终审报告表（book_review_reports）
+-- 分幕精审结果（scope='act'）与汇总报告（scope='final'）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS book_review_reports (
+    id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    act_number INTEGER,
+    status TEXT NOT NULL DEFAULT 'completed',
+    payload TEXT NOT NULL DEFAULT '{}',
+    finding_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_book_review_novel ON book_review_reports(novel_id, scope, act_number);
+CREATE INDEX IF NOT EXISTS idx_book_review_created ON book_review_reports(novel_id, created_at DESC);

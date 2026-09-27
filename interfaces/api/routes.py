@@ -50,6 +50,7 @@ def register_api_routes(app: FastAPI) -> None:
     from interfaces.api.v1 import system as system_routes
     from interfaces.api.v1.analyst import foreshadow_ledger, narrative_state, voice
     from interfaces.api.v1.audit import (
+        book_review,
         chapter_element_routes,
         chapter_review_routes,
         macro_refactor,
@@ -135,6 +136,7 @@ def register_api_routes(app: FastAPI) -> None:
             RouterRegistration(dag_router, API_V1_PREFIX),
             RouterRegistration(chapter_review_routes.router, API_V1_PREFIX),
             RouterRegistration(macro_refactor.router, API_V1_PREFIX),
+            RouterRegistration(book_review.router, API_V1_PREFIX),
             RouterRegistration(chapter_element_routes.router, API_V1_PREFIX),
             RouterRegistration(voice.router, API_V1_PREFIX),
             RouterRegistration(narrative_state.router, API_V1_PREFIX),

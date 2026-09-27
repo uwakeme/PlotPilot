@@ -97,6 +97,9 @@
                     </div>
                     <n-space v-if="!proseOnlyWorkbench" :size="8" class="editor-header-actions">
                       <n-button size="small" @click="handleReload" :disabled="loading">重新加载</n-button>
+                      <n-button size="small" type="warning" secondary @click="openRevisePanel()">
+                        AI 优化
+                      </n-button>
                       <n-button
                         size="small"
                         type="primary"
@@ -136,6 +139,17 @@
                     </div>
                   </div>
                 </div>
+
+                <ChapterRevisePanel
+                  :open="revisePanelOpen"
+                  :novel-id="slug"
+                  :chapter-number="currentChapter.number"
+                  :chapter-title="currentChapter.title || ''"
+                  :chapter-content="editorDisplayContent"
+                  :prefill-instruction="pendingReviseInstruction"
+                  @close="revisePanelOpen = false"
+                  @revised="onChapterRevised"
+                />
 
                 <div class="editor-footer">
                   <n-space :size="8" align="center" justify="space-between" style="width: 100%">
@@ -327,6 +341,7 @@
         @chapter-chunk="handleChapterChunkStream"
         @desk-refresh="handleAutopilotDeskRefreshFromStream"
         @beats-planned="handleAutopilotBeatsPlanned"
+        @go-revise="onGoReviseFromReview"
       />
 
     </div>
@@ -877,6 +892,7 @@ const ChapterStatusPanel = defineAsyncComponent(() => import('./ChapterStatusPan
 const QualityGuardrailPanel = defineAsyncComponent(() => import('./QualityGuardrailPanel.vue'))
 const TraceRecordPanel = defineAsyncComponent(() => import('./TraceRecordPanel.vue'))
 const AutopilotWorkspace = defineAsyncComponent(() => import('../autopilot/AutopilotWorkspace.vue'))
+const ChapterRevisePanel = defineAsyncComponent(() => import('./ChapterRevisePanel.vue'))
 const AutopilotWritingStream = defineAsyncComponent(() => import('../autopilot/AutopilotWritingStream.vue'))
 
 interface Chapter {
@@ -923,6 +939,46 @@ const workbenchRefresh = useWorkbenchRefreshStore()
 const { deskTick } = storeToRefs(workbenchRefresh)
 const aiInvocationStore = useAIInvocationStore()
 const managedWorkbenchEnabled = true
+
+// ── AI 章节优化（交互式） ──────────────────────────────
+const revisePanelOpen = ref(false)
+const pendingReviseInstruction = ref('')
+
+function openRevisePanel(instruction = ''): void {
+  if (!currentChapter.value) {
+    message.warning('请先选择一个章节')
+    return
+  }
+  pendingReviseInstruction.value = instruction
+  revisePanelOpen.value = true
+}
+
+function onChapterRevised(): void {
+  void handleReload()
+  workbenchRefresh.bumpAfterChapterDeskChange()
+}
+
+/** 全书终审面板「去修改此章」：切辅助模式 → 选中章节 → 打开优化面板预填指令 */
+function onGoReviseFromReview(chapterNumber: number, instruction: string): void {
+  workMode.value = 'assisted'
+  const chapter = props.chapters.find(ch => ch.number === chapterNumber)
+  if (chapter) {
+    emit('selectChapter', chapterNumber, chapter.title || '')
+  }
+  // 等目标章节加载完成后再打开面板预填指令
+  const stop = watch(
+    () => props.currentChapterId,
+    () => {
+      const current = props.chapters.find(ch => ch.id === props.currentChapterId)
+      if (current && current.number === chapterNumber) {
+        stop()
+        openRevisePanel(instruction)
+      }
+    },
+    { immediate: true },
+  )
+}
+
 const proseOnlyWorkbench = !managedWorkbenchEnabled
 
 const primaryDeskTab = ref<PrimaryChapterDeskTab>('manuscript')
