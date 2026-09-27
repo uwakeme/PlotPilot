@@ -226,12 +226,14 @@
                             :loading="generating"
                             :disabled="isAutopilotRunning || isAssistedReadOnly"
                           >
-                            🔄 重新生成
+                            <n-icon :component="RefreshOutline" size="14" style="vertical-align: -2px; margin-right: 4px" />
+                            重新生成
                           </n-button>
                         </template>
                       </n-tooltip>
                       <n-button v-if="!proseOnlyWorkbench" size="small" secondary :disabled="isAssistedReadOnly" @click="openTensionModal" title="诊断当前章节张力缺口">
-                        🔍 张力诊断
+                        <n-icon :component="PulseOutline" size="14" style="vertical-align: -2px; margin-right: 4px" />
+                        张力诊断
                       </n-button>
                     </n-space>
                   </n-space>
@@ -362,7 +364,7 @@
       v-if="!proseOnlyWorkbench"
       v-model:show="showGenerateModal"
       preset="card"
-      :title="isRegenerationMode ? '🔄 重新生成本章' : 'AI 生成本章（含一致性检查）'"
+      :title="isRegenerationMode ? '重新生成本章' : 'AI 生成本章（含一致性检查）'"
       style="width: min(820px, 96vw); max-height: min(92vh, 900px)"
       :segmented="{ content: true, footer: 'soft' }"
       :mask-closable="!generateInProgress"
@@ -543,7 +545,7 @@
                         ? '分析场景中...'
                         : '生成中...'
                       : isRegenerationMode
-                        ? '🔄 开始重新生成'
+                        ? '开始重新生成'
                         : '开始生成'
                 }}
               </n-button>
@@ -732,7 +734,7 @@
     <n-modal
       v-model:show="showTensionModal"
       preset="card"
-      title="🔍 张力诊断"
+      title="张力诊断"
       style="width: min(560px, 96vw)"
     >
       <n-space vertical :size="16">
@@ -762,7 +764,7 @@
                 :type="tensionResult.tension_level === 'high' ? 'success' : tensionResult.tension_level === 'medium' ? 'warning' : 'error'"
                 round
               >
-                {{ tensionResult.tension_level === 'high' ? '高张力' : tensionResult.tension_level === 'medium' ? '中等' : '低张力 ⚠' }}
+                {{ tensionResult.tension_level === 'high' ? '高张力' : tensionResult.tension_level === 'medium' ? '中等' : '低张力' }}
               </n-tag>
             </n-space>
 
@@ -895,7 +897,7 @@ import {
 import { narrativeOrdinalLabel } from '@/utils/narrativeUnitLabel'
 import { loadAssistBeatSession, persistAssistBeatSession } from '@/utils/assistBeatSession'
 import { formatApiError, getHttpStatus } from '@/utils/apiError'
-import { AppsOutline, ChevronForwardOutline } from '@vicons/ionicons5'
+import { AppsOutline, ChevronForwardOutline, RefreshOutline, PulseOutline } from '@vicons/ionicons5'
 
 const ChapterContentPanel = defineAsyncComponent(() => import('./ChapterContentPanel.vue'))
 const ChapterElementPanel = defineAsyncComponent(() => import('./ChapterElementPanel.vue'))
@@ -2510,14 +2512,14 @@ defineExpose({ ensureAssistedMode, streamingChapterNumber, writingPipelineStep }
 }
 
 .streaming-cursor {
-  color: #18a058;
+  color: var(--color-success);
   animation: cursor-blink-anim 1s step-end infinite;
   font-size: 14px;
 }
 
 .streaming-badge {
   font-size: 11px;
-  color: #18a058;
+  color: var(--color-success);
   font-weight: 500;
 }
 
@@ -2527,13 +2529,13 @@ defineExpose({ ensureAssistedMode, streamingChapterNumber, writingPipelineStep }
 
 /* 🔥 流式字数动画 */
 .streaming-word-count {
-  color: #18a058;
+  color: var(--color-success);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 
 .streaming-indicator {
-  color: #18a058;
+  color: var(--color-success);
   font-size: 12px;
   margin-left: 4px;
   animation: cursor-blink-anim 1s step-end infinite;
