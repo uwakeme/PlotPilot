@@ -31,8 +31,13 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'open'): void
   (e: 'select', value: boolean): void
+  (e: 'edit'): void
   (e: 'delete'): void
 }>()
+
+const IconEdit = () =>
+  h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
+    h('path', { fill: 'currentColor', d: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z' }))
 
 const IconTrash = () =>
   h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
@@ -76,6 +81,18 @@ const formatWordCount = (count: number): string => {
         :checked="selected"
         @update:checked="(val: boolean) => emit('select', val)"
       />
+      <n-button
+        quaternary
+        circle
+        size="tiny"
+        type="primary"
+        aria-label="编辑书目信息"
+        @click="emit('edit')"
+      >
+        <template #icon>
+          <n-icon><IconEdit /></n-icon>
+        </template>
+      </n-button>
       <n-popconfirm
         positive-text="删除"
         negative-text="取消"

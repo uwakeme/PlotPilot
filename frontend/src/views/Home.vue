@@ -225,6 +225,7 @@
                   :deleting="deletingSlug === book.slug"
                   @open="navigateToBook(book.slug)"
                   @select="(val: boolean) => toggleBookSelection(book.slug, val)"
+                  @edit="editingSlug = book.slug"
                   @delete="handleDeleteBook(book.slug)"
                 />
               </div>
@@ -319,11 +320,22 @@
             :deleting="deletingSlug === book.slug"
             :selectable="false"
             @open="openFromModal(book.slug)"
+            @edit="editingSlug = book.slug"
             @delete="handleDeleteBook(book.slug)"
           />
         </div>
       </div>
     </n-modal>
+
+    <!-- 编辑书目信息弹窗：仅在选中书目时挂载，show 恒为 true（与向导同模式，避免双过渡） -->
+    <BookEditModal
+      v-if="editingSlug"
+      :key="editingSlug"
+      :slug="editingSlug"
+      :show="true"
+      @update:show="(open) => { if (!open) editingSlug = null }"
+      @saved="handleBookInfoSaved"
+    />
   </div>
 </template>
 
@@ -353,6 +365,9 @@ const MarketTaxonomyPicker = defineAsyncComponent(
 )
 const NovelSetupGuide = defineAsyncComponent(
   () => import('@/components/onboarding/NovelSetupGuide.vue'),
+)
+const BookEditModal = defineAsyncComponent(
+  () => import('@/components/home/BookEditModal.vue'),
 )
 
 // Icons
@@ -416,6 +431,8 @@ const showAllModal = ref(false)
 const modalSearchQuery = ref('')
 /** 有值时挂载向导；与 show 分离，挂载后始终 :show="true"，避免 Modal 先 false 再 true 闪烁 */
 const setupWizard = ref<{ novelId: string; targetChapters: number } | null>(null)
+/** 正在编辑信息的书目 slug（挂载 BookEditModal） */
+const editingSlug = ref<string | null>(null)
 
 // Batch delete
 const selectedBooks = ref<string[]>([])
@@ -625,6 +642,20 @@ const handleDeleteBook = async (slug: string) => {
   } finally {
     deletingSlug.value = null
   }
+}
+
+/** 编辑弹窗保存成功：用返回的 DTO 同步书卡标题与分类（genre 与后端解析口径一致） */
+const handleBookInfoSaved = (updated: NovelDTO) => {
+  const idx = books.value.findIndex(b => b.slug === updated.id)
+  if (idx >= 0) {
+    const g = updated.locked_genre?.trim() || parseGenreWorldFromPremise(updated.premise || '').genre
+    books.value[idx] = {
+      ...books.value[idx],
+      title: updated.title,
+      genre: g || '',
+    }
+  }
+  void statsStore.loadGlobalStats(true)
 }
 
 const toggleBookSelection = (slug: string, selected: boolean) => {
