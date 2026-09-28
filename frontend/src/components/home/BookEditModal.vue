@@ -3,7 +3,7 @@
  * BookEditModal — 编辑书目基本信息（书名/作者/目标章数/梗概）。
  * 首页书卡「编辑」入口挂载；打开时拉取书目详情预填，保存走 PUT /novels/{id} 增量字段。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { novelApi, type NovelDTO } from '@/api/novel'
 import { formatApiError } from '@/utils/apiError'
@@ -20,8 +20,18 @@ const emit = defineEmits<{
 
 const message = useMessage()
 
+const IconSparkle = () =>
+  h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
+    h('path', { fill: 'currentColor', d: 'M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z' }))
+
 const loading = ref(false)
 const saving = ref(false)
+const suggesting = ref(false)
+
+/** 书目已锁定的题材上下文，AI 起名时随梗概一起传给后端 */
+const lockedGenre = ref('')
+const lockedWorldPreset = ref('')
+const lockedStoryStructure = ref('')
 
 const form = reactive({
   title: '',
@@ -67,11 +77,39 @@ function applyNovel(n: NovelDTO) {
   // 建书走体量档时 target_chapters 为 0（由服务端推导），此处留空不固定章数
   form.targetChapters = typeof n.target_chapters === 'number' && n.target_chapters > 0 ? n.target_chapters : null
   form.premise = n.premise ?? ''
+  lockedGenre.value = n.locked_genre?.trim() ?? ''
+  lockedWorldPreset.value = n.locked_world_preset?.trim() ?? ''
+  lockedStoryStructure.value = n.locked_story_structure?.trim() ?? ''
   original.value = {
     title: form.title.trim(),
     author: form.author,
     targetChapters: form.targetChapters,
     premise: form.premise,
+  }
+}
+
+/** AI 起名：按当前梗概生成书名填入输入框，用户仍可手改后保存（与建书留空标题同一接口） */
+const suggestTitle = async () => {
+  const premise = form.premise.trim()
+  if (!premise || suggesting.value) return
+  suggesting.value = true
+  try {
+    const r = await novelApi.suggestTitle({
+      premise,
+      genre: lockedGenre.value,
+      world_preset: lockedWorldPreset.value,
+      story_structure: lockedStoryStructure.value,
+    })
+    form.title = r.title
+    if (r.source === 'ai') {
+      message.success('已生成书名，可手动修改后再保存')
+    } else {
+      message.warning('AI 起名未成功，已用梗概截取兜底，可手动修改')
+    }
+  } catch (error: unknown) {
+    message.error(formatApiError(error, 'AI 起名失败'))
+  } finally {
+    suggesting.value = false
   }
 }
 
@@ -132,13 +170,27 @@ onMounted(loadNovel)
         <n-grid :cols="2" :x-gap="16" responsive="screen">
           <n-gi>
             <n-form-item label="书名" required>
-              <n-input
-                v-model:value="form.title"
-                placeholder="书名"
-                :maxlength="60"
-                show-count
-                :disabled="saving"
-              />
+              <div class="title-row">
+                <n-input
+                  v-model:value="form.title"
+                  placeholder="书名"
+                  :maxlength="60"
+                  show-count
+                  :disabled="saving"
+                />
+                <n-button
+                  size="small"
+                  :loading="suggesting"
+                  :disabled="saving || !form.premise.trim()"
+                  title="按核心梗概生成书名，生成后可手动修改"
+                  @click="suggestTitle"
+                >
+                  <template #icon>
+                    <n-icon><IconSparkle /></n-icon>
+                  </template>
+                  AI 起名
+                </n-button>
+              </div>
             </n-form-item>
           </n-gi>
           <n-gi>
@@ -179,7 +231,7 @@ onMounted(loadNovel)
         </n-form-item>
 
         <div class="edit-hint">
-          赛道 / 世界观基调等标签由梗概解析，修改梗概后书卡分类会随之更新；已生成的大纲与章节不受影响。
+          书名可点「AI 起名」按梗概自动生成，生成后仍可手动修改；赛道 / 世界观基调等标签由梗概解析，修改梗概后书卡分类会随之更新；已生成的大纲与章节不受影响。
         </div>
       </n-form>
     </n-spin>
@@ -198,6 +250,18 @@ onMounted(loadNovel)
 <style scoped>
 .edit-form {
   padding-top: 4px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.title-row .n-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .chapters-input {
