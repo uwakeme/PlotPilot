@@ -260,6 +260,18 @@
       </div>
     </n-alert>
 
+    <!-- 模型调用失败提示（最近一次失败摘要，规划成功后自动消失） -->
+    <n-alert v-if="llmErrorSummary" type="warning" :show-icon="true" class="ap-inline-alert">
+      <div class="ap-llm-error">
+        <span class="llm-error-main">
+          <strong>模型调用异常</strong>：{{ llmErrorSummary }}
+        </span>
+        <span class="llm-error-sub">
+          系统会自动重试（连续 3 次失败将挂起）。若持续超时，可在「设置 → 模型引擎」更换规划端点后解除挂起。
+        </span>
+      </div>
+    </n-alert>
+
     <!-- 审阅等待 -->
     <n-alert v-if="showReviewGate" :type="reviewGateAlertType" :show-icon="true" class="ap-inline-alert">
       <div class="ap-review-alert">
@@ -582,6 +594,8 @@ const isTargetReachedPause = computed(() =>
   String(status.value?.autopilot_pause_reason || '') === 'target_reached' &&
   String(status.value?.current_stage || '') === 'paused_for_review'
 )
+// 模型调用失败摘要（后端每次失败写入、规划成功清除）
+const llmErrorSummary = computed(() => String(status.value?.autopilot_last_error_summary || '').trim())
 const completedChapters = computed(() => {
   const s = status.value
   return Math.max(Number(s?.completed_chapters || 0), Number(s?.manuscript_chapters || 0))
@@ -1774,6 +1788,26 @@ onUnmounted(() => {
 
 .ap-target-reached .tr-input {
   width: 7.5rem;
+}
+
+/* ── 模型调用失败提示 ── */
+.ap-llm-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.ap-llm-error .llm-error-main {
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.ap-llm-error .llm-error-sub {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--app-text-secondary, inherit);
 }
 
 .ap-dot {

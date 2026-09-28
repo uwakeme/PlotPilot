@@ -1114,6 +1114,20 @@ class DaemonHostMixin:
         except Exception:
             pass
 
+    def _report_llm_failure(self, novel_id: str, summary: str, *, failure_count: int | None = None) -> None:
+        """记录最近一次模型调用失败摘要（/status 透出给前端提示；成功后由 _clear_llm_error_summary 清除）。"""
+        fields: dict = {"autopilot_last_error_summary": str(summary)[:400]}
+        if failure_count is not None:
+            fields["autopilot_llm_failure_count"] = int(failure_count)
+        self._update_shared_state(novel_id, **fields)
+
+    def _clear_llm_error_summary(self, novel_id: str) -> None:
+        self._update_shared_state(
+            novel_id,
+            autopilot_last_error_summary="",
+            autopilot_llm_failure_count=0,
+        )
+
     async def _call_with_timeout(
         self,
         coro,

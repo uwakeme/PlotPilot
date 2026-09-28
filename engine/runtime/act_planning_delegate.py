@@ -378,6 +378,7 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
             novel_id=novel_id,
             act_id=target_act.id,
         ) or {}
+        planning_error: Exception | None = None
         if not plan_result:
             shared_state = _read_shared_state(novel_id)
             active_session_id = str(shared_state.get("active_invocation_session_id") or "")
@@ -419,6 +420,7 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
             except Exception as e:
                 logger.warning("[%s] autopilot.act.plan 未捕获异常: %s", novel.novel_id, e, exc_info=True)
                 plan_result = {}
+                planning_error = e
                 # 本次调用已失败：清理残留的 invocation 共享状态，避免下个 tick 误判
                 # 「已有待处理 invocation」而永久等待（LLM 超时/网络中断的恢复路径）
                 _clear_invocation_shared_state(host, novel_id)
@@ -430,11 +432,29 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
         raw = plan_result.get("chapters")
         chapters_data: List[Dict[str, Any]] = raw if isinstance(raw, list) else []
         if not chapters_data:
-            logger.error("[%s] 幕 %s 规划失败：未得到有效章节规划", novel.novel_id, target_act_number)
+            # 模型调用失败摘要透出给前端（/status: autopilot_last_error_summary）；
+            # 连续计数用共享内存承载——novel.consecutive_error_count 会在每个成功 tick 被重置
+            failure_count = int(_read_shared_state(novel_id).get("autopilot_llm_failure_count") or 0) + 1
+            summary = f"第 {target_act_number} 幕规划调用模型失败（连续第 {failure_count}/3 次）"
+            if planning_error is not None:
+                summary += f"：{type(planning_error).__name__}: {str(planning_error)[:140]}"
+            else:
+                summary += "：模型返回内容为空或格式无效"
+            host._report_llm_failure(novel_id, summary, failure_count=failure_count)
+            logger.error(
+                "[%s] 幕 %s 规划失败：未得到有效章节规划（连续第 %s 次）",
+                novel.novel_id,
+                target_act_number,
+                failure_count,
+            )
             novel.consecutive_error_count = (novel.consecutive_error_count or 0) + 1
-            if novel.consecutive_error_count >= 3:
+            if failure_count >= 3:
                 novel.autopilot_status = AutopilotStatus.ERROR
-                logger.error("[%s] 连续失败达3次，已挂起", novel.novel_id)
+                logger.error(
+                    "[%s] 模型连续失败 %s 次，已挂起等待处理（可在更换规划端点后解除）",
+                    novel.novel_id,
+                    failure_count,
+                )
             host._flush_novel(novel)
             return
 
@@ -443,6 +463,8 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
             chapters=chapters_data,
         )
         just_created_chapter_plan = True
+        # 本幕规划成功：清除模型失败摘要，前端提示随之消失
+        host._clear_llm_error_summary(novel.novel_id.value)
 
     act_children = host.story_node_repo.get_children_sync(target_act.id)
     confirmed_chapters = [n for n in act_children if n.node_type.value == "chapter"]
