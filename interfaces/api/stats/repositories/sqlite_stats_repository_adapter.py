@@ -3,7 +3,6 @@
 This adapter reads statistics data from the SQLite database instead of
 the legacy file-based storage system.
 """
-from pathlib import Path
 from typing import Optional, Dict, List
 import logging
 import re
@@ -166,6 +165,39 @@ class SqliteStatsRepositoryAdapter:
             return None
         except Exception as e:
             logger.error(f"Error reading chapter {chapter_id} for novel {slug}: {e}")
+            return None
+
+    def get_book_word_totals(self, slug: str) -> Optional[Dict]:
+        """Aggregate chapter/word totals in one query.
+
+        Word totals use ``LENGTH(content)`` — the same source the Chapter
+        entity derives ``word_count`` from (``len(raw_text)``), which is what
+        ``GET /api/v1/novels/{id}/statistics`` sums — so the sidebar global
+        stats and the workbench top bar never disagree. The stored
+        ``chapters.word_count`` column is a stale write-time artifact and is
+        deliberately not read here.
+        """
+        try:
+            sql = """
+                SELECT COUNT(*) AS chapters,
+                       COALESCE(SUM(LENGTH(content)), 0) AS total_words,
+                       COALESCE(SUM(LENGTH(content)), 0) AS total_characters,
+                       COALESCE(SUM(CASE WHEN LENGTH(content) > 0 THEN 1 ELSE 0 END), 0)
+                           AS completed_chapters
+                FROM chapters
+                WHERE novel_id = ?
+            """
+            row = self.db.fetch_one(sql, (slug,))
+            if not row:
+                return None
+            return {
+                "chapters": int(row["chapters"] or 0),
+                "total_words": int(row["total_words"] or 0),
+                "total_characters": int(row["total_characters"] or 0),
+                "completed_chapters": int(row["completed_chapters"] or 0),
+            }
+        except Exception as e:
+            logger.error(f"Error aggregating word totals for novel {slug}: {e}")
             return None
 
     def get_chapter_progress_records(self, slug: str) -> List[Dict]:

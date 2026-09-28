@@ -148,6 +148,14 @@ class StatsRepository:
             )
         return records
 
+    def get_book_word_totals(self, slug: str) -> Optional[Dict]:
+        """Return pre-aggregated chapter/word totals for a book, if the backend stores them.
+
+        File-based books have no stored per-chapter word count, so this returns
+        None and callers fall back to scanning chapter content.
+        """
+        return None
+
     def count_words(self, text: str) -> int:
         """Count words in text, supporting both Chinese and English.
 

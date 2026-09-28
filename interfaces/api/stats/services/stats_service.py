@@ -54,6 +54,15 @@ class StatsService:
                 stage = manifest.get("stage", "unknown")
                 books_by_stage[stage] = books_by_stage.get(stage, 0) + 1
 
+            # Prefer stored per-chapter word counts (same source as the v1
+            # statistics endpoint) so global and per-book numbers agree.
+            totals = self.repository.get_book_word_totals(slug)
+            if totals is not None:
+                total_chapters += totals["chapters"]
+                total_words += totals["total_words"]
+                total_characters += totals["total_characters"]
+                continue
+
             outline = self.repository.get_book_outline(slug)
             if outline and "chapters" in outline:
                 total_chapters += len(outline["chapters"])
@@ -109,20 +118,26 @@ class StatsService:
             logger.warning(f"Outline not found or invalid for book: {slug}")
             return None
 
-        chapters_info = outline["chapters"]
-        total_chapters = len(chapters_info)
-        completed_chapters = 0
-        total_words = 0
+        totals = self.repository.get_book_word_totals(slug)
+        if totals is not None:
+            total_chapters = totals["chapters"]
+            completed_chapters = totals["completed_chapters"]
+            total_words = totals["total_words"]
+        else:
+            chapters_info = outline["chapters"]
+            total_chapters = len(chapters_info)
+            completed_chapters = 0
+            total_words = 0
 
-        for chapter_info in chapters_info:
-            chapter_id = chapter_info.get("id")
-            if chapter_id:
-                content = self.repository.get_chapter_content(slug, chapter_id)
-                if content:
-                    word_count = self.repository.count_words(content)
-                    if word_count > 0:
-                        completed_chapters += 1
-                    total_words += word_count
+            for chapter_info in chapters_info:
+                chapter_id = chapter_info.get("id")
+                if chapter_id:
+                    content = self.repository.get_chapter_content(slug, chapter_id)
+                    if content:
+                        word_count = self.repository.count_words(content)
+                        if word_count > 0:
+                            completed_chapters += 1
+                        total_words += word_count
 
         avg_chapter_words = total_words // total_chapters if total_chapters > 0 else 0
         completion_rate = completed_chapters / total_chapters if total_chapters > 0 else 0.0

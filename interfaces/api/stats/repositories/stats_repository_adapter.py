@@ -270,6 +270,14 @@ class StatsRepositoryAdapter:
             logger.error(f"Error building progress records for novel {slug}: {e}")
             return []
 
+    def get_book_word_totals(self, slug: str) -> Optional[Dict]:
+        """Return pre-aggregated chapter/word totals, if the backend stores them.
+
+        This legacy file-based adapter has no stored per-chapter word count,
+        so callers fall back to scanning chapter content.
+        """
+        return None
+
     def count_words(self, text: str) -> int:
         """Count words in text, supporting both Chinese and English.
 
