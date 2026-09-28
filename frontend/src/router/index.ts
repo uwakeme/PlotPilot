@@ -23,6 +23,8 @@ const router = createRouter({
       name: 'CharacterSchedulerSimulator',
       component: CharacterSchedulerSimulator,
     },
+    // 未知路径回首页，避免深链/手输 URL 落在空白页
+    { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 

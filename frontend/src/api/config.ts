@@ -214,6 +214,12 @@ async function ensureTauriBackendReady(): Promise<void> {
  * 初始化 API（应用启动时调用一次）
  */
 export async function initApiClient(): Promise<void> {
+  // 纯浏览器环境没有 IPC 桥：跳过 Tauri 探测，避免每次启动都抛一条 TypeError 警告
+  if (!isTauri()) {
+    syncLegacyRootsFromV1()
+    return
+  }
+
   let port: number | null = null
   try {
     const { invoke } = await import('@tauri-apps/api/core')

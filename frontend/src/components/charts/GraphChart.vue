@@ -136,6 +136,8 @@ const chartOption = computed(() => {
         },
         emphasis: {
           focus: 'adjacency',
+          // 大图默认隐藏部分标签（见 Cast.vue 疏密策略），悬停时仍要能看到名称
+          label: { show: true },
           lineStyle: { width: 3 },
         },
         // 大图启用渐进渲染，避免首帧阻塞主线程

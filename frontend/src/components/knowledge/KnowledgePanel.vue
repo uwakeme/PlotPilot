@@ -414,7 +414,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkbenchRefreshStore } from '../../stores/workbenchRefreshStore'
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
+import { useDialog, useMessage } from 'naive-ui'
 import { PeopleOutline, LocationOutline } from '@vicons/ionicons5'
 import { chapterApi } from '../../api/chapter'
 import { knowledgeApi } from '../../api/knowledge'
@@ -434,6 +434,7 @@ import { runtimePerformance } from '../../config/performance'
 const props = defineProps<{ slug: string }>()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 
 // 关系图过滤器：切换人物/地点
 const graphFilter = ref<'character' | 'location'>('character')
@@ -556,17 +557,26 @@ const doStarTriple = async (t: TripleDTO) => {
 }
 
 const doDeleteTriple = async (t: TripleDTO) => {
-  deletingId.value = t.id
-  try {
-    await knowledgeGraphApi.deleteTriple(t.id)
-    message.success('已删除')
-    triples.value = triples.value.filter(x => x.id !== t.id)
-    if (kgStats.value) kgStats.value.total_triples -= 1
-  } catch {
-    message.error('删除失败')
-  } finally {
-    deletingId.value = null
-  }
+  // 三元组删除不可恢复：先确认
+  dialog.warning({
+    title: '删除三元组',
+    content: `确定删除「${t.subject} ${t.predicate} ${t.object}」吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      deletingId.value = t.id
+      try {
+        await knowledgeGraphApi.deleteTriple(t.id)
+        message.success('已删除')
+        triples.value = triples.value.filter(x => x.id !== t.id)
+        if (kgStats.value) kgStats.value.total_triples -= 1
+      } catch {
+        message.error('删除失败')
+      } finally {
+        deletingId.value = null
+      }
+    },
+  })
 }
 
 // 实体状态查询

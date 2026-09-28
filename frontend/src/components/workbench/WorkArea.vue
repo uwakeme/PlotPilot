@@ -1297,6 +1297,9 @@ function scheduleGuardrailSnapshotRefresh() {
 
 onBeforeUnmount(() => {
   clearGuardrailSnapshotRefreshTimer()
+  // 卸载时中断在途的正文生成流，避免离开页面后 SSE 继续写状态
+  generateAbortCtrl.value?.abort()
+  generateAbortCtrl.value = null
 })
 
 useAssistedAutopilotStatus({
@@ -1636,7 +1639,24 @@ const editorDisplayContent = computed({
 })
 
 // 监听传入的章节内容变化
+/** 当前编辑框内容所属章节，用于区分"切章"与"同章内容刷新" */
+const loadedChapterId = ref<number | null>(null)
+
 watch(() => props.chapterContent, (newContent) => {
+  const incomingId = props.currentChapterId ?? null
+  const previousId = loadedChapterId.value
+  const switchedChapter = previousId !== null && incomingId !== null && incomingId !== previousId
+  if (switchedChapter && hasChanges.value && previousId !== null) {
+    // 切章时编辑框还有未保存修改：先补交到原章节，避免静默丢弃
+    void chapterApi
+      .updateChapter(props.slug, previousId, { content: chapterContent.value })
+      .then(() => {
+        message.info('上一章未保存的修改已自动保存')
+        emit('chapterUpdated')
+      })
+      .catch(() => message.error('上一章修改自动保存失败，请返回原章节检查'))
+  }
+  loadedChapterId.value = incomingId
   chapterContent.value = newContent
   originalContent.value = newContent
 }, { immediate: true })
@@ -1675,14 +1695,35 @@ const handleSave = async () => {
 
 const handleReload = async () => {
   if (!currentChapter.value) return
-  try {
-    const fresh = await chapterApi.getChapter(props.slug, currentChapter.value.number)
-    chapterContent.value = fresh.content ?? ''
-    originalContent.value = fresh.content ?? ''
-    message.success('已重新加载')
-  } catch {
-    message.error('加载失败，请稍后重试')
+  const reload = async () => {
+    if (!currentChapter.value) return
+    try {
+      const fresh = await chapterApi.getChapter(props.slug, currentChapter.value.number)
+      chapterContent.value = fresh.content ?? ''
+      originalContent.value = fresh.content ?? ''
+      message.success('已重新加载')
+    } catch {
+      message.error('加载失败，请稍后重试')
+    }
   }
+  if (!hasChanges.value) {
+    await reload()
+    return
+  }
+  // 重新加载会以服务端内容覆盖编辑框：先问清楚，别静默丢改动
+  dialog.warning({
+    title: '有未保存的修改',
+    content: '重新加载会用服务端内容覆盖当前编辑框。要先保存这些修改吗？',
+    positiveText: '保存并重新加载',
+    negativeText: '放弃修改',
+    onPositiveClick: async () => {
+      await handleSave()
+      await reload()
+    },
+    onNegativeClick: () => {
+      void reload()
+    },
+  })
 }
 
 async function openProseInvocationForChapter(

@@ -40,9 +40,12 @@
           <n-collapse-item title="正文与关系图" name="cov">
             <n-spin :show="covLoading" size="small">
               <template v-if="coverage">
-                <n-text depth="3" class="cov-meta">
+                <n-text v-if="coverageScanAvailable" depth="3" class="cov-meta">
                   已扫描 {{ coverage.chapter_files_scanned }} 个章节文件
                   <template v-if="chapterFilter != null"> · 当前筛选第 {{ chapterFilter }} 章</template>
+                </n-text>
+                <n-text v-else depth="3" class="cov-meta">
+                  未能扫描到章节正文（当前存储模式下正文对照不可用），人物出现情况暂不判定
                 </n-text>
 
                 <div class="cov-block">
@@ -53,7 +56,7 @@
                         {{ row.name }}
                       </n-button>
                       <n-tag v-if="row.mentioned" size="small" type="success" round>正文已出现</n-tag>
-                      <n-tag v-else size="small" type="warning" round>正文未见</n-tag>
+                      <n-tag v-else-if="coverageScanAvailable" size="small" type="warning" round>正文未见</n-tag>
                     </div>
                     <n-space v-if="row.chapter_ids.length" size="small" class="cov-chapters">
                       <n-button
@@ -75,7 +78,7 @@
                   <div v-for="(b, i) in coverage.bible_not_in_cast" :key="'b' + i" class="cov-row">
                     <span class="cov-name">{{ b.name }}</span>
                     <n-tag v-if="b.in_novel_text" size="small" type="warning" round>正文已出现</n-tag>
-                    <n-tag v-else size="small" round>未见正文</n-tag>
+                    <n-tag v-else-if="coverageScanAvailable" size="small" round>未见正文</n-tag>
                     <n-space v-if="b.chapter_ids.length" size="small" class="cov-chapters">
                       <n-button
                         v-for="cid in b.chapter_ids"
@@ -255,6 +258,10 @@ interface CastCoveragePayload {
 const coverage = ref<CastCoveragePayload | null>(null)
 const covLoading = ref(false)
 
+/** 后端按旧文件式目录（novels/<id>/chapter_*.md）扫描正文；SQLite 模式下为 0 章，
+ *  此时"正文未见"并非事实，只是没扫到，故不展示该判定 */
+const coverageScanAvailable = computed(() => (coverage.value?.chapter_files_scanned ?? 0) > 0)
+
 const chapterFilter = computed(() => {
   const c = route.query.chapter
   if (c == null || c === '') return null
@@ -324,8 +331,50 @@ const buildVisData = () => {
   return convertGraph(nodes, edges)
 }
 
-const echartsNodes = computed(() => buildVisData().nodes)
-const echartsLinks = computed(() => buildVisData().links)
+const visData = computed(() => buildVisData())
+
+/** 连接度：决定节点大小与标签疏密。大图全量标签会糊成毛球，只保留 hub 与命中项 */
+const degreeById = computed(() => {
+  const deg = new Map<string, number>()
+  for (const r of graph.value.relationships) {
+    deg.set(r.source_id, (deg.get(r.source_id) ?? 0) + 1)
+    deg.set(r.target_id, (deg.get(r.target_id) ?? 0) + 1)
+  }
+  return deg
+})
+
+const LABEL_VISIBLE_LIMIT = 60
+
+const labelVisibleIds = computed(() => {
+  const top = [...degreeById.value.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, LABEL_VISIBLE_LIMIT)
+    .map(([id]) => id)
+  return new Set(top)
+})
+
+const echartsNodes = computed(() => {
+  const deg = degreeById.value
+  const visible = labelVisibleIds.value
+  const hi = highlightIds.value
+  const selectedId = formChar.value.id
+  return visData.value.nodes.map(n => ({
+    ...n,
+    symbolSize: 10 + Math.min(26, (deg.get(n.id) ?? 0) * 2),
+    label: {
+      show: visible.has(n.id) || hi.has(n.id) || n.id === selectedId,
+      fontSize: 12,
+    },
+  }))
+})
+
+const echartsLinks = computed(() => {
+  // 大图时边标签同样是噪声：隐藏，关系类型仍可点边或悬停查看
+  if (graph.value.characters.length <= 80) return visData.value.links
+  return visData.value.links.map(l =>
+    l.label ? { ...l, label: { ...l.label, show: false } } : l,
+  )
+})
 
 const handleNodeClick = (node: EChartsNode) => {
   const c = graph.value.characters.find(x => x.id === node.id)

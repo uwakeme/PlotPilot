@@ -1,4 +1,11 @@
 import { resolveHttpUrl } from './config'
+import { runtimePerformance } from '../config/performance'
+
+/**
+ * 与 axios 实例一致的默认超时：fetch 系接口不传 timeoutMs 时不再无限挂起。
+ * 长任务调用方（规划类等）可显式传更大的超时覆盖。
+ */
+const DEFAULT_FETCH_TIMEOUT_MS = runtimePerformance.network.apiDefaultTimeoutMs
 
 export class HttpError extends Error {
   status: number
@@ -67,7 +74,7 @@ async function readResponseBody(response: Response): Promise<unknown> {
 export async function fetchJson<T>(absolutePathFromRoot: string, options: FetchJsonOptions = {}): Promise<T> {
   const { body, timeoutMs, signal, headers, ...rest } = options
   const hasBody = body !== undefined
-  const abort = composeAbortSignal(signal, timeoutMs)
+  const abort = composeAbortSignal(signal, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
   try {
     const response = await fetch(resolveHttpUrl(absolutePathFromRoot), {
       ...rest,
@@ -88,7 +95,7 @@ export async function fetchJson<T>(absolutePathFromRoot: string, options: FetchJ
 export async function fetchOk(absolutePathFromRoot: string, options: FetchJsonOptions = {}): Promise<Response> {
   const { timeoutMs, signal, body, headers, ...rest } = options
   const hasBody = body !== undefined
-  const abort = composeAbortSignal(signal, timeoutMs)
+  const abort = composeAbortSignal(signal, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
   try {
     const response = await fetch(resolveHttpUrl(absolutePathFromRoot), {
       ...rest,

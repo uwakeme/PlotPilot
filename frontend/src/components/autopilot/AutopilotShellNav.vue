@@ -20,6 +20,7 @@
         class="ap-shell-nav__segment"
         :class="{ 'is-active': workspace.activeTab === tab.id }"
         :aria-selected="workspace.activeTab === tab.id"
+        :title="tab.description"
         @click="workspace.setTab(tab.id)"
       >
         <span class="ap-shell-nav__segment-label">{{ tab.short }}</span>
@@ -122,6 +123,8 @@ const activeMeta = computed(() => {
 .ap-shell-nav__segment {
   flex: 1 1 0;
   min-width: 108px;
+  /* 提示语过长时裁切在按钮内，避免溢出压到相邻分页 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -161,6 +164,9 @@ const activeMeta = computed(() => {
   line-height: 1.3;
   color: var(--app-text-muted);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ap-shell-nav__segment.is-active .ap-shell-nav__segment-hint {

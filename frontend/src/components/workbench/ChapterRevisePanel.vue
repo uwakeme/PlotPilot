@@ -58,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { aiInvocationApi } from '../../api/aiInvocation'
 
 const props = defineProps<{
@@ -228,6 +228,9 @@ function stopPoll(): void {
     pollTimer = null
   }
 }
+
+// 组件卸载（切章/离开工作台）时必须停掉轮询，否则后台会一直空转到会话终态
+onUnmounted(stopPoll)
 
 function extractError(err: unknown): string {
   const anyErr = err as { response?: { data?: { detail?: string } }; message?: string }

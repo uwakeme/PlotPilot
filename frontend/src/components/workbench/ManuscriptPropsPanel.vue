@@ -159,7 +159,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from 'vue'
 import type { DataTableColumns } from 'naive-ui'
-import { NButton, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NTooltip, useDialog, useMessage } from 'naive-ui'
 import { InformationCircleOutline, BookmarkOutline, BriefcaseOutline } from '@vicons/ionicons5'
 import { manuscriptApi, type ChapterEntityMention } from '@/api/manuscript'
 import {
@@ -179,6 +179,7 @@ const props = defineProps<{
 }>()
 
 const message = useMessage()
+const dialog = useDialog()
 const { deskTick } = storeToRefs(useWorkbenchRefreshStore())
 
 const propsRows = ref<PropDTO[]>([])
@@ -356,13 +357,22 @@ async function submitForm() {
 
 async function removeRow(row: PropDTO) {
   if (!props.slug) return
-  try {
-    await propApi.remove(props.slug, row.id)
-    message.success('已删除')
-    await loadProps()
-  } catch {
-    message.error('删除失败')
-  }
+  // 道具删除不可恢复：先确认
+  dialog.warning({
+    title: '删除道具',
+    content: `确定删除道具「${row.name}」吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await propApi.remove(props.slug, row.id)
+        message.success('已删除')
+        await loadProps()
+      } catch {
+        message.error('删除失败')
+      }
+    },
+  })
 }
 
 const starringPropId = ref<string | null>(null)

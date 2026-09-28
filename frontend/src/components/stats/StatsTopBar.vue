@@ -205,7 +205,7 @@ const stats = computed(() => {
       key: 'updated',
       label: '最后更新',
       value: formatDate(s.last_updated),
-      tooltip: `最后更新时间：${s.last_updated}`
+      tooltip: `最后更新时间：${formatFullDate(s.last_updated)}`
     }
   ]
 })
@@ -242,6 +242,22 @@ function formatDate(dateStr: string | undefined): string {
     } else {
       return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
     }
+  } catch {
+    return dateStr
+  }
+}
+
+/** 悬浮提示用完整时间，避免直接暴露 ISO 字符串 */
+function formatFullDate(dateStr: string | undefined): string {
+  if (!dateStr) return '—'
+  try {
+    return new Date(dateStr).toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   } catch {
     return dateStr
   }

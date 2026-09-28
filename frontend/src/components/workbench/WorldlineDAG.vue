@@ -720,18 +720,27 @@ async function handleHardReset() {
 
 async function handleDelete() {
   if (!selectedId.value) return
-  actionLoading.value = 'delete'
-  try {
-    await worldlineApi.deleteCheckpoint(props.slug, selectedId.value)
-    message.success('存档已删除')
-    selectedId.value = null
-    await load()
-  } catch (err: unknown) {
-    const e = err as { message?: string }
-    message.error(e?.message || '删除失败')
-  } finally {
-    actionLoading.value = null
-  }
+  // 删除存档不可恢复：先确认
+  dialog.warning({
+    title: '删除存档',
+    content: `确定删除存档「${selectedNode.value?.name ?? selectedId.value}」吗？该操作不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      actionLoading.value = 'delete'
+      try {
+        await worldlineApi.deleteCheckpoint(props.slug, selectedId.value!)
+        message.success('存档已删除')
+        selectedId.value = null
+        await load()
+      } catch (err: unknown) {
+        const e = err as { message?: string }
+        message.error(e?.message || '删除失败')
+      } finally {
+        actionLoading.value = null
+      }
+    },
+  })
 }
 
 async function handleCreateBranch() {

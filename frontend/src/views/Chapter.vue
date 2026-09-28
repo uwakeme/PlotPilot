@@ -47,6 +47,15 @@
     <n-split direction="horizontal" :default-size="0.72" :min="0.55" :max="0.88">
       <template #1>
         <div class="editor-area">
+          <n-alert
+            v-if="loadError"
+            type="error"
+            closable
+            class="editor-load-error"
+            @close="loadError = null"
+          >
+            {{ loadError }}
+          </n-alert>
           <n-input
             v-model:value="content"
             type="textarea"
@@ -261,13 +270,10 @@ const revokeAllLoading = ref(false)
 const revokingId = ref<string | null>(null)
 
 const slug = route.params.slug as string
+// 纯计算：副作用提示放在 loadChapter，避免每次重算都弹一次 toast
 const chapterId = computed(() => {
   const id = Number(route.params.id as string)
-  if (isNaN(id) || id <= 0) {
-    message.error('无效的章节ID')
-    return null
-  }
-  return id
+  return Number.isFinite(id) && id > 0 ? id : null
 })
 
 const goHome = () => {
@@ -305,6 +311,8 @@ const chapterStructure = ref<{
 const showPreview = ref(false)
 const chapterIds = ref<number[]>([])
 const pageLoading = ref(true)
+/** 正文拉取失败时置位：避免空编辑器看起来像"本章没内容"而被误覆盖 */
+const loadError = ref<string | null>(null)
 
 const wordCount = computed(() => content.value.replace(/\s/g, '').length)
 const lineCount = computed(() => (content.value ? content.value.split('\n').length : 0))
@@ -372,9 +380,18 @@ const handleToolSelect = (key: string) => {
     )
   }
   if (key === 'clear') {
-    content.value = ''
-    onInput()
-    updatePreview(false)
+    // 清空会随自动保存落盘，不可撤销：先确认
+    dialog.warning({
+      title: '清空正文',
+      content: '将清空本章全部正文，自动保存后无法恢复。确定继续吗？',
+      positiveText: '清空',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        content.value = ''
+        onInput()
+        updatePreview(false)
+      },
+    })
   }
 }
 
@@ -418,6 +435,21 @@ const onInput = () => {
   saveStatus.value = 'unsaved'
   autosaveTask.schedule()
   updatePreview(true)
+}
+
+/**
+ * 把尚未落盘的编辑补交给指定章节。
+ * 切换章节/离开页面时 chapterId 可能已指向新章节，所以必须显式传入旧章节号。
+ */
+const flushPendingSave = async (chapterNumber: number | null, notifyFailure: boolean) => {
+  if (chapterNumber == null || saveStatus.value !== 'unsaved') return
+  try {
+    await chapterApi.updateChapter(slug, chapterNumber, { content: content.value })
+    statsStore.onChapterSaved(slug, chapterNumber)
+  } catch (error) {
+    console.error('Flush pending save failed:', error)
+    if (notifyFailure) message.error('离开前自动保存失败，请检查网络后重试')
+  }
 }
 
 const saveReview = async () => {
@@ -490,6 +522,7 @@ const onKeySave = (e: KeyboardEvent) => {
 const loadChapter = async () => {
   const cid = chapterId.value
   if (cid === null) {
+    message.error('无效的章节 ID')
     return
   }
 
@@ -509,6 +542,7 @@ const loadChapter = async () => {
 
   // Handle chapter data API result
   if (chapterData.status === 'fulfilled') {
+    loadError.value = null
     content.value = chapterData.value.content || ''
     if (content.value) {
       createTime.value = new Date(chapterData.value.created_at).toLocaleString('zh-CN', { hour12: false })
@@ -517,6 +551,7 @@ const loadChapter = async () => {
     updatePreview(false)
   } else {
     console.error('Failed to load chapter:', chapterData.reason)
+    loadError.value = '章节内容加载失败，当前编辑器可能不是最新正文；请重试或刷新页面后再编辑。'
   }
 
   // Handle review API result
@@ -615,8 +650,13 @@ const revokeAllInference = async () => {
 
 watch(
   () => route.params.id,
-  async () => {
+  async (newId, oldId) => {
     if (route.name !== 'Chapter') return
+    // 先把上一章的未落盘编辑补交（此时 chapterId 已指向新章节，必须用旧 id）
+    const outgoing = Number(oldId as string)
+    if (Number.isFinite(outgoing) && outgoing > 0) {
+      await flushPendingSave(outgoing, true)
+    }
     autosaveTask.cancel()
     previewTask.cancel()
     pageLoading.value = true
@@ -645,6 +685,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeySave)
+  // 离开页面（回工作台/人物关系网）时补交，避免自动保存窗口内的编辑被丢弃
+  void flushPendingSave(chapterId.value, false)
 })
 </script>
 

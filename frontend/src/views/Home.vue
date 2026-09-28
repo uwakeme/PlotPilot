@@ -638,10 +638,11 @@ const handleSetupSkip = () => {
 }
 
 const navigateToBook = (novelId: string) => {
-  // 未完成向导的书重新打开向导
-  if (!isWizardCompleted(novelId)) {
-    // 查找该书的 target_chapters
-    const novel = books.value.find(b => b.slug === novelId)
+  // 未完成向导的书重新打开向导；但已进入写作/审稿/完成阶段的书，
+  // 设定数据在服务端已齐全（换浏览器/清缓存后本地标记会丢），直接进工作台
+  const novel = books.value.find(b => b.slug === novelId)
+  const pastPlanning = novel != null && novel.stage !== 'planning'
+  if (!pastPlanning && !isWizardCompleted(novelId)) {
     setupWizard.value = {
       novelId,
       targetChapters: 100, // 默认值，向导内部会从 API 获取真实值
