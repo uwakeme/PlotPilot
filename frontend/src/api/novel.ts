@@ -159,6 +159,21 @@ export const novelApi = {
   }) => apiClient.post<NovelDTO>(apiRoutes.novels.root(), data) as Promise<NovelDTO>,
 
   /**
+   * 由梗概生成书名（建书时标题留空时调用）
+   * POST /api/v1/novels/suggest-title
+   */
+  suggestTitle: (data: {
+    premise: string
+    genre?: string
+    world_preset?: string
+    story_structure?: string
+  }) =>
+    apiClient.post<{ title: string; source: 'ai' | 'fallback' }>(
+      apiRoutes.novels.suggestTitle(),
+      data
+    ) as Promise<{ title: string; source: 'ai' | 'fallback' }>,
+
+  /**
    * Delete a novel
    * DELETE /api/v1/novels/{novelId}
    */

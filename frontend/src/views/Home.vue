@@ -104,7 +104,7 @@
               <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
                 <n-gi>
                   <n-form-item label="书名">
-                    <n-input v-model:value="newBook.title" placeholder="留空则从梗概自动截取" />
+                    <n-input v-model:value="newBook.title" placeholder="留空则由 AI 根据梗概自动起名" />
                   </n-form-item>
                 </n-gi>
                 <n-gi>
@@ -531,7 +531,21 @@ const handleCreate = async () => {
 
   creating.value = true
   try {
-    const title = newBook.value.title || newBook.value.premise.substring(0, 20)
+    let title = newBook.value.title.trim()
+    if (!title) {
+      // 标题留空：先由模型根据梗概起书名，接口失败时退回梗概截取
+      try {
+        const suggested = await novelApi.suggestTitle({
+          premise: newBook.value.premise.trim(),
+          genre: newBook.value.genre,
+          world_preset: newBook.value.worldPreset,
+          story_structure: newBook.value.storyStructure,
+        })
+        title = suggested.title
+      } catch {
+        title = newBook.value.premise.trim().replace(/\s+/g, '').substring(0, 20)
+      }
+    }
     const novelId = `novel-${Date.now()}`
 
     const base = {

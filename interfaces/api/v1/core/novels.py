@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field
 import logging
 
 from application.core.services.novel_service import NovelService
+from application.core.services.title_suggestion_service import (
+    TitleSuggestionService,
+    fallback_title_from_premise,
+)
 from application.world.services.auto_bible_generator import AutoBibleGenerator
 from application.world.services.auto_knowledge_generator import AutoKnowledgeGenerator
 from application.core.dtos.novel_dto import NovelDTO
@@ -12,7 +16,8 @@ from application.core.chapter_target_limits import CHAPTER_TARGET_WORDS_MAX, CHA
 from interfaces.api.dependencies import (
     get_novel_service,
     get_auto_bible_generator,
-    get_auto_knowledge_generator
+    get_auto_knowledge_generator,
+    get_title_suggestion_service
 )
 from interfaces.api.urls import bible_generation_status_url
 from domain.shared.exceptions import EntityNotFoundError
@@ -152,6 +157,48 @@ async def create_novel(
     )
 
     return novel_dto
+
+
+class SuggestTitleRequest(BaseModel):
+    """书名建议请求"""
+    premise: str = Field(..., min_length=1, max_length=2000, description="故事梗概/创意")
+    genre: str = Field(default="", description="赛道/类型（下拉预设）")
+    world_preset: str = Field(default="", description="世界观基调（下拉预设）")
+    story_structure: str = Field(default="", description="剧情结构（题材预设）")
+
+
+class SuggestTitleResponse(BaseModel):
+    """书名建议响应"""
+    title: str = Field(..., description="建议书名")
+    source: Literal["ai", "fallback"] = Field(..., description="来源：ai=模型生成；fallback=梗概截取兜底")
+
+
+@router.post("/suggest-title", response_model=SuggestTitleResponse)
+async def suggest_title(
+    request: SuggestTitleRequest,
+    title_service: TitleSuggestionService = Depends(get_title_suggestion_service)
+):
+    """根据梗概由 LLM 生成书名（建书时标题留空时调用）
+
+    生成失败不阻塞建书流程：返回 fallback（梗概截取）并标记 source=fallback。
+    """
+    try:
+        title = await title_service.suggest_title(
+            premise=request.premise,
+            genre=request.genre,
+            world_preset=request.world_preset,
+            story_structure=request.story_structure,
+        )
+    except Exception:
+        logger.warning("suggest_title: LLM 调用失败，使用梗概截取兜底", exc_info=True)
+        title = None
+
+    if title:
+        return SuggestTitleResponse(title=title, source="ai")
+    return SuggestTitleResponse(
+        title=fallback_title_from_premise(request.premise),
+        source="fallback",
+    )
 
 
 @router.get("/{novel_id}", response_model=NovelDTO)

@@ -34,6 +34,7 @@ from application.ai.llm_control_service import LLMControlService
 
 from application.core.services.novel_service import NovelService
 from application.core.services.chapter_service import ChapterService
+from application.core.services.title_suggestion_service import TitleSuggestionService
 from application.world.services.bible_service import BibleService
 from application.world.services.cast_service import CastService
 from application.world.services.knowledge_service import KnowledgeService
@@ -833,6 +834,15 @@ def get_state_extractor() -> StateExtractor:
         StateExtractor 实例
     """
     return StateExtractor(llm_service=get_llm_service())
+
+
+def get_title_suggestion_service() -> TitleSuggestionService:
+    """获取书名建议服务
+
+    Returns:
+        TitleSuggestionService 实例
+    """
+    return TitleSuggestionService(llm_service=get_llm_service())
 
 
 def get_auto_knowledge_generator() -> AutoKnowledgeGenerator:

@@ -42,6 +42,7 @@ export function withQuery(path: string, params: QueryParams = {}): string {
 export const apiRoutes = {
   novels: {
     root: () => apiClientPath('novels'),
+    suggestTitle: () => apiClientPath('novels', 'suggest-title'),
     detail: (novelId: string) => apiClientPath('novels', novelId),
     stage: (novelId: string) => apiClientPath('novels', novelId, 'stage'),
     statistics: (novelId: string) => apiClientPath('novels', novelId, 'statistics'),
