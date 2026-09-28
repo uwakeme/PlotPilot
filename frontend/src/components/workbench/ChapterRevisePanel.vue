@@ -128,6 +128,12 @@ function reset(): void {
   isError.value = false
 }
 
+function cancel(): void {
+  stopPoll()
+  busy.value = false
+  statusText.value = '已取消，本次改写未写回。'
+}
+
 async function start(): Promise<void> {
   if (!props.chapterContent.trim() || !instruction.value.trim()) return
   reset()
@@ -180,7 +186,7 @@ function poll(sessionIdValue: string): void {
       if (status === 'blocked' || status === 'failed') {
         busy.value = false
         isError.value = true
-        statusText.value = `优化失败：${payload.session?.block_reason || status}`
+        statusText.value = `优化失败：${payload.attempt?.error || status}`
         return
       }
       poll(sessionIdValue)
