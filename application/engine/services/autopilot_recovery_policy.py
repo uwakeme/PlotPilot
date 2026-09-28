@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 RETRYABLE_STAGES = {
+    NovelStage.PLANNING.value,
     NovelStage.MACRO_PLANNING.value,
     NovelStage.ACT_PLANNING.value,
     NovelStage.WRITING.value,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping
 
 from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
@@ -9,11 +10,116 @@ from domain.structure.story_node import StoryNode, NodeType, PlanningStatus, Pla
 
 logger = logging.getLogger(__name__)
 
+# 「前生成阶段」停滞状态：这些状态还没有可采纳的内容，卡住即属异常而非等待人工
+_PRE_GENERATION_STALL_STATUSES = {
+    "requested",
+    "spec_resolved",
+    "context_resolved",
+    "variables_resolved",
+    "prompt_compiled",
+    "generating",
+}
+# 超过该时长仍停留在前生成阶段的 invocation 视为僵死（LLM 读超时默认 900s，取更短值兜底）
+_STALLED_INVOCATION_MAX_AGE_SECONDS = 600
+
 
 def _read_shared_state(novel_id: str) -> dict[str, Any]:
     from application.ai_invocation.autopilot.shared_state import read_autopilot_shared_state
 
     return read_autopilot_shared_state(novel_id)
+
+
+def _clear_invocation_shared_state(host: Any, novel_id: str) -> None:
+    host._update_shared_state(
+        novel_id,
+        active_invocation_session_id="",
+        active_invocation_operation="",
+        active_invocation_node_key="",
+        active_invocation_status="",
+        active_invocation_policy="",
+        has_active_invocation=False,
+        requires_ai_review=False,
+        autopilot_pause_reason="",
+    )
+
+
+def _load_invocation_session(session_id: str) -> dict[str, Any] | None:
+    from infrastructure.persistence.database.connection import get_database
+
+    db = get_database()
+    try:
+        row = db.fetch_one(
+            "SELECT id, status, policy, updated_at FROM ai_invocation_sessions WHERE id = ?",
+            (session_id,),
+        )
+    except AttributeError:
+        row = db.conn.execute(
+            "SELECT id, status, policy, updated_at FROM ai_invocation_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        row = dict(row) if row else None
+    return dict(row) if row else None
+
+
+def _invocation_age_seconds(updated_at: Any) -> float:
+    """ai_invocation_sessions.updated_at 为 SQLite CURRENT_TIMESTAMP（UTC）。"""
+    try:
+        parsed = datetime.strptime(str(updated_at), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError):
+        return float("inf")
+    return (datetime.now(timezone.utc) - parsed).total_seconds()
+
+
+def _cancel_stalled_invocation(host: Any, novel_id: str, session_id: str) -> bool:
+    """取消「前生成阶段停滞超时」的 invocation 并清理共享内存。
+
+    返回 True 表示已清理（调用方应继续重新规划）；False 表示会话仍在
+    合法等待人工采纳（awaiting_acceptance / awaiting_commit 等），保持原暂停流程。
+    """
+    session = _load_invocation_session(session_id)
+    if session is not None:
+        status = str(session.get("status") or "")
+        if status not in _PRE_GENERATION_STALL_STATUSES:
+            return False
+        age = _invocation_age_seconds(session.get("updated_at"))
+        if age < _STALLED_INVOCATION_MAX_AGE_SECONDS:
+            return False
+        try:
+            from infrastructure.persistence.database.connection import get_database
+
+            db = get_database()
+            db.execute(
+                """
+                UPDATE ai_invocation_sessions
+                SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (session_id,),
+            )
+        except Exception:
+            logger.warning(
+                "[%s] 取消停滞 invocation session=%s 失败（仍将清理共享状态后重试规划）",
+                novel_id,
+                session_id,
+                exc_info=True,
+            )
+        logger.warning(
+            "[%s] 幕级规划 invocation session=%s 停滞于 %s 超 %.0f 秒，判定僵死并取消",
+            novel_id,
+            session_id,
+            status,
+            min(age, 1e9),
+        )
+    else:
+        logger.warning(
+            "[%s] 幕级规划 invocation session=%s 在库中不存在（悬空指针），清理共享状态",
+            novel_id,
+            session_id,
+        )
+    _clear_invocation_shared_state(host, novel_id)
+    return True
 
 
 def _consume_pending_act_plan(host: Any, *, novel_id: str, act_id: str) -> dict[str, Any] | None:
@@ -274,16 +380,21 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
         ) or {}
         if not plan_result:
             shared_state = _read_shared_state(novel_id)
-            if shared_state.get("active_invocation_session_id") and shared_state.get("has_active_invocation"):
-                logger.info(
-                    "[%s] 幕级规划已有待处理 invocation session=%s，等待面板处理",
-                    novel.novel_id,
-                    shared_state.get("active_invocation_session_id"),
-                )
-                novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
-                novel.autopilot_status = AutopilotStatus.RUNNING
-                host._flush_novel(novel)
-                return
+            active_session_id = str(shared_state.get("active_invocation_session_id") or "")
+            if active_session_id and shared_state.get("has_active_invocation"):
+                if _cancel_stalled_invocation(host, novel_id, active_session_id):
+                    # 僵死会话已取消、共享状态已清理，继续走重新规划
+                    pass
+                else:
+                    logger.info(
+                        "[%s] 幕级规划已有待处理 invocation session=%s，等待面板处理",
+                        novel.novel_id,
+                        active_session_id,
+                    )
+                    novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+                    novel.autopilot_status = AutopilotStatus.RUNNING
+                    host._flush_novel(novel)
+                    return
             try:
                 outcome = await _request_act_invocation(
                     host,
@@ -308,6 +419,9 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
             except Exception as e:
                 logger.warning("[%s] autopilot.act.plan 未捕获异常: %s", novel.novel_id, e, exc_info=True)
                 plan_result = {}
+                # 本次调用已失败：清理残留的 invocation 共享状态，避免下个 tick 误判
+                # 「已有待处理 invocation」而永久等待（LLM 超时/网络中断的恢复路径）
+                _clear_invocation_shared_state(host, novel_id)
 
         if not host._is_still_running(novel):
             logger.info("[%s] 幕级规划返回后检测到停止，不再落库", novel.novel_id)
