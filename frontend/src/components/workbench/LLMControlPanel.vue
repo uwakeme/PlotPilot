@@ -165,6 +165,7 @@
                 <n-auto-complete
                   v-model:value="selectedProfile.model"
                   :options="fetchedModelOptions"
+                  :get-show="() => fetchedModelOptions.length > 0"
                   placeholder="填写所用网关文档中的模型 ID（本处不预设具体名称）"
                   clearable
                   style="flex: 1"
@@ -327,12 +328,16 @@ const runtimeLabel = computed(() => {
   return runtime.active_profile_name || '已配置'
 })
 
-const fetchedModelOptions = computed(() =>
-  fetchedModels.value.map((m) => ({
+const fetchedModelOptions = computed(() => {
+  const keyword = (selectedProfile.value?.model || '').trim().toLowerCase()
+  const list = keyword
+    ? fetchedModels.value.filter((m) => m.id.toLowerCase().includes(keyword))
+    : fetchedModels.value
+  return list.map((m) => ({
     label: m.id,
     value: m.id,
   }))
-)
+})
 
 async function handleFetchModels() {
   if (!selectedProfile.value) return
