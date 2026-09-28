@@ -40,15 +40,20 @@
           </span>
           数据概览
         </h2>
-        <button
-          class="refresh-btn"
-          @click="handleRefresh"
-          :disabled="loading"
-          :class="{ loading: loading }"
-          aria-label="刷新数据"
-        >
-          <span class="refresh-icon">↻</span>
-        </button>
+        <n-tooltip :show-arrow="false">
+          <template #trigger>
+            <button
+              class="refresh-btn"
+              @click="handleRefresh"
+              :disabled="loading"
+              :class="{ loading: loading }"
+              aria-label="刷新统计数据"
+            >
+              <span class="refresh-icon">↻</span>
+            </button>
+          </template>
+          刷新统计数据
+        </n-tooltip>
       </div>
 
       <div class="stats-grid">
@@ -124,16 +129,6 @@
           </span>
           <span>新建书目</span>
         </button>
-        <button class="action-btn action-refresh" @click="$emit('refresh-list')">
-          <span class="action-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none">
-              <path d="M20 7v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M4 17v-5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M7.6 8.6a6 6 0 0 1 9.9 1.6M16.4 15.4a6 6 0 0 1-9.9-1.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <span>刷新列表</span>
-        </button>
         <GlobalLLMEntryButton appearance="sidebar" />
         <PromptPlazaEntryButton appearance="sidebar" />
       </div>
@@ -180,7 +175,6 @@ import { readStorageBoolean, writeStorageBoolean } from '@/utils/storage'
 import { getNovelStageLabel } from '@/domain/novel'
 const emit = defineEmits<{
   (e: 'create-book'): void
-  (e: 'refresh-list'): void
   (e: 'collapsed-change', collapsed: boolean): void
 }>()
 
@@ -581,8 +575,9 @@ const updateTimeText = computed(() => formatTime(lastUpdateTime.value))
   color: var(--color-brand);
 }
 
-/* 主操作：实心靛青；次要操作保持纸面 */
+/* 主操作：实心靛青，独占一行；下方两枚入口并排 */
 .action-btn.action-create {
+  grid-column: 1 / -1;
   background: var(--color-brand);
   border-color: var(--color-brand);
   color: var(--app-text-inverse);

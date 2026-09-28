@@ -2,7 +2,6 @@
   <div class="home">
     <StatsSidebar
       @create-book="focusCreateInput"
-      @refresh-list="handleRefreshList"
       @collapsed-change="handleSidebarCollapsedChange"
     />
     <div class="home-content" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
@@ -155,6 +154,25 @@
                   <n-icon><IconSearch /></n-icon>
                 </template>
               </n-input>
+              <!-- 刷新属于「我的书目」，按钮就放在本区域标题栏，不占用侧边栏 -->
+              <n-tooltip :show-arrow="false">
+                <template #trigger>
+                  <n-button
+                    quaternary
+                    circle
+                    size="medium"
+                    class="refresh-books-btn"
+                    :loading="loading"
+                    aria-label="刷新书目列表"
+                    @click="handleRefreshList"
+                  >
+                    <template #icon>
+                      <n-icon><IconRefresh /></n-icon>
+                    </template>
+                  </n-button>
+                </template>
+                刷新书目列表
+              </n-tooltip>
               <n-button
                 v-if="selectedBooks.length > 0"
                 type="error"
@@ -382,6 +400,10 @@ const IconSearch = () =>
 const IconTrash = () =>
   h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
     h('path', { fill: 'currentColor', d: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z' }))
+
+const IconRefresh = () =>
+  h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
+    h('path', { fill: 'currentColor', d: 'M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-8 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z' }))
 
 const IconChevronDown = () =>
   h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 24 24', width: '1em', height: '1em' },
@@ -1001,6 +1023,15 @@ onMounted(() => {
   width: 240px;
 }
 
+.refresh-books-btn {
+  flex-shrink: 0;
+  color: var(--app-text-muted);
+}
+
+.refresh-books-btn:hover {
+  color: var(--color-brand);
+}
+
 .selection-bar {
   display: flex;
   align-items: center;
@@ -1210,6 +1241,10 @@ onMounted(() => {
 
   .search-input {
     width: 100%;
+  }
+
+  .refresh-books-btn {
+    align-self: flex-start;
   }
 }
 
