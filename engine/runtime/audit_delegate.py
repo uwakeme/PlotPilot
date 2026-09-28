@@ -10,6 +10,10 @@ from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
 from domain.novel.value_objects.novel_id import NovelId
 from domain.novel.value_objects.chapter_id import ChapterId
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
+from engine.runtime.target_reached_gate import (
+    TARGET_REACHED_PAUSE_REASON,
+    resolve_target_reached,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,60 @@ def _read_shared_state(novel_id: str) -> dict[str, Any]:
     from application.ai_invocation.autopilot.shared_state import read_autopilot_shared_state
 
     return read_autopilot_shared_state(novel_id)
+
+
+def _apply_book_done_outcome(
+    host, novel: Novel, *, completed_count: int, pause_gate: bool
+) -> tuple[bool, bool]:
+    """全书达标后的分流处理（目标章数是软目标）。
+
+    返回 ``(target_reached, is_completed)``：
+    - complete 动作 → 置 STOPPED + COMPLETED，is_completed=True；
+    - pause 动作（ask 策略）→ 置 STOPPED + PAUSED_FOR_REVIEW 并写
+      autopilot_pause_reason='target_reached'，target_reached=True；
+    - extended 动作（finale/continue 策略已上调目标）→ 保持 WRITING 继续写作。
+    章末审阅闸门（pause_gate）打开时不做达标分流，保持原待审阅流程。
+    """
+    if not completed_count >= novel.target_chapters:
+        return False, False
+
+    if pause_gate:
+        logger.info(
+            "[%s] 全书已完成 %s 章，但章末闸门打开：保持待审阅，恢复后继续结束流程",
+            novel.novel_id.value,
+            completed_count,
+        )
+        return False, False
+
+    action = resolve_target_reached(host, novel, completed_count)
+    if action == "complete":
+        logger.info(f"[{novel.novel_id}] 全书完成，共 {completed_count} 章")
+        novel.autopilot_status = AutopilotStatus.STOPPED
+        novel.current_stage = NovelStage.COMPLETED
+        return False, True
+    if action == "pause":
+        logger.info(
+            "[%s] 已达目标章数 %s（完成 %s）：暂停等待用户决定故事走向（写终局/继续写/就此完结）",
+            novel.novel_id.value,
+            novel.target_chapters,
+            completed_count,
+        )
+        novel.autopilot_status = AutopilotStatus.STOPPED
+        novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+        host._update_shared_state(
+            novel.novel_id.value,
+            autopilot_pause_reason=TARGET_REACHED_PAUSE_REASON,
+        )
+        return True, False
+    # extended：目标已上调，继续写作
+    logger.info(
+        "[%s] 目标章数已上调至 %s（完成 %s），全托管继续写作",
+        novel.novel_id.value,
+        novel.target_chapters,
+        completed_count,
+    )
+    novel.current_stage = NovelStage.WRITING
+    return False, False
 
 
 def _write_autopilot_invocation_input(
@@ -571,8 +629,8 @@ async def run_chapter_audit(host: Any, novel: Novel) -> None:
     novel.beats_completed = False  # 🔥 重置节拍完成标志
 
     # 5. 全书完成检测（用轻量 COUNT 查询替代 list_by_novel，减少 DB 锁持有时间）
+    #    达标分流见 _apply_book_done_outcome（目标章数为软目标）
     completed_count = host._count_completed_chapters(NovelId(novel.novel_id.value))
-    book_done = completed_count >= novel.target_chapters
 
     if pause_gate:
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
@@ -592,16 +650,9 @@ async def run_chapter_audit(host: Any, novel: Novel) -> None:
     else:
         novel.current_stage = NovelStage.WRITING
 
-    if book_done and not pause_gate:
-        logger.info(f"[{novel.novel_id}] 全书完成，共 {completed_count} 章")
-        novel.autopilot_status = AutopilotStatus.STOPPED
-        novel.current_stage = NovelStage.COMPLETED
-    elif book_done and pause_gate:
-        logger.info(
-            "[%s] 全书已完成 %s 章，但章末闸门打开：保持待审阅，恢复后继续结束流程",
-            novel.novel_id.value,
-            completed_count,
-        )
+    target_reached, is_completed = _apply_book_done_outcome(
+        host, novel, completed_count=completed_count, pause_gate=pause_gate
+    )
 
     # 🔥 发布审计完成事件
     host._publish_audit_event(
@@ -613,8 +664,9 @@ async def run_chapter_audit(host: Any, novel: Novel) -> None:
             "similarity_score": drift_result.get("similarity_score"),
             "completed_chapters": completed_count,
             "target_chapters": novel.target_chapters,
-            "is_completed": book_done and not pause_gate,
-            "paused_for_review": pause_gate,
+            "is_completed": is_completed,
+            "paused_for_review": pause_gate or target_reached,
+            "target_reached": target_reached,
             "hard_fail": hard_fail,
             "anti_ai_assessment": anti_assessment,
         },

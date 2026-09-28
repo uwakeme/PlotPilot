@@ -36,6 +36,13 @@ class GenerationPreferences:
     audit_pause_on_hard_fail: bool = False
     # Anti-AI 审计综合判定为「严重」时停机待人（仅当章节闸门开启相关项时与其它条件并列生效）
     audit_pause_on_anti_ai_severe: bool = False
+    # ── 目标章数达成 → 故事走向决策（目标章数是软目标，不做数字一刀切完结）──
+    # ask=暂停询问（默认）；finale=自动加写终局预算后收束；continue=自动上调目标续写；complete=直接完结（旧行为）
+    target_reached_policy: str = "ask"
+    # 「写终局」在当前完成数基础上加写的收束章数预算
+    finale_chapter_budget: int = 20
+    # 写终局进行中标记：置位后再次达标视为终局写完 → 真正完结并复位
+    finale_mode: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -88,6 +95,16 @@ class GenerationPreferences:
         pause_after_each_chapter_audit = bool(raw.get("pause_after_each_chapter_audit", False))
         audit_pause_on_hard_fail = bool(raw.get("audit_pause_on_hard_fail", False))
         audit_pause_on_anti_ai_severe = bool(raw.get("audit_pause_on_anti_ai_severe", False))
+        # 目标章数策略：旧库缺失或非法值回落 ask（每次询问）
+        policy = str(raw.get("target_reached_policy", "ask") or "ask").strip().lower()
+        if policy not in ("ask", "finale", "continue", "complete"):
+            policy = "ask"
+        try:
+            finale_budget = int(raw.get("finale_chapter_budget", 20))
+        except (TypeError, ValueError):
+            finale_budget = 20
+        finale_budget = max(5, min(200, finale_budget))
+        finale_mode = bool(raw.get("finale_mode", False))
         return cls(
             locked_genre=str(raw.get("locked_genre", "") or ""),
             locked_world_preset=str(raw.get("locked_world_preset", "") or ""),
@@ -104,6 +121,9 @@ class GenerationPreferences:
             pause_after_each_chapter_audit=pause_after_each_chapter_audit,
             audit_pause_on_hard_fail=audit_pause_on_hard_fail,
             audit_pause_on_anti_ai_severe=audit_pause_on_anti_ai_severe,
+            target_reached_policy=policy,
+            finale_chapter_budget=finale_budget,
+            finale_mode=finale_mode,
         )
 
     @classmethod

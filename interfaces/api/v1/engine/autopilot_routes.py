@@ -1762,6 +1762,7 @@ async def resume_from_review(novel_id: str):
             autopilot_status="running",
             current_stage=next_stage,
             current_act=current_act,
+            autopilot_pause_reason="",
         )
     except Exception as e:
         logger.debug("刷新共享内存失败（可忽略）: %s", e)

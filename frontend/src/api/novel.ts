@@ -45,6 +45,12 @@ export interface GenerationPrefsDTO {
   audit_pause_on_hard_fail?: boolean
   /** Anti-AI 综合判定「严重」→ 待在审阅 */
   audit_pause_on_anti_ai_severe?: boolean
+  /** 目标章数达成策略：ask=暂停询问（默认）/ finale=自动写终局 / continue=自动续写 / complete=直接完结 */
+  target_reached_policy?: string
+  /** 写终局的收束章数预算（5–200） */
+  finale_chapter_budget?: number
+  /** 写终局进行中标记：预算写完自动完结并复位 */
+  finale_mode?: boolean
   /** 当前章节目标字数；兼容后端 generation_prefs_json 旧字段 */
   target_chapter_words?: number
 }

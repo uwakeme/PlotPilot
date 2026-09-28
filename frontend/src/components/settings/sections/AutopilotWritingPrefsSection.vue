@@ -92,6 +92,64 @@
             </div>
           </n-card>
 
+          <!-- 目标章数策略（软目标） -->
+          <n-card size="small" :bordered="true" class="prefs-card">
+            <div class="card-head">
+              <span class="card-title">达到目标章数时</span>
+              <n-text depth="3" class="card-caption">
+                目标章数是参考值而非精确完结点。全托管写到目标章数后，默认暂停并在驾驶舱询问故事走向（写终局 / 继续写 / 就此完结）；也可改为自动处理，不再询问。
+              </n-text>
+            </div>
+            <n-divider class="card-divider" />
+
+            <div class="row">
+              <div class="row-label">
+                <span class="row-title">默认策略</span>
+                <n-text depth="3" class="row-hint">
+                  「自动写终局」在达标时加写一段收束章数后自动完结；「自动继续写」上调目标接着写，直到你手动停止。
+                </n-text>
+              </div>
+              <n-select
+                :value="targetReachedPolicy"
+                :options="targetPolicyOptions"
+                size="small"
+                class="policy-select"
+                :loading="patching === 'target_reached_policy'"
+                @update:value="(v: string) => onTargetPolicyChange(v)"
+              />
+            </div>
+
+            <template v-if="targetReachedPolicy === 'finale'">
+              <n-divider class="inner-divider" />
+              <div class="row row-valign">
+                <div class="row-label">
+                  <span class="row-title">终局收束章数</span>
+                  <n-text depth="3" class="row-hint">
+                    达标后在已完成章数基础上加写的预算（5–200 章），写完即自动完结。
+                  </n-text>
+                </div>
+                <div class="budget-row">
+                  <n-input-number
+                    v-model:value="finaleBudgetInput"
+                    :min="5"
+                    :max="200"
+                    :step="5"
+                    size="small"
+                    class="budget-input"
+                  />
+                  <n-button
+                    type="primary"
+                    size="small"
+                    :loading="savingBudget"
+                    @click="saveFinaleBudget"
+                  >
+                    保存
+                  </n-button>
+                </div>
+              </div>
+            </template>
+          </n-card>
+
           <!-- 指挥器相位 -->
           <n-card size="small" :bordered="true" class="prefs-card prefs-card-advanced">
             <div class="card-head">
@@ -181,6 +239,17 @@ const pauseAfterEachAudit = ref(false)
 const auditPauseOnHardFail = ref(false)
 const auditPauseOnAntiAiSevere = ref(false)
 
+const targetReachedPolicy = ref<string>('ask')
+const finaleBudgetInput = ref<number | null>(20)
+const savingBudget = ref(false)
+
+const targetPolicyOptions = [
+  { label: '每次暂停询问（推荐）', value: 'ask' },
+  { label: '自动写终局并完结', value: 'finale' },
+  { label: '自动继续写（软目标）', value: 'continue' },
+  { label: '直接完结（旧行为）', value: 'complete' },
+]
+
 const convergeInput = ref<number | null>(null)
 const landInput = ref<number | null>(null)
 
@@ -191,6 +260,16 @@ function applyPrefs(p?: GenerationPrefsDTO | null) {
   pauseAfterEachAudit.value = Boolean(p2.pause_after_each_chapter_audit)
   auditPauseOnHardFail.value = Boolean(p2.audit_pause_on_hard_fail)
   auditPauseOnAntiAiSevere.value = Boolean(p2.audit_pause_on_anti_ai_severe)
+
+  targetReachedPolicy.value =
+    typeof p2.target_reached_policy === 'string' &&
+    ['ask', 'finale', 'continue', 'complete'].includes(p2.target_reached_policy)
+      ? p2.target_reached_policy
+      : 'ask'
+  finaleBudgetInput.value =
+    typeof p2.finale_chapter_budget === 'number' && Number.isFinite(p2.finale_chapter_budget)
+      ? p2.finale_chapter_budget
+      : 20
 
   convergeInput.value =
     typeof p2.conductor_converge_threshold === 'number' && Number.isFinite(p2.conductor_converge_threshold)
@@ -277,6 +356,37 @@ async function onAuditGatePref(
     await loadNovel()
   } finally {
     patching.value = null
+  }
+}
+
+async function onTargetPolicyChange(v: string) {
+  const slug = novelSlug.value
+  if (!slug) return
+  patching.value = 'target_reached_policy'
+  try {
+    await mergePrefs({ target_reached_policy: v })
+    message.success('已保存')
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '保存失败')
+    await loadNovel()
+  } finally {
+    patching.value = null
+  }
+}
+
+async function saveFinaleBudget() {
+  const slug = novelSlug.value
+  if (!slug) return
+  const budget = Math.max(5, Math.min(200, Number(finaleBudgetInput.value) || 20))
+  savingBudget.value = true
+  try {
+    await mergePrefs({ finale_chapter_budget: budget })
+    message.success('终局收束章数已保存')
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '保存失败')
+    await loadNovel()
+  } finally {
+    savingBudget.value = false
   }
 }
 
@@ -473,6 +583,22 @@ watch(
 .field-input {
   width: 100%;
   max-width: 280px;
+}
+
+.policy-select {
+  width: 200px;
+  flex-shrink: 0;
+}
+
+.budget-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.budget-input {
+  width: 120px;
 }
 
 .conductor-error {

@@ -18,6 +18,10 @@ from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
 from domain.novel.entities.chapter import ChapterStatus
 from domain.novel.value_objects.novel_id import NovelId
 from domain.structure.story_node import StoryNode
+from engine.runtime.target_reached_gate import (
+    TARGET_REACHED_PAUSE_REASON,
+    resolve_target_reached,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,16 +160,31 @@ async def run_legacy_writing(host: Any, novel: Novel) -> None:
     except Exception as e:
         logger.debug("[%s] 写作前结构探测失败（忽略）: %s", novel_id_v, e)
 
-    # 1. 目标控制：达到目标章节数则自动停止
+    # 1. 目标控制：目标章数是软目标——达标时按书目策略分流，不再一刀切完结
     target_chapters = novel.target_chapters or 50
     max_chapters = novel.max_auto_chapters or 9999
     current_chapters = novel.current_auto_chapters or 0
 
     if current_chapters >= target_chapters:
-        logger.info(f"[{novel.novel_id}] 已达到目标章节数 {target_chapters} 章，全托管完成")
-        novel.autopilot_status = AutopilotStatus.STOPPED
-        novel.current_stage = NovelStage.COMPLETED
-        return
+        action = resolve_target_reached(host, novel)
+        if action == "complete":
+            logger.info(f"[{novel.novel_id}] 已达到目标章节数 {target_chapters} 章，全托管完成")
+            novel.autopilot_status = AutopilotStatus.STOPPED
+            novel.current_stage = NovelStage.COMPLETED
+            return
+        if action == "pause":
+            logger.info(
+                f"[{novel.novel_id}] 已达目标章数 {target_chapters}：暂停等待用户决定故事走向（写终局/继续写/就此完结）"
+            )
+            novel.autopilot_status = AutopilotStatus.STOPPED
+            novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+            host._update_shared_state(
+                novel.novel_id.value,
+                autopilot_pause_reason=TARGET_REACHED_PAUSE_REASON,
+            )
+            return
+        # extended：目标已上调，继续本次写作
+        target_chapters = novel.target_chapters or target_chapters
 
     if current_chapters >= max_chapters:
         logger.info(f"[{novel.novel_id}] 已达保护上限 {max_chapters} 章，自动暂停")

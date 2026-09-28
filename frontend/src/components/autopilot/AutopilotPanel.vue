@@ -190,6 +190,76 @@
       </div>
     </n-alert>
 
+    <!-- 已达目标章数 → 决定故事走向（软目标） -->
+    <n-alert v-if="isTargetReachedPause" type="info" :show-icon="true" class="ap-inline-alert">
+      <div class="ap-target-reached">
+        <p class="tr-title">
+          已达目标章数 {{ completedChapters }} / {{ targetChapters }}：请决定故事走向
+        </p>
+        <p class="tr-desc">
+          目标章数只是参考。蓝图里可能还有未写完的卷部——可以让故事在一段收束章数内走向终局，
+          也可以调大目标继续向后写，或就此完结。
+        </p>
+        <div class="tr-actions">
+          <div class="tr-action">
+            <span class="tr-label">写终局</span>
+            <n-input-number
+              v-model:value="finaleBudget"
+              :min="5"
+              :max="200"
+              :step="5"
+              size="small"
+              class="tr-input"
+            />
+            <span class="tr-unit">章内收束</span>
+            <n-button
+              type="primary"
+              size="small"
+              :loading="deciding === 'finale'"
+              @click="decideFinale"
+            >
+              写终局并完结
+            </n-button>
+          </div>
+          <div class="tr-action">
+            <span class="tr-label">继续写</span>
+            <n-input-number
+              v-model:value="continueTarget"
+              :min="completedChapters + 1"
+              :max="9999"
+              size="small"
+              class="tr-input"
+            />
+            <span class="tr-unit">新目标章数</span>
+            <n-button
+              type="warning"
+              size="small"
+              secondary
+              :loading="deciding === 'continue'"
+              @click="decideContinue"
+            >
+              调大目标继续
+            </n-button>
+          </div>
+          <div class="tr-action">
+            <span class="tr-label">就此完结</span>
+            <n-popconfirm
+              positive-text="完结本书"
+              negative-text="取消"
+              @positive-click="decideComplete"
+            >
+              <template #trigger>
+                <n-button size="small" quaternary type="error" :loading="deciding === 'complete'">
+                  就此完结
+                </n-button>
+              </template>
+              将按当前 {{ completedChapters }} 章完结本书，目标章数不再驱动续写。确定吗？
+            </n-popconfirm>
+          </div>
+        </div>
+      </div>
+    </n-alert>
+
     <!-- 审阅等待 -->
     <n-alert v-if="showReviewGate" :type="reviewGateAlertType" :show-icon="true" class="ap-inline-alert">
       <div class="ap-review-alert">
@@ -315,7 +385,7 @@
               <strong>全自动模式已开启</strong>：系统将跳过所有审阅环节，自动运行直到写完。
             </template>
             <template v-else>
-              达到 <strong>{{ startConfig.target_chapters }} 章</strong> 目标时自动完成全书。
+              达到 <strong>{{ startConfig.target_chapters }} 章</strong> 目标时会暂停，由你决定写终局、继续写或完结（可在「全托管控制」设置默认策略）。
             </template>
           </n-alert>
         </n-form>
@@ -470,10 +540,13 @@ const reviewGateStatus = computed(() => String(reviewGate.value?.status || 'read
 const reviewGateNeedsAIPanel = computed(() =>
   !isTerminalStopped.value && (reviewGate.value?.primary_action === 'open_ai_panel' || requiresAIReview.value)
 )
-const showReviewGate = computed(() => needsReview.value || reviewGateNeedsAIPanel.value)
+const showReviewGate = computed(() => (
+  (needsReview.value || reviewGateNeedsAIPanel.value) && !isTargetReachedPause.value
+))
 const canResumeReview = computed(() => (
   needsReview.value &&
   !requiresAIReview.value &&
+  !isTargetReachedPause.value &&
   (!reviewGate.value || reviewGateStatus.value === 'ready') &&
   reviewGate.value?.can_resume !== false
 ))
@@ -503,6 +576,82 @@ const reviewGateMessage = computed(() => {
 const reviewGateActionLabel = computed(() => (
   reviewGate.value?.action_label || '确认后继续'
 ))
+
+// ── 目标章数达成 → 故事走向决策（软目标，不做一刀切完结）──
+const isTargetReachedPause = computed(() =>
+  String(status.value?.autopilot_pause_reason || '') === 'target_reached' &&
+  String(status.value?.current_stage || '') === 'paused_for_review'
+)
+const completedChapters = computed(() => {
+  const s = status.value
+  return Math.max(Number(s?.completed_chapters || 0), Number(s?.manuscript_chapters || 0))
+})
+const deciding = ref('') // '' | 'finale' | 'continue' | 'complete'
+const finaleBudget = ref(20)
+const continueTarget = ref(null)
+
+watch(isTargetReachedPause, (active) => {
+  if (active) {
+    finaleBudget.value = 20
+    const done = completedChapters.value
+    continueTarget.value = done + Math.max(20, Math.round((targetChapters.value || 0) * 0.2))
+  }
+})
+
+async function decideFinale() {
+  await applyTargetDecision('finale')
+}
+
+async function decideContinue() {
+  await applyTargetDecision('continue')
+}
+
+async function applyTargetDecision(kind) {
+  if (deciding.value) return
+  deciding.value = kind
+  try {
+    if (kind === 'finale') {
+      const budget = Math.max(5, Math.min(200, Number(finaleBudget.value) || 20))
+      await novelApi.updateNovel(props.novelId, {
+        target_chapters: completedChapters.value + budget,
+        generation_prefs: { finale_mode: true },
+      })
+      await autopilotApi.resume(props.novelId)
+      message.success(`已进入终局写作：加写 ${budget} 章收束后自动完结`)
+    } else {
+      const newTarget = Math.max(completedChapters.value + 1, Number(continueTarget.value) || 0)
+      await novelApi.updateNovel(props.novelId, { target_chapters: newTarget })
+      await autopilotApi.resume(props.novelId)
+      message.success(`目标已上调至 ${newTarget} 章，继续全托管写作`)
+    }
+    status.value = { ...status.value, autopilot_pause_reason: '', needs_review: false }
+    emit('status-change', status.value)
+    await fetchStatus()
+  } catch (err) {
+    console.warn('[AutopilotPanel] 目标决策失败:', err)
+    message.error('操作失败，请重试')
+    await fetchStatus()
+  } finally {
+    deciding.value = ''
+  }
+}
+
+async function decideComplete() {
+  if (deciding.value) return
+  deciding.value = 'complete'
+  try {
+    await autopilotApi.stop(props.novelId)
+    await novelApi.updateNovelStage(props.novelId, 'completed')
+    message.success('本书已完结')
+    await fetchStatus()
+  } catch (err) {
+    console.warn('[AutopilotPanel] 完结操作失败:', err)
+    message.error('操作失败，请重试')
+    await fetchStatus()
+  } finally {
+    deciding.value = ''
+  }
+}
 function statusHasActiveInvocation(s) {
   return Boolean(s?.active_invocation_session_id && (s?.has_active_invocation || s?.requires_ai_review))
 }
@@ -1572,6 +1721,59 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   width: 100%;
+}
+
+/* ── 目标章数决策卡片 ── */
+.ap-target-reached {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.ap-target-reached .tr-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--app-text-primary, inherit);
+}
+
+.ap-target-reached .tr-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text-secondary, inherit);
+}
+
+.ap-target-reached .tr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ap-target-reached .tr-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ap-target-reached .tr-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-primary, inherit);
+  min-width: 3.5em;
+}
+
+.ap-target-reached .tr-unit {
+  font-size: 12px;
+  color: var(--app-text-secondary, inherit);
+  white-space: nowrap;
+}
+
+.ap-target-reached .tr-input {
+  width: 7.5rem;
 }
 
 .ap-dot {

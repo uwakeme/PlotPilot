@@ -88,3 +88,38 @@ def test_locked_genre_and_world_preset_roundtrip():
     assert patched.locked_pacing_control == "三章一兑现，小卷一翻盘，大卷一破阶。"
     assert patched.locked_writing_style == "叙事强推进，对话要带压迫感。"
     assert patched.locked_special_requirements == "资源争夺必须可见"
+
+
+def test_target_reached_policy_defaults_ask():
+    gp = GenerationPreferences()
+    assert gp.target_reached_policy == "ask"
+    assert gp.finale_chapter_budget == 20
+    assert gp.finale_mode is False
+
+    from_missing = GenerationPreferences.from_dict({"phase_display_mode": True})
+    assert from_missing.target_reached_policy == "ask"
+    assert from_missing.finale_chapter_budget == 20
+
+
+def test_target_reached_policy_invalid_falls_back_to_ask():
+    gp = GenerationPreferences.from_dict({"target_reached_policy": "bogus"})
+    assert gp.target_reached_policy == "ask"
+
+
+def test_target_reached_policy_roundtrip():
+    gp = GenerationPreferences.from_dict(
+        {"target_reached_policy": "finale", "finale_chapter_budget": 33}
+    )
+    assert gp.target_reached_policy == "finale"
+    assert gp.finale_chapter_budget == 33
+
+    patched = GenerationPreferences.merge_patch(gp, {"finale_mode": True})
+    assert patched.finale_mode is True
+    assert patched.target_reached_policy == "finale"
+    assert "finale_mode" in patched.to_dict()
+
+
+def test_finale_chapter_budget_clamped():
+    assert GenerationPreferences.from_dict({"finale_chapter_budget": 9999}).finale_chapter_budget == 200
+    assert GenerationPreferences.from_dict({"finale_chapter_budget": 0}).finale_chapter_budget == 5
+    assert GenerationPreferences.from_dict({"finale_chapter_budget": "abc"}).finale_chapter_budget == 20

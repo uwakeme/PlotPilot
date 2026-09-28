@@ -111,6 +111,21 @@ async def process_novel(host: Any, novel: Novel) -> None:
                 return
             logger.debug("[%s] 等待人工审阅", novel.novel_id)
             return
+        elif novel.current_stage == NovelStage.COMPLETED:
+            # 目标章数是软目标：完结书被调大目标后允许续写，否则保持完结（daemon 空转等待）
+            completed_count = host._count_completed_chapters(novel.novel_id)
+            if completed_count < (novel.target_chapters or 0):
+                logger.info(
+                    "[%s] 已完成 %s/%s 章（目标已上调），恢复续写",
+                    novel.novel_id,
+                    completed_count,
+                    novel.target_chapters,
+                )
+                novel.current_stage = NovelStage.WRITING
+                host._save_novel_state(novel)
+                return
+            logger.debug("[%s] 全书已完成，无需处理", novel.novel_id)
+            return
 
         host._merge_autopilot_status_from_db(novel)
         if novel.autopilot_status == AutopilotStatus.RUNNING:
