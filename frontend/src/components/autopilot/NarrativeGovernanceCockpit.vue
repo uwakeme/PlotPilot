@@ -307,7 +307,7 @@ h3 {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(260px, 1.1fr) minmax(260px, 1fr) minmax(240px, .9fr) minmax(260px, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, .9fr) minmax(0, 1fr);
   grid-auto-rows: minmax(0, 1fr);
   gap: 12px;
   margin-top: 14px;
@@ -461,7 +461,7 @@ textarea {
   }
 
   .ng-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-auto-rows: minmax(360px, auto);
   }
 }
@@ -473,7 +473,7 @@ textarea {
 
   .ng-status,
   .ng-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     display: grid;
   }
 }
