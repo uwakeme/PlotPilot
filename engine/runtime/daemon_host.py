@@ -439,7 +439,8 @@ class DaemonHostMixin:
             conn = self._fresh_read_connection()
             try:
                 agg_rows = conn.execute(
-                    "SELECT status, SUM(LENGTH(COALESCE(content,''))) as total_wc "
+                    "SELECT status, COUNT(*) as cnt, "
+                    "SUM(LENGTH(COALESCE(content,''))) as total_wc "
                     "FROM chapters WHERE novel_id = ? GROUP BY status",
                     (novel_id,),
                 ).fetchall()
@@ -450,13 +451,14 @@ class DaemonHostMixin:
             total_words = 0
             for r in agg_rows:
                 s = r["status"] or ""
+                cnt = int(r["cnt"] or 0)
                 wc = r["total_wc"] or 0
                 total_words += int(wc)
                 if s == "completed":
-                    completed_count += 1
-                    in_manuscript_count += 1
+                    completed_count += cnt
+                    in_manuscript_count += cnt
                 elif s == "draft":
-                    in_manuscript_count += 1
+                    in_manuscript_count += cnt
             return (completed_count, in_manuscript_count, total_words)
         except Exception as e:
             logger.debug("章节统计短连接读取失败 novel=%s: %s", novel_id, e)

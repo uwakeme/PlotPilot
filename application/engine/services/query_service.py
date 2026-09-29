@@ -544,7 +544,64 @@ class QueryService:
         if response is None:
             return None
         raw = self._shared.get_raw_state(novel_id)
-        return _merge_runtime_fields_from_raw(response.to_dict(), raw)
+        result = _merge_runtime_fields_from_raw(response.to_dict(), raw)
+        # KPI 对齐 DB 真实状态：共享内存里的章节列表/统计缓存可能滞后
+        # （守护进程线程本地连接曾被未提交 DML 钉死读快照，完稿数冻结）。
+        # 短连接聚合失败时回退共享内存值。
+        fresh = self._aggregate_chapter_stats_fresh(novel_id)
+        if fresh is not None:
+            completed, manuscript, total_words = fresh
+            result["completed_chapters"] = completed
+            result["manuscript_chapters"] = manuscript
+            result["total_words"] = total_words
+            target = int(result.get("target_chapters") or 0)
+            if target > 0:
+                auto = int(result.get("current_auto_chapters") or 0)
+                result["progress_pct"] = round(
+                    min(max(completed, auto) / target, 1.0) * 100, 1
+                )
+                result["progress_pct_manuscript"] = round(
+                    min(max(manuscript, auto) / target, 1.0) * 100, 1
+                )
+        return result
+
+    @staticmethod
+    def _aggregate_chapter_stats_fresh(novel_id: str) -> Optional[tuple]:
+        """一次性短连接聚合章节统计 (completed, manuscript, total_words)。
+
+        与 /novels/{id}/statistics 口径一致（DB 真实状态）；失败返回 None。
+        """
+        import sqlite3
+
+        try:
+            from application.paths import get_db_path
+
+            conn = sqlite3.connect(get_db_path(), timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) as cnt, "
+                    "SUM(LENGTH(COALESCE(content,''))) as total_wc "
+                    "FROM chapters WHERE novel_id = ? GROUP BY status",
+                    (novel_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+            completed = manuscript = total_words = 0
+            for r in rows:
+                s = r["status"] or ""
+                cnt = int(r["cnt"] or 0)
+                wc = int(r["total_wc"] or 0)
+                total_words += wc
+                if s == "completed":
+                    completed += cnt
+                    manuscript += cnt
+                elif s == "draft":
+                    manuscript += cnt
+            return (completed, manuscript, total_words)
+        except Exception:
+            logger.debug("章节统计短连接聚合失败 novel=%s", novel_id, exc_info=True)
+            return None
 
     # ==================== 工作台上下文 ====================
 

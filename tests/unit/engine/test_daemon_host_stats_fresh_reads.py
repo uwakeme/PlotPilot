@@ -14,9 +14,10 @@ from engine.runtime.daemon_host import DaemonHostMixin as Host
 
 @pytest.fixture
 def fresh_db(tmp_path, monkeypatch):
-    """临时 chapters 库：3 行 completed（已提交）。"""
+    """临时 chapters 库（WAL 模式，与生产一致）：3 行 completed（已提交）。"""
     db_path = tmp_path / "stats.db"
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE chapters (novel_id TEXT, status TEXT, content TEXT)")
     conn.executemany(
         "INSERT INTO chapters VALUES (?, ?, ?)",
@@ -48,29 +49,37 @@ def test_read_chapter_stats_ephemeral_returns_counts_and_words(fresh_db):
     assert words == len("alpha") + len("beta") + len("gamma")
 
 
-def test_stats_reads_see_latest_commit_despite_stray_txn_on_thread_local(
+def test_stats_reads_see_latest_commit_despite_pinned_read_snapshot(
     fresh_db, monkeypatch
 ):
-    """回归：线程本地连接残留未提交 DML（钉住快照）时，统计读取仍看到最新提交。"""
-    monkeypatch.setenv("PLOTPILOT_ALLOW_DIRECT_SQLITE_WRITES", "1")
+    """回归：某连接的读事务把 WAL 快照钉在旧时代时，统计读取仍看到最新提交。
 
-    # 在线程本地连接上制造一条未提交 DML —— 钉住该连接的读快照
-    from infrastructure.persistence.database.connection import get_database
+    真实形态：守护进程线程本地连接残留隐式事务（如未 commit 的 UPDATE），
+    其后所有读都停在旧快照——驾驶舱完稿数冻结、book_done 永不触发。
+    """
+    # 连接 A：显式读事务，建立并钉住快照（WAL 下不阻塞其他连接写提交）
+    stray = sqlite3.connect(fresh_db, isolation_level=None)
+    stray.execute("BEGIN")
+    stray.execute("SELECT COUNT(*) FROM chapters").fetchone()
 
-    db = get_database(fresh_db)
-    db.execute("INSERT INTO chapters VALUES ('n-1', 'draft', 'stray-uncommitted')")
-
-    # 另一连接提交第 4 个 completed 章节（模拟持久化队列消费者正常落库）
+    # 连接 B：提交第 4 个 completed 章节（模拟持久化队列消费者正常落库）
     other = sqlite3.connect(fresh_db)
     other.execute("INSERT INTO chapters VALUES ('n-1', 'completed', 'committed-later')")
     other.commit()
     other.close()
 
+    # 钉死的连接 A 仍看到旧快照（证明钉死成立）
+    pinned = stray.execute(
+        "SELECT COUNT(*) FROM chapters WHERE novel_id='n-1' AND status='completed'"
+    ).fetchone()[0]
+    assert pinned == 3
+
     host = _host_without_init()
-    # 旧实现（线程本地连接读）在此处只会看到 3；短连接必须看到 4
+    # 被测代码必须用一次性短连接，看到 WAL 最新提交
     assert host._count_completed_chapters(SimpleNamespace(value="n-1")) == 4
     completed, manuscript, _ = host._read_chapter_stats_ephemeral("n-1")
     assert completed == 4
-    assert manuscript == 4  # 3 completed + 1 未提交 draft 对短连接不可见
+    assert manuscript == 4
 
-    db.close()  # 清理线程本地连接（丢弃未提交 DML）
+    stray.execute("ROLLBACK")
+    stray.close()
