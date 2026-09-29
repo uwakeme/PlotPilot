@@ -5,7 +5,7 @@
     <div class="stream-header-line">
       <span class="stream-info">
         {{ streamTitle }}
-        <span v-if="writingChapterNumber > 0" class="beat-badge">节拍 {{ (writingBeatIndex || 0) + 1 }}</span>
+        <span v-if="writingChapterNumber > 0 && !isAuditPhase" class="beat-badge">节拍 {{ (writingBeatIndex || 0) + 1 }}</span>
         <span v-if="substepLabel" class="substep-indicator" :class="substepClass">{{ substepLabel }}</span>
       </span>
       <span class="stream-stats">
@@ -27,7 +27,7 @@
       <span class="stream-progress-label">{{ progressBarLabel }}</span>
     </div>
     <div ref="scrollContainer" class="stream-content-preview">
-      <pre class="content-text">{{ displayedText }}<span class="cursor-inline">▋</span></pre>
+      <pre class="content-text">{{ displayedText }}<span v-if="!isAuditPhase" class="cursor-inline">▋</span></pre>
     </div>
   </div>
 
@@ -128,10 +128,16 @@ const isStreaming = computed(
 const writingWordCount = computed(() => props.writingContent?.length || 0)
 const writingChapterNumber = computed(() => props.writingChapterNumber || 0)
 const writingBeatIndex = computed(() => props.writingBeatIndex || 0)
+/** 章末审计阶段（writing_substep=audit_*）：本章已定稿，标题/徽标/光标不再按「生成中」渲染 */
+const isAuditPhase = computed(() => (props.writingSubstep || '').startsWith('audit_'))
 const streamTitle = computed(() => {
   if (props.uncommittedPreview) {
     const ch = writingChapterNumber.value || displayChapter.value
     return ch > 0 ? `第 ${ch} 章未提交预览` : '未提交预览'
+  }
+  if (isAuditPhase.value) {
+    const ch = writingChapterNumber.value || displayChapter.value
+    return ch > 0 ? `第 ${ch} 章 · 已定稿` : '本章已定稿'
   }
   return `正在生成第 ${writingChapterNumber.value} 章`
 })
@@ -270,6 +276,10 @@ const progressBarLabel = computed(() => {
   if (t <= 0) return ''
   const live = writingWordCount.value
   const acc = lockedWords.value
+  if (isAuditPhase.value) {
+    // 审计阶段：正文已定稿，不再显示「收束中」的生成期文案
+    return `已定稿 ${acc} 字 / 目标 ${t}（${Math.min(100, Math.round((acc / t) * 100))}%）`
+  }
   if (live <= Math.ceil(t * 1.03)) {
     return `${live}/${t}（${progressPct.value}%）`
   }
