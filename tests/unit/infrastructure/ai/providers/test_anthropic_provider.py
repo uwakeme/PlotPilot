@@ -18,6 +18,33 @@ class _AsyncStreamCM:
         return False
 
 
+class _FinalMessageStreamCM:
+    """generate() 使用的 SDK stream 聚合路径：get_final_message() 返回完整 Message。"""
+
+    def __init__(self, final_message):
+        self._final = final_message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get_final_message(self):
+        return self._final
+
+
+def _mock_generate_stream(provider, final_message) -> Mock:
+    """替换 generate() 走的 messages.stream，返回 Mock 以便断言调用参数。"""
+    stream_mock = Mock(return_value=_FinalMessageStreamCM(final_message))
+    provider.async_client.messages.stream = stream_mock
+    return stream_mock
+
+
+def _message(content_blocks, input_tokens=10, output_tokens=5):
+    return Mock(content=content_blocks, usage=Mock(input_tokens=input_tokens, output_tokens=output_tokens))
+
+
 class TestAnthropicProvider:
     """AnthropicProvider 测试"""
 
@@ -38,7 +65,7 @@ class TestAnthropicProvider:
 
     @pytest.mark.asyncio
     async def test_generate_with_default_config(self, provider):
-        """测试使用默认配置生成"""
+        """测试使用默认配置生成（走 stream 聚合，不再调 create）"""
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig(
             model="claude-3-5-sonnet-20241022",
@@ -46,11 +73,11 @@ class TestAnthropicProvider:
             max_tokens=4096
         )
 
-        mock_create = AsyncMock(return_value=Mock(
-            content=[Mock(type="text", text="Hi there!")],
-            usage=Mock(input_tokens=10, output_tokens=5)
-        ))
-        provider.async_client.messages.create = mock_create
+        stream_mock = _mock_generate_stream(
+            provider,
+            _message([Mock(type="text", text="Hi there!")]),
+        )
+        provider.async_client.messages.create = AsyncMock()
 
         result = await provider.generate(prompt, config)
 
@@ -58,11 +85,12 @@ class TestAnthropicProvider:
         assert result.token_usage.input_tokens == 10
         assert result.token_usage.output_tokens == 5
 
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
+        stream_mock.assert_called_once()
+        call_kwargs = stream_mock.call_args[1]
         assert call_kwargs["model"] == "claude-3-5-sonnet-20241022"
         assert call_kwargs['extra_body']['temperature'] == 0.7
         assert call_kwargs['max_tokens'] == DEFAULT_MAX_OUTPUT_TOKENS
+        provider.async_client.messages.create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_generate_with_custom_config(self, provider):
@@ -74,15 +102,14 @@ class TestAnthropicProvider:
             max_tokens=2048
         )
 
-        mock_create = AsyncMock(return_value=Mock(
-            content=[Mock(type="text", text="Response")],
-            usage=Mock(input_tokens=20, output_tokens=10)
-        ))
-        provider.async_client.messages.create = mock_create
+        stream_mock = _mock_generate_stream(
+            provider,
+            _message([Mock(type="text", text="Response")]),
+        )
 
         await provider.generate(prompt, config)
 
-        call_kwargs = mock_create.call_args[1]
+        call_kwargs = stream_mock.call_args[1]
         assert call_kwargs['model'] == "claude-3-opus-20240229"
         assert call_kwargs['extra_body']['temperature'] == 0.5
         assert call_kwargs['max_tokens'] == DEFAULT_MAX_OUTPUT_TOKENS
@@ -93,10 +120,7 @@ class TestAnthropicProvider:
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig()
 
-        provider.async_client.messages.create = AsyncMock(return_value=Mock(
-            content=[Mock(text='{"ok": true}')],
-            usage=Mock(input_tokens=10, output_tokens=5)
-        ))
+        _mock_generate_stream(provider, _message([Mock(text='{"ok": true}')]))
 
         result = await provider.generate(prompt, config)
 
@@ -108,10 +132,7 @@ class TestAnthropicProvider:
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig()
 
-        provider.async_client.messages.create = AsyncMock(return_value=Mock(
-            content=[Mock(type="output_json", json={"score": 88})],
-            usage=Mock(input_tokens=10, output_tokens=5)
-        ))
+        _mock_generate_stream(provider, _message([Mock(type="output_json", json={"score": 88})]))
 
         result = await provider.generate(prompt, config)
 
@@ -135,15 +156,14 @@ class TestAnthropicProvider:
             }
         )
 
-        provider.async_client.messages.create = AsyncMock(return_value=Mock(
-            content=[Mock(type="text", text='{"score": 88}')],
-            usage=Mock(input_tokens=10, output_tokens=5)
-        ))
+        stream_mock = _mock_generate_stream(
+            provider, _message([Mock(type="text", text='{"score": 88}')])
+        )
 
         result = await provider.generate(prompt, config)
 
         assert result.content == '{"score": 88}'
-        call_kwargs = provider.async_client.messages.create.call_args[1]
+        call_kwargs = stream_mock.call_args[1]
         assert "response_format" not in call_kwargs
         assert "score_payload" in call_kwargs["system"]
         assert "请只输出一个有效 JSON 对象" in call_kwargs["system"]
@@ -154,10 +174,7 @@ class TestAnthropicProvider:
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig()
 
-        provider.async_client.messages.create = AsyncMock(return_value=Mock(
-            content=[],
-            usage=Mock(input_tokens=10, output_tokens=5)
-        ))
+        _mock_generate_stream(provider, _message([]))
 
         with pytest.raises(RuntimeError, match="empty content"):
             await provider.generate(prompt, config)
@@ -168,8 +185,7 @@ class TestAnthropicProvider:
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig()
 
-        mock_create = AsyncMock(side_effect=Exception("Anthropic API Error"))
-        provider.async_client.messages.create = mock_create
+        provider.async_client.messages.stream = Mock(side_effect=Exception("Anthropic API Error"))
 
         with pytest.raises(RuntimeError, match="Failed to generate text"):
             await provider.generate(prompt, config)
@@ -180,8 +196,7 @@ class TestAnthropicProvider:
         prompt = Prompt(system="You are helpful", user="Hello")
         config = GenerationConfig()
 
-        mock_create = AsyncMock(side_effect=ConnectionError("Network unreachable"))
-        provider.async_client.messages.create = mock_create
+        provider.async_client.messages.stream = Mock(side_effect=ConnectionError("Network unreachable"))
 
         with pytest.raises(RuntimeError, match="Failed to generate text"):
             await provider.generate(prompt, config)
@@ -251,31 +266,15 @@ def test_sdk_http_clients_are_httpx2():
 
 @pytest.mark.asyncio
 async def test_generate_passes_temperature_via_extra_body():
-    """anthropic 1.x 的 create() 不再接受 temperature，必须经 extra_body 透传到请求体"""
-    import httpx2
-
-    captured = {}
-
-    def _handler(request):
-        import json as _json
-        captured["body"] = _json.loads(request.content)
-        return httpx2.Response(200, json={
-            "id": "msg_1",
-            "type": "message",
-            "role": "assistant",
-            "model": "claude-x",
-            "content": [{"type": "text", "text": "hi"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        })
-
+    """anthropic 1.x 的 create()/stream() 不再接受 temperature，必须经 extra_body 透传到请求体"""
     provider = AnthropicProvider(Settings(api_key="test-api-key", default_model="claude-x"))
-    provider.async_client._client = httpx2.AsyncClient(transport=httpx2.MockTransport(_handler))
+    stream_mock = _mock_generate_stream(provider, _message([Mock(type="text", text="hi")]))
 
-    result = await provider.generate(
+    await provider.generate(
         Prompt(system="sys", user="hi"),
         GenerationConfig(model="claude-x", temperature=0.7, max_tokens=64),
     )
 
-    assert result.content == "hi"
-    assert captured["body"]["temperature"] == 0.7
+    call_kwargs = stream_mock.call_args[1]
+    assert call_kwargs["extra_body"]["temperature"] == 0.7
+    assert "temperature" not in call_kwargs

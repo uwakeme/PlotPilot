@@ -172,8 +172,14 @@ class AnthropicProvider(BaseProvider):
                 if instruction:
                     create_kwargs["system"] = create_kwargs["system"] + instruction
 
-            # 使用 async_client 避免阻塞 asyncio 事件循环
-            response = await self.async_client.messages.create(**create_kwargs)
+            # 使用 async_client 避免阻塞 asyncio 事件循环。
+            # 走流式聚合并取 final message（响应结构与 create 完全一致）：
+            # 非流式 create 的 300s 超时是「等完整响应」的总上限，大 prompt 规划类生成
+            # 会被网关静默拖到超时（×max_retries=2 后表现为 ~15 分钟无日志挂起）；
+            # 流式下 token 持续回流即不触发读超时，慢而活的生成能完整返回，
+            # 真停滞仍会按超时快速失败。
+            async with self.async_client.messages.stream(**create_kwargs) as stream:
+                response = await stream.get_final_message()
 
             # 防御性检查：验证 content 列表非空
             if not response.content:
