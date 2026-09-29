@@ -27,6 +27,19 @@ export interface EmbeddingConfig {
   model_path: string
 }
 
+export interface EmbeddingTestResult {
+  success: boolean
+  /** 成功时：向量维度 */
+  dimension?: number
+  /** 成功时：耗时（毫秒） */
+  latency_ms?: number
+  model?: string
+  /** 失败时：原因摘要 */
+  error?: string
+  /** 本地模式：仅做了路径校验的说明 */
+  note?: string
+}
+
 // ── 扩展包安装相关类型 ──
 
 export interface ExtensionsStatus {
@@ -73,6 +86,10 @@ export const settingsApi = {
 
   fetchEmbeddingModels: (data: { provider: string; api_key: string; base_url: string }) =>
     apiClient.post<string[]>('/settings/embedding/fetch-models', data),
+
+  /** 测试嵌入配置连通性（不落库；api_key 留空时用已存密钥） */
+  testEmbeddingConfig: (data: EmbeddingConfig) =>
+    apiClient.post<EmbeddingTestResult>('/settings/embedding/test', data),
 
   // ── 扩展包安装（本地 AI 引擎）──
 

@@ -159,6 +159,63 @@ def get_embedding_config():
     return svc.to_api_dict()
 
 
+@embedding_router.post("/test")
+async def test_embedding_config(body: EmbeddingConfigUpdate):
+    """测试嵌入配置连通性（不落库）。
+
+    云端模式用表单当前值真实生成一次嵌入；api_key 留空时使用已存储的密钥。
+    本地模式仅校验模型路径（完整加载在首次写作时进行，避免测试触发大下载）。
+    """
+    import os
+    import time
+
+    from application.ai.embedding_config_service import get_embedding_config_service
+
+    svc = get_embedding_config_service()
+    mode = (body.mode or "openai").strip().lower()
+
+    if mode != "openai":
+        model_path = (body.model_path or "").strip()
+        if not model_path:
+            return {"success": False, "error": "本地模式需填写模型路径"}
+        if os.path.isdir(model_path):
+            return {
+                "success": True,
+                "note": "本地模型目录已找到；完整加载将在首次写作时进行",
+                "model": model_path,
+            }
+        return {
+            "success": True,
+            "note": "按 HuggingFace 模型 ID 处理，首次使用时会自动下载（可能较大）",
+            "model": model_path,
+        }
+
+    api_key = body.api_key
+    if not (api_key or "").strip():
+        api_key = svc.get_config().api_key
+    model = (body.model or "").strip()
+    if not model:
+        return {"success": False, "error": "未填写模型 ID"}
+    if not (api_key or "").strip():
+        return {"success": False, "error": "未填写 API Key"}
+
+    try:
+        from infrastructure.ai.openai_embedding_service import OpenAIEmbeddingService
+
+        es = OpenAIEmbeddingService(api_key=api_key, base_url=body.base_url, model=model)
+        start = time.perf_counter()
+        vec = await es.embed("连接测试")
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        return {
+            "success": True,
+            "dimension": len(vec),
+            "latency_ms": latency_ms,
+            "model": model,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)[:300]}
+
+
 @embedding_router.put("/")
 def update_embedding_config(body: EmbeddingConfigUpdate):
     """更新嵌入模型配置（持久化到数据库）。

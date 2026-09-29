@@ -278,7 +278,15 @@
                     </n-form>
                   </div>
 
-                  <div style="display: flex; justify-content: flex-end; margin-top: 16px">
+                  <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px">
+                    <n-button
+                      secondary
+                      :loading="testingEmbedding"
+                      :disabled="!embeddingTestReady"
+                      @click="handleTestEmbedding"
+                    >
+                      测试连接
+                    </n-button>
                     <n-button
                       type="primary"
                       :loading="embeddingSaving"
@@ -286,6 +294,14 @@
                     >
                       保存嵌入配置
                     </n-button>
+                  </div>
+                  <div
+                    v-if="embeddingTestResult"
+                    style="margin-top: 10px; font-size: 12px; line-height: 1.6; text-align: right"
+                  >
+                    <n-text :type="embeddingTestResult.success ? 'success' : 'error'">
+                      {{ embeddingTestResult.text }}
+                    </n-text>
                   </div>
                 </template>
               </div>
@@ -310,7 +326,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NModal, NTag, NButton, NSwitch, NForm, NFormItem, NInput, NSelect, NSpin, NAlert, NProgress } from 'naive-ui'
+import { NModal, NTag, NButton, NSwitch, NForm, NFormItem, NInput, NSelect, NSpin, NAlert, NProgress, NText } from 'naive-ui'
 import {
   llmControlApi,
   type LLMControlPanelData,
@@ -471,6 +487,42 @@ async function handleSaveEmbedding() {
     // 由 naive-ui form 处理错误提示
   } finally {
     embeddingSaving.value = false
+  }
+}
+
+// ── 嵌入配置连通性测试（不落库，用表单当前值实测一次嵌入）──
+const testingEmbedding = ref(false)
+const embeddingTestResult = ref<{ success: boolean; text: string } | null>(null)
+
+const embeddingTestReady = computed(() => {
+  const f = embeddingForm.value
+  if (f.mode === 'openai') return Boolean(f.base_url.trim() && f.model.trim())
+  return Boolean(f.model_path.trim())
+})
+
+async function handleTestEmbedding() {
+  testingEmbedding.value = true
+  embeddingTestResult.value = null
+  try {
+    const r = await settingsApi.testEmbeddingConfig({ ...embeddingForm.value })
+    if (r.success) {
+      const latency = r.latency_ms != null ? ` · ${r.latency_ms}ms` : ''
+      embeddingTestResult.value = {
+        success: true,
+        text: r.note
+          ? `${r.note}${latency}`
+          : `连接成功 · 向量维度 ${r.dimension}${latency}`,
+      }
+    } else {
+      embeddingTestResult.value = { success: false, text: `连接失败：${r.error || '未知错误'}` }
+    }
+  } catch (e) {
+    embeddingTestResult.value = {
+      success: false,
+      text: `测试请求失败：${e instanceof Error ? e.message : '未知错误'}`,
+    }
+  } finally {
+    testingEmbedding.value = false
   }
 }
 
