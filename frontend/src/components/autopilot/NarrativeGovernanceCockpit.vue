@@ -36,22 +36,24 @@
             保存
           </button>
         </div>
-        <label>
-          书名承诺
-          <input v-model="contractDraft.title_promise" />
-        </label>
-        <label>
-          核心问题
-          <textarea v-model="contractDraft.core_question" rows="3" />
-        </label>
-        <label>
-          主题锚点
-          <input v-model="anchorsText" />
-        </label>
-        <label>
-          不可提前兑现
-          <textarea v-model="forbiddenText" rows="3" />
-        </label>
+        <div class="ng-panel__body">
+          <label>
+            书名承诺
+            <input v-model="contractDraft.title_promise" />
+          </label>
+          <label>
+            核心问题
+            <textarea v-model="contractDraft.core_question" rows="3" />
+          </label>
+          <label>
+            主题锚点
+            <input v-model="anchorsText" />
+          </label>
+          <label>
+            不可提前兑现
+            <textarea v-model="forbiddenText" rows="3" />
+          </label>
+        </div>
       </article>
 
       <article class="ng-panel">
@@ -317,9 +319,20 @@ h3 {
   padding: 12px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: 8px;
   background: var(--app-surface);
+}
+
+.ng-panel__head {
+  flex-shrink: 0;
+}
+
+.ng-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 label {

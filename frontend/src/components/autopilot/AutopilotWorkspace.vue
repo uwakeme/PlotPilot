@@ -179,7 +179,8 @@ function onBeatsPlanned(payload: { chapterNumber: number; beats: Array<Record<st
 }
 
 .ap-workspace__pane--governance {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--app-page-bg);
 }
 
