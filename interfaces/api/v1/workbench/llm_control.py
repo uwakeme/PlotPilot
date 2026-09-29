@@ -56,7 +56,9 @@ def _openai_compatible_models_base(base_url: str) -> str:
     """OpenAI 兼容列表接口为 GET {base}/models，其中 base 必须带版本路径（通常为 /v1）。
 
     用户常只填 ``https://网关主机``，会误请求 ``/models`` 而非 ``/v1/models``，导致 400/HTML。
-    若 URL 已包含非根 path（如火山 /api/v3、智谱 /api/paas/v4），则原样保留。
+    若 URL 已包含非根 path（如火山 /api/v3、智谱 /api/paas/v4），则原样保留；
+    但嵌入页易粘贴成完整 embeddings 端点（如 /v1/embeddings），列表接口并无该路径，
+    此处剥掉该后缀回退到版本根。
     """
     default = 'https://api.openai.com/v1'
     raw = (base_url or '').strip()
@@ -66,6 +68,8 @@ def _openai_compatible_models_base(base_url: str) -> str:
         raw = f'https://{raw}'
     parsed = urlparse(raw)
     path = (parsed.path or '').rstrip('/')
+    if path.endswith('/embeddings'):
+        path = path[: -len('/embeddings')]
     if not path:
         path = '/v1'
     else:
