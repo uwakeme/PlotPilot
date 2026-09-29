@@ -407,24 +407,44 @@ class DaemonHostMixin:
             logger.warning("[novel-%s] 推队列失败，数据可能丢失", novel_id.value)
 
 
+    @staticmethod
+    def _fresh_read_connection():
+        """真正的一次性短连接（绕过线程本地连接）。
+
+        线程本地连接一旦残留未提交 DML，隐式事务会把后续所有读钉死在旧快照
+        （曾导致驾驶舱完稿数冻结、book_done 永不触发）。统计类读取必须用
+        每次新开、用完即关的连接，才能看到 WAL 最新提交。
+        """
+        import sqlite3
+
+        from application.paths import get_db_path
+        from infrastructure.persistence.database.sqlite_pragmas import (
+            get_sqlite_pragma_settings,
+        )
+
+        timeout_seconds = max(1.0, get_sqlite_pragma_settings().busy_timeout_ms / 1000)
+        conn = sqlite3.connect(get_db_path(), timeout=timeout_seconds)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _read_chapter_stats_ephemeral(
         self, novel_id: str, timeout: float = 5.0
     ) -> Optional[Tuple[int, int, int]]:
-        """与 /autopilot/status DB 路径一致的章节聚合（短连接只读）。
+        """与 /autopilot/status DB 路径一致的章节聚合（一次性短连接只读）。
 
         用于在审计完成、章节落库后刷新共享内存缓存，避免 _cache_stats_to_shared_memory
         用 current_auto_chapters=0 覆盖真实统计导致前端长期显示 0/0/总字数 0。
         """
-        from application.paths import get_db_path
-        from infrastructure.persistence.database.connection import get_database
-
         try:
-            db = get_database(get_db_path())
-            agg_rows = db.fetch_all(
-                "SELECT status, SUM(LENGTH(COALESCE(content,''))) as total_wc "
-                "FROM chapters WHERE novel_id = ? GROUP BY status",
-                (novel_id,),
-            )
+            conn = self._fresh_read_connection()
+            try:
+                agg_rows = conn.execute(
+                    "SELECT status, SUM(LENGTH(COALESCE(content,''))) as total_wc "
+                    "FROM chapters WHERE novel_id = ? GROUP BY status",
+                    (novel_id,),
+                ).fetchall()
+            finally:
+                conn.close()
             completed_count = 0
             in_manuscript_count = 0
             total_words = 0
@@ -1037,15 +1057,20 @@ class DaemonHostMixin:
         用于审计阶段的全书完成检测，替代 list_by_novel() 以减少 DB 锁持有时间
         和内存开销（103 章时 list_by_novel 加载 103 个完整 Chapter 对象含正文，
         而本方法只返回一个整数）。
+
+        必须用一次性短连接：book_done 判定依赖真实完稿数，线程本地连接若被
+        未提交 DML 钉在旧快照，会导致全书写到目标章数也永不完结。
         """
         try:
-            db = self.chapter_repository.db if hasattr(self.chapter_repository, 'db') else None
-            if db is not None:
-                row = db.fetch_one(
+            conn = self._fresh_read_connection()
+            try:
+                row = conn.execute(
                     "SELECT COUNT(*) as cnt FROM chapters WHERE novel_id = ? AND status = 'completed'",
                     (novel_id.value,)
-                )
+                ).fetchone()
                 return row['cnt'] if row else 0
+            finally:
+                conn.close()
         except Exception:
             pass
         # 降级：使用原有方法

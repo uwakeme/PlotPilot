@@ -50,6 +50,8 @@ def test_stale_prompt_compiled_session_is_cancelled(fake_db):
     assert _cancel_stalled_invocation(host, novel_id, "sess-1") is True
     fake_db["db"].execute.assert_called_once()
     assert "cancelled" in fake_db["db"].execute.call_args.args[0]
+    # 必须 commit：否则管线线程的线程本地连接会残留隐式事务，钉死后续读快照
+    fake_db["db"].commit.assert_called_once()
     host._update_shared_state.assert_called_once()
     clear_kwargs = host._update_shared_state.call_args.kwargs
     assert clear_kwargs["has_active_invocation"] is False

@@ -98,6 +98,9 @@ def _cancel_stalled_invocation(host: Any, novel_id: str, session_id: str) -> boo
                 """,
                 (session_id,),
             )
+            # 必须 commit：管线线程的线程本地连接若残留未提交 DML，
+            # 隐式事务会把该连接的读快照钉死在旧时代（Python sqlite3 隐式事务陷阱）
+            db.commit()
         except Exception:
             logger.warning(
                 "[%s] 取消停滞 invocation session=%s 失败（仍将清理共享状态后重试规划）",
