@@ -161,12 +161,18 @@ def get_embedding_config():
 
 @embedding_router.put("/")
 def update_embedding_config(body: EmbeddingConfigUpdate):
-    """更新嵌入模型配置（持久化到数据库）。"""
+    """更新嵌入模型配置（持久化到数据库）。
+
+    api_key 留空时保留已存储的密钥——避免部分更新（如仅改 base_url）把密钥清空。
+    """
     from application.ai.embedding_config_service import get_embedding_config_service
     svc = get_embedding_config_service()
+    api_key = body.api_key
+    if not (api_key or "").strip():
+        api_key = svc.get_config().api_key
     svc.update_config(
         mode=body.mode,
-        api_key=body.api_key,
+        api_key=api_key,
         base_url=body.base_url,
         model=body.model,
         use_gpu=body.use_gpu,
