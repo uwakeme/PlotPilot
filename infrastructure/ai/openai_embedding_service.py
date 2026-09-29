@@ -33,6 +33,10 @@ class OpenAIEmbeddingService(EmbeddingService):
             raise ValueError("EMBEDDING_API_KEY or OPENAI_API_KEY environment variable is required")
 
         _base_url = base_url or env.base_url or None
+        if _base_url and _base_url.rstrip('/').endswith('/embeddings'):
+            # 用户易粘贴完整 embeddings 端点；SDK 会在 base_url 后再拼 /embeddings，
+            # 不剥掉就会请求 {base}/embeddings/embeddings → 404
+            _base_url = _base_url.rstrip('/')[: -len('/embeddings')]
         self._http_client = httpx.AsyncClient(
             timeout=build_httpx_timeout(env.http_timeout_settings),
             trust_env=False,
