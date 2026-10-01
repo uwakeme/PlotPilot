@@ -83,6 +83,30 @@ def test_contract_generated_from_title_and_premise():
     assert "剑仙" in contract.theme_anchors
 
 
+def test_rename_syncs_title_promise():
+    service, repo = make_service()
+    service.get_or_create_contract("n1")
+
+    updated = service.sync_title_promise("n1", "我记得我是杀手")
+
+    assert updated is not None
+    assert updated.title_promise == "我记得我是杀手"
+    assert repo.contract.title_promise == "我记得我是杀手"
+    assert any(evt[2] == "NarrativeContractTitleSynced" for evt in repo.events)
+
+
+def test_rename_sync_skips_when_contract_missing_or_unchanged():
+    service, repo = make_service()
+
+    assert service.sync_title_promise("n1", "新书名") is None
+
+    service.get_or_create_contract("n1")
+    assert service.sync_title_promise("n1", "我不是剑仙") is not None
+    events_before = len(repo.events)
+    assert service.sync_title_promise("n1", "我不是剑仙") is not None
+    assert len(repo.events) == events_before
+
+
 def test_opening_budget_limits_new_lines_and_reveal_level():
     service, _repo = make_service()
 

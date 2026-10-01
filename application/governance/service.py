@@ -116,6 +116,19 @@ class NarrativeGovernanceService:
         self._emit(novel_id, "NarrativeContractUpdated", None, contract.to_dict())
         return contract
 
+    def sync_title_promise(self, novel_id: str, title: str) -> NarrativeContract | None:
+        """书名变更后让书名承诺跟随新书名；契约未建或已是新书名时静默跳过。"""
+        clean = (title or "").strip()
+        if not clean:
+            return None
+        contract = self.repository.get_contract(novel_id)
+        if not contract or contract.title_promise == clean:
+            return contract
+        updated = replace(contract, title_promise=clean, updated_at=utc_now_iso())
+        self.repository.save_contract(updated)
+        self._emit(novel_id, "NarrativeContractTitleSynced", None, updated.to_dict())
+        return updated
+
     def prepare_chapter(self, novel_id: str, chapter_number: int | None = None) -> dict[str, Any]:
         budget = self.preview_chapter_budget(novel_id, chapter_number)
         self._emit(novel_id, "ChapterPreparedEvent", budget.chapter_number, budget.to_dict())

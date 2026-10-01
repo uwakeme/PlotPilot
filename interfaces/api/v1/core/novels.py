@@ -265,7 +265,8 @@ async def update_novel(
         HTTPException: 如果小说不存在
     """
     try:
-        return service.update_novel(
+        previous = service.get_novel(novel_id)
+        result = service.update_novel(
             novel_id,
             request.title,
             request.author,
@@ -274,6 +275,15 @@ async def update_novel(
             target_words_per_chapter=request.target_words_per_chapter,
             generation_prefs=request.generation_prefs,
         )
+        if previous is not None and previous.title and request.title and previous.title != request.title:
+            # 书名承诺随书名联动（叙事契约面板仍可手动润色，直到下一次书名变更）
+            try:
+                from interfaces.api.v1.engine.governance_routes import _service as build_governance_service
+
+                build_governance_service().sync_title_promise(novel_id, request.title)
+            except Exception:
+                logger.warning("governance 书名承诺同步失败", exc_info=True)
+        return result
     except EntityNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
