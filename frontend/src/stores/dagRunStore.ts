@@ -285,6 +285,23 @@ export const useDAGRunStore = defineStore('dagRun', () => {
 
   let _autopilotLogSource: EventSource | null = null
   let _autopilotLogCallback: ((data: { type: string; message: string; metadata?: Record<string, unknown> }) => void) | null = null
+  /** 手动 disconnect 置位：阻止 onerror 触发的自动重连 */
+  let _autopilotLogClosed = true
+  let _autopilotLogReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let _autopilotLogAttempts = 0
+
+  function _scheduleAutopilotLogReconnect(novelId: string) {
+    if (_autopilotLogClosed) return
+    if (_autopilotLogAttempts >= 5) {
+      // 与 DAG SSE 退避上限对齐；放弃后由用户切页/重开面板自然重连
+      return
+    }
+    const delay = Math.min(3000 * 2 ** _autopilotLogAttempts, 30000)
+    _autopilotLogAttempts += 1
+    _autopilotLogReconnectTimer = setTimeout(() => {
+      if (!_autopilotLogClosed) connectAutopilotLog(novelId, _autopilotLogCallback!)
+    }, delay)
+  }
 
   function connectAutopilotLog(
     novelId: string,
@@ -292,10 +309,16 @@ export const useDAGRunStore = defineStore('dagRun', () => {
   ) {
     disconnectAutopilotLog()
     _autopilotLogCallback = callback
+    _autopilotLogClosed = false
+    _autopilotLogAttempts = 0
 
     const url = autopilotApi.logStreamUrl(novelId)
     try {
       _autopilotLogSource = new EventSource(url)
+
+      _autopilotLogSource.onopen = () => {
+        _autopilotLogAttempts = 0
+      }
 
       _autopilotLogSource.onmessage = (event) => {
         try {
@@ -313,14 +336,22 @@ export const useDAGRunStore = defineStore('dagRun', () => {
       }
 
       _autopilotLogSource.onerror = () => {
-        // 静默失败，不重连（DAG SSE 已有自己的重连机制）
+        // 指数退避重连：旧实现静默不重连，日志面板断线后永久黑屏
+        _autopilotLogSource?.close()
+        _autopilotLogSource = null
+        _scheduleAutopilotLogReconnect(novelId)
       }
     } catch {
-      // 连接失败，静默
+      _scheduleAutopilotLogReconnect(novelId)
     }
   }
 
   function disconnectAutopilotLog() {
+    _autopilotLogClosed = true
+    if (_autopilotLogReconnectTimer) {
+      clearTimeout(_autopilotLogReconnectTimer)
+      _autopilotLogReconnectTimer = null
+    }
     if (_autopilotLogSource) {
       _autopilotLogSource.close()
       _autopilotLogSource = null

@@ -226,11 +226,28 @@ export const useStatsStore = defineStore('stats', () => {
    * @param slug - Book slug
    * @param chapterId - Chapter ID
    */
-  function onChapterSaved(slug: string, chapterId: number) {
+  // 保存后只标脏不立即重拉：Chapter.vue 30s 防抖自动保存挂机时，
+  // 旧实现每次保存都 force reload（请求放大）；页面可见时再真正刷新
+  let _statsDirty = new Set<string>()
+
+  function onChapterSaved(slug: string, _chapterId: number) {
+    _statsDirty.add(slug)
     if (bookStatsCache.value.has(slug)) {
       bookStatsCache.value.delete(slug)
     }
-    loadBookStats(slug, true)
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      loadBookStats(slug, true)
+      _statsDirty.delete(slug)
+    }
+  }
+
+  /** 页面回到可见时刷新挂机期间标脏的统计（App 级 visibility 监听调用）。 */
+  function flushDirtyStats() {
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+    for (const slug of _statsDirty) {
+      loadBookStats(slug, true)
+    }
+    _statsDirty.clear()
   }
 
   return {
@@ -259,5 +276,6 @@ export const useStatsStore = defineStore('stats', () => {
     clearError,
     onJobCompleted,
     onChapterSaved,
+    flushDirtyStats,
   }
 })

@@ -1,7 +1,6 @@
 import { ref, watch, type Ref } from 'vue'
-import { autopilotApi, isAutopilotNotFoundError, type AutopilotStatus } from '@/api/autopilot'
-import { useAdaptivePolling } from '@/composables/useAdaptivePolling'
-import { assistedAutopilotPollDelayMs } from '@/workbench/autopilotStatus'
+import { type AutopilotStatus } from '@/api/autopilot'
+import { useAutopilotStatusStore } from '@/stores/autopilotStatusStore'
 
 export interface UseAssistedAutopilotStatusOptions {
   slug: Ref<string>
@@ -9,51 +8,50 @@ export interface UseAssistedAutopilotStatusOptions {
   onStatus: (status: AutopilotStatus) => void
 }
 
+/**
+ * 辅助模式托管状态：薄封装 autopilotStatusStore（单一轮询链）。
+ *
+ * 旧实现自带一条 useAdaptivePolling 轮询——与 AutopilotPanel/DAGView
+ * 并存时同一本书 2-3 条并行轮询、各持不同时刻快照。现在轮询收敛到
+ * store，本 composable 只做「订阅 + 退避状态透出」。
+ */
 export function useAssistedAutopilotStatus(options: UseAssistedAutopilotStatusOptions) {
+  const store = useAutopilotStatusStore()
   const stoppedForNotFound = ref(false)
   const failureCount = ref(0)
+  const isPolling = ref(false)
+
+  let unsubscribe: (() => void) | null = null
+
+  function teardown() {
+    if (unsubscribe) {
+      unsubscribe()
+      unsubscribe = null
+    }
+    isPolling.value = false
+  }
+
+  function start() {
+    teardown()
+    if (!options.enabled.value || !options.slug.value) return
+    const novelId = options.slug.value
+    unsubscribe = store.subscribe(novelId, (value) => {
+      options.onStatus(value)
+      if (value.autopilot_status === undefined && value.novel_id === undefined) {
+        // 空/异常载荷不计
+      }
+    })
+    isPolling.value = store.isPolling
+    stoppedForNotFound.value = false
+  }
 
   function resetBackoff() {
     stoppedForNotFound.value = false
     failureCount.value = 0
   }
 
-  async function loadStatus() {
-    if (!options.slug.value || stoppedForNotFound.value) return
-    try {
-      const status = await autopilotApi.getStatus(options.slug.value)
-      failureCount.value = 0
-      options.onStatus(status)
-    } catch (error) {
-      if (isAutopilotNotFoundError(error)) {
-        stoppedForNotFound.value = true
-        failureCount.value = 0
-        polling.stop()
-        return
-      }
-      failureCount.value += 1
-    }
-  }
-
-  const polling = useAdaptivePolling(
-    loadStatus,
-    () => assistedAutopilotPollDelayMs(failureCount.value),
-    {
-      pauseWhenHidden: true,
-      shouldContinue: () => options.enabled.value && !stoppedForNotFound.value,
-    },
-  )
-
-  function start() {
-    if (!options.enabled.value) {
-      polling.stop()
-      return
-    }
-    polling.restart({ immediate: true })
-  }
-
   function stop() {
-    polling.stop()
+    teardown()
   }
 
   watch(
@@ -63,7 +61,7 @@ export function useAssistedAutopilotStatus(options: UseAssistedAutopilotStatusOp
         stop()
         return
       }
-      failureCount.value = 0
+      resetBackoff()
       start()
     },
     { immediate: true },
@@ -79,12 +77,12 @@ export function useAssistedAutopilotStatus(options: UseAssistedAutopilotStatusOp
 
   return {
     failureCount,
-    isPolling: polling.isPolling,
-    isExecuting: polling.isExecuting,
+    isPolling,
+    isExecuting: isPolling,
     stoppedForNotFound,
     resetBackoff,
     start,
     stop,
-    refresh: polling.execute,
+    refresh: (novelId?: string) => store.refresh(novelId ?? options.slug.value),
   }
 }

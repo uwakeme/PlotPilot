@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN, darkTheme } from 'naive-ui'
 import AppSettingsModal from './components/settings/AppSettingsModal.vue'
 import AIInvocationReviewPanel from './components/ai-invocation/AIInvocationReviewPanel.vue'
@@ -11,6 +11,30 @@ import { NAIVE_DENSITY_BASE } from './design/layoutDensity'
 
 const themeStore = useThemeStore()
 const fontSizeStore = useFontSizeStore()
+
+// ─── 页面可见性：回到前台刷新挂机期间标脏的统计（statsStore.onChapterSaved 的脏标记）───
+let _onVisibilityChange: (() => void) | null = null
+const _onNetworkOnline = () => {
+  window.dispatchEvent(new CustomEvent('plotpilot:network-online'))
+}
+onMounted(() => {
+  _onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      import('./stores/statsStore').then(({ useStatsStore }) => {
+        useStatsStore().flushDirtyStats()
+      }).catch(() => {})
+    }
+  }
+  document.addEventListener('visibilitychange', _onVisibilityChange)
+  // 断网恢复：广播事件，需要刷新的面板自行监听（幂等 GET 已带重试兜底）
+  window.addEventListener('online', _onNetworkOnline)
+})
+onUnmounted(() => {
+  if (_onVisibilityChange) {
+    document.removeEventListener('visibilitychange', _onVisibilityChange)
+  }
+  window.removeEventListener('online', _onNetworkOnline)
+})
 
 const naiveTheme = computed(() =>
   themeStore.isDark ? darkTheme : undefined

@@ -1448,7 +1448,8 @@ async function loadLLMProfilesForModal() {
       generateProfileId.value = data.config.active_profile_id
     }
   } catch {
-    /* silently fail; profile selector will be empty */
+    // 静默失败会让用户只看到空模型下拉而无从排查——给出提示与重试路径
+    message.warning('AI 配置加载失败，模型下拉为空；可稍后重开弹窗重试或到 AI 控制台检查配置')
   } finally {
     llmProfilesLoading.value = false
   }
@@ -1490,6 +1491,7 @@ const previewContext = async () => {
     )
   } catch {
     contextPreview.value = null
+    message.warning('上下文预览加载失败，可重试；生成仍会按服务端上下文进行')
   } finally {
     loadingContext.value = false
   }
@@ -1507,6 +1509,7 @@ async function onOutlineBlurAnalyze() {
     blurSceneCache.value = analysis as Record<string, unknown>
   } catch {
     blurSceneCache.value = undefined
+    message.warning('场景分析失败，本次将不注入场记参考')
   } finally {
     outlineBlurAnalyzing.value = false
   }

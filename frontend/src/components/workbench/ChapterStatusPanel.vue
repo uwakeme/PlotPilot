@@ -256,24 +256,9 @@ interface Chapter {
   word_count: number
 }
 
-export interface AutopilotChapterAudit {
-  chapter_number: number
-  tension: number
-  drift_alert: boolean
-  similarity_score: number | null
-  narrative_sync_ok: boolean
-  vector_stored?: boolean
-  foreshadow_stored?: boolean
-  triples_extracted?: boolean
-  causal_edges_stored?: boolean
-  character_mutations_stored?: boolean
-  debt_updated?: boolean
-  evolution_snapshot_ok?: boolean
-  character_reconcile_ok?: boolean
-  quality_scores?: Record<string, number>
-  issues?: Array<{ severity: string; message: string }>
-  at: string | null
-}
+// 类型真源已迁至 api/autopilot.ts（AutopilotStatus.last_chapter_audit 消费）
+export type { AutopilotChapterAudit } from '@/api/autopilot'
+import type { AutopilotChapterAudit } from '@/api/autopilot' 
 
 const props = defineProps<{
   slug?: string

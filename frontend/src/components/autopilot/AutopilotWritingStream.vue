@@ -117,7 +117,7 @@ const lastContentLength = ref(0)
 // 🔥 打字机效果
 const displayedText = ref('')
 const pendingText = ref('')
-let typewriterTimer: ReturnType<typeof setInterval> | null = null
+let typewriterTimer: ReturnType<typeof setTimeout> | null = null
 
 const isStreaming = computed(
   () =>
@@ -286,38 +286,46 @@ const progressBarLabel = computed(() => {
   return `收束中 ${live} 字 → 约 ${t}（已定 ${acc}）`
 })
 
-// 🔥 打字机效果：从 displayedText 逐字追赶到 writingContent
+// 🔥 打字机效果：从 displayedText 逐字追赶到 writingContent。
+// setTimeout 自调度链替代 setInterval：前一帧的 nextTick/滚动开销不会
+// 堆积（setInterval 固定 30ms 触发，慢帧时回调排队造成追赶失真）
 function startTypewriter() {
   if (typewriterTimer) return
-  typewriterTimer = setInterval(() => {
-    if (!props.writingContent) return
-    const target = props.writingContent
-    const current = displayedText.value
+  const interval = runtimePerformance.autopilotPanel.writingTypewriterIntervalMs
+  const step = () => {
+    typewriterTimer = setTimeout(() => {
+      if (!props.writingContent) return
+      const target = props.writingContent
+      const current = displayedText.value
 
-    if (current.length < target.length) {
-      const lag = target.length - current.length
-      // 追赶过远时一次对齐，避免长时间落后被误认为「正文缺字」（真缺字在 writingContent 侧）
-      if (lag > 2500) {
-        displayedText.value = target
-        return
-      }
-      // 每次追加 1-3 个字符（加快追赶速度）
-      const charsToAdd = Math.min(3, lag)
-      displayedText.value = target.slice(0, current.length + charsToAdd)
-
-      // 自动滚动
-      nextTick(() => {
-        if (scrollContainer.value) {
-          scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight
+      if (current.length < target.length) {
+        const lag = target.length - current.length
+        // 追赶过远时一次对齐，避免长时间落后被误认为「正文缺字」（真缺字在 writingContent 侧）
+        if (lag > 2500) {
+          displayedText.value = target
+          step()
+          return
         }
-      })
-    }
-  }, runtimePerformance.autopilotPanel.writingTypewriterIntervalMs)
+        // 每次追加 1-3 个字符（加快追赶速度）
+        const charsToAdd = Math.min(3, lag)
+        displayedText.value = target.slice(0, current.length + charsToAdd)
+
+        // 自动滚动
+        nextTick(() => {
+          if (scrollContainer.value) {
+            scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight
+          }
+        })
+      }
+      step()
+    }, interval)
+  }
+  step()
 }
 
 function stopTypewriter() {
   if (typewriterTimer) {
-    clearInterval(typewriterTimer)
+    clearTimeout(typewriterTimer)
     typewriterTimer = null
   }
 }

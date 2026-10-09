@@ -12,18 +12,18 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { chapterApi } from '../../api/chapter'
 import { runtimePerformance } from '../../config/performance'
 import { usePolling } from '../../composables/usePolling'
 
-const props = defineProps({
-  novelId: String,
-  currentStage: String,
-  completedChapters: Number,
-  currentBeatIndex: Number,
-})
+const props = defineProps<{
+  novelId?: string
+  currentStage?: string
+  completedChapters?: number
+  currentBeatIndex?: number
+}>()
 
 const isVisible = computed(() => props.currentStage === 'writing')
 const displayContent = ref('')
@@ -32,9 +32,10 @@ const beatIndex = computed(() => props.currentBeatIndex || 0)
 const wordCount = computed(() => displayContent.value.length)
 
 const stageLabel = computed(() => '正文撰写中')
-const streamEl = ref(null)
+const streamEl = ref<HTMLElement | null>(null)
 
 async function fetchLatestDraft() {
+  if (!props.novelId) return
   // 取最新 draft 章节的内容
   const ch = await chapterApi.getLatestDraftChapter(props.novelId)
   if (ch) {

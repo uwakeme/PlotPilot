@@ -24,6 +24,42 @@ export class HttpError extends Error {
 export interface FetchJsonOptions extends Omit<RequestInit, 'body'> {
   body?: unknown
   timeoutMs?: number
+  /** 幂等 GET 的 5xx/网络错误自动重试次数（默认 2 次，指数退避） */
+  retryOnGet?: number
+}
+
+/**
+ * 幂等 GET 重试：5xx/网络抖动（HttpError status>=500 或 TypeError 网络
+ * 失败）时指数退避重试。4xx 不重试（客户端错误重试无意义）。
+ */
+function isRetryableGetFailure(path: string, method: string, error: unknown): boolean {
+  if (method.toUpperCase() !== 'GET') return false
+  if (path.includes('/internal/')) return false
+  if (error instanceof HttpError) return error.status >= 500
+  // fetch 网络层失败抛 TypeError（连接重置/断网）
+  return error instanceof TypeError
+}
+
+async function withGetRetry<T>(
+  path: string,
+  method: string,
+  options: FetchJsonOptions,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  const maxRetries = options.retryOnGet ?? 2
+  let lastError: unknown
+  for (let attemptIndex = 0; attemptIndex <= maxRetries; attemptIndex += 1) {
+    try {
+      return await attempt()
+    } catch (error) {
+      lastError = error
+      if (attemptIndex === maxRetries || !isRetryableGetFailure(path, method, error)) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attemptIndex))
+    }
+  }
+  throw lastError
 }
 
 function mergeHeaders(headers?: HeadersInit, hasBody = false): Headers {
@@ -72,24 +108,27 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 export async function fetchJson<T>(absolutePathFromRoot: string, options: FetchJsonOptions = {}): Promise<T> {
-  const { body, timeoutMs, signal, headers, ...rest } = options
+  const { body, timeoutMs, signal, headers, retryOnGet: _retry, ...rest } = options
   const hasBody = body !== undefined
-  const abort = composeAbortSignal(signal, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
-  try {
-    const response = await fetch(resolveHttpUrl(absolutePathFromRoot), {
-      ...rest,
-      signal: abort.signal,
-      headers: mergeHeaders(headers, hasBody),
-      body: hasBody ? JSON.stringify(body) : undefined,
-    })
-    const data = await readResponseBody(response)
-    if (!response.ok) {
-      throw new HttpError(response, data)
+  const method = rest.method ?? 'GET'
+  return withGetRetry(absolutePathFromRoot, method, options, async () => {
+    const abort = composeAbortSignal(signal, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
+    try {
+      const response = await fetch(resolveHttpUrl(absolutePathFromRoot), {
+        ...rest,
+        signal: abort.signal,
+        headers: mergeHeaders(headers, hasBody),
+        body: hasBody ? JSON.stringify(body) : undefined,
+      })
+      const data = await readResponseBody(response)
+      if (!response.ok) {
+        throw new HttpError(response, data)
+      }
+      return data as T
+    } finally {
+      abort.cleanup()
     }
-    return data as T
-  } finally {
-    abort.cleanup()
-  }
+  })
 }
 
 export async function fetchOk(absolutePathFromRoot: string, options: FetchJsonOptions = {}): Promise<Response> {
