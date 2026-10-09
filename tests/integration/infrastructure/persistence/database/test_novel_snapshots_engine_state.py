@@ -113,10 +113,7 @@ def test_migration_file_exists():
 
 def test_migration_applies_successfully(db_conn):
     """验证迁移可以成功应用。"""
-    # 读取迁移 SQL
-    if not MIGRATION_PATH.exists():
-        pytest.skip("迁移文件尚未创建")
-
+    # 迁移文件已落地：存在性由上方 test_migration_file_exists 硬断言
     migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
     # 应用迁移（如果列已存在，会报错，这是预期的）

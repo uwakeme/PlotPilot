@@ -1272,6 +1272,28 @@ def _build_state_summary(state: Any) -> str:
     return " | ".join(parts) if parts else state.current_state_summary
 
 
+
+def _scaled_due_offset(novel_id: str, base_offset: int) -> int:
+    """债务到期偏移按全书规模比例化（A3.2）。
+
+    硬编码 +15/+10/+20 是 300 章规模的标定值——30 章短篇债务秒过期、
+    500 章长篇永远悬空。实际偏移 = base × clamp(target/300, 0.3, 2.0)，
+    下限 3 章防短篇债务立即逾期；查不到目标章数时保持原值。
+    """
+    try:
+        from infrastructure.persistence.database.connection import get_database
+
+        row = get_database().fetch_one(
+            "SELECT target_chapters FROM novels WHERE id = ?", (novel_id,)
+        )
+        target = int(row["target_chapters"]) if row and row.get("target_chapters") else 0
+        if target <= 0:
+            return base_offset
+        ratio = max(0.3, min(2.0, target / 300.0))
+        return max(3, int(round(base_offset * ratio)))
+    except Exception:
+        return base_offset
+
 def update_narrative_debts(
     novel_id: str,
     chapter_number: int,
@@ -1327,8 +1349,8 @@ def update_narrative_debts(
         if isinstance(involved_chars, str):
             involved_chars = [involved_chars]
 
-        # 预期回收章节：源事件后 10-20 章
-        due_offset = 15 if strength >= 0.8 else 10
+        # 预期回收章节：源事件后 10-20 章（按全书规模比例化，A3.2）
+        due_offset = _scaled_due_offset(novel_id, 15 if strength >= 0.8 else 10)
         due_chapter = chapter_number + due_offset
 
         debt = NarrativeDebt(
@@ -1385,7 +1407,7 @@ def update_narrative_debts(
             continue
 
         importance = 4 if priority >= 9 else 3
-        due_chapter = chapter_number + 20  # 执念通常需要更长时间闭环
+        due_chapter = chapter_number + _scaled_due_offset(novel_id, 20)  # 执念通常需要更长时间闭环（比例化）
 
         debt = NarrativeDebt(
             id=_stable_artifact_id(

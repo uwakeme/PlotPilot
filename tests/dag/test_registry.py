@@ -8,9 +8,18 @@ class TestNodeRegistry:
     """节点注册表测试"""
 
     def setup_method(self):
-        """每个测试前清理注册表"""
+        """每个测试前清理注册表（备份原状态，teardown 恢复——清空泄漏到
+        其他测试文件会让 ctx_blueprint 等内置类型校验失败）"""
+        self._saved_registry = dict(NodeRegistry._registry)
+        self._saved_meta = dict(NodeRegistry._meta_registry)
         NodeRegistry._registry.clear()
         NodeRegistry._meta_registry.clear()
+
+    def teardown_method(self):
+        NodeRegistry._registry.clear()
+        NodeRegistry._registry.update(self._saved_registry)
+        NodeRegistry._meta_registry.clear()
+        NodeRegistry._meta_registry.update(self._saved_meta)
 
     def test_register_node(self):
         @NodeRegistry.register("test_node_a")

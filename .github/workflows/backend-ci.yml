@@ -28,3 +28,10 @@ jobs:
           # 单测不需要真实 key，用占位值防止启动时报错
           ANTHROPIC_API_KEY: "test-placeholder"
           ARK_API_KEY: "test-placeholder"
+
+      # F1: DAG 专项纳入门禁（9 个文件纯离线，与 unit 同环境）
+      - name: Run DAG tests
+        run: pytest tests/dag -q --tb=short
+        env:
+          ANTHROPIC_API_KEY: "test-placeholder"
+          ARK_API_KEY: "test-placeholder"
