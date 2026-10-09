@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List
 
-from engine.application.quality_guardrails.language_style_guardrail import (
+from engine.runtime.quality_guardrails.language_style_guardrail import (
     LanguageStyleGuardrail, StyleViolation,
 )
 

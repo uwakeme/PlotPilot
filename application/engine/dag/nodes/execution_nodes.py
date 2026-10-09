@@ -88,10 +88,11 @@ class PlanningNode(BaseNode):
             act_plan = ""
 
             try:
-                from application.blueprint.services.continuous_planning_service import ContinuousPlanningService
-                from infrastructure.persistence.database.connection import get_database
-                db = get_database()
-                svc = ContinuousPlanningService(db)
+                # 旧实现 ContinuousPlanningService(db) 传参就是错的（db 不是
+                # StoryNodeRepository），靠本 except 静默吞掉成为死代码；
+                # 改走 dependencies 的正确装配点
+                from interfaces.api.dependencies import get_continuous_planning_service
+                svc = get_continuous_planning_service()
                 result = await svc.generate_macro_plan(novel_id)
                 if result:
                     macro_plan = getattr(result, "plan_text", "") or str(result)

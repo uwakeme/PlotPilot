@@ -22,10 +22,10 @@ from engine.core.value_objects.emotion_ledger import (
     EmotionLedger, EmotionalWound, EmotionalBoon, PowerShift, OpenLoop,
 )
 from engine.core.value_objects.character_mask import CharacterMask
-from engine.application.quality_guardrails.quality_guardrail import (
+from engine.runtime.quality_guardrails.quality_guardrail import (
     QualityGuardrail, QualityViolationError,
 )
-from engine.application.checkpoint_manager.manager import CheckpointManager
+from engine.runtime.checkpoint_manager.manager import CheckpointManager
 from engine.infrastructure.persistence.checkpoint_store import CheckpointStore
 
 logger = logging.getLogger(__name__)

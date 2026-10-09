@@ -327,7 +327,7 @@ async def create_checkpoint(novel_id: str, body: CreateCheckpointRequest):
     if not _novel_exists(novel_id):
         raise HTTPException(status_code=404, detail="Novel not found")
 
-    from engine.application.checkpoint_manager.manager import CheckpointManager
+    from engine.runtime.checkpoint_manager.manager import CheckpointManager
 
     store = _get_checkpoint_store()
     manager = CheckpointManager(store)
@@ -355,7 +355,7 @@ async def rollback_checkpoint(novel_id: str, checkpoint_id: str):
         raise HTTPException(status_code=404, detail="Novel not found")
 
     from engine.core.value_objects.checkpoint import CheckpointId
-    from engine.application.checkpoint_manager.manager import CheckpointManager
+    from engine.runtime.checkpoint_manager.manager import CheckpointManager
 
     store = _get_checkpoint_store()
     manager = CheckpointManager(store)
@@ -382,7 +382,7 @@ async def list_branches(novel_id: str):
     if not _novel_exists(novel_id):
         raise HTTPException(status_code=404, detail="Novel not found")
 
-    from engine.application.checkpoint_manager.manager import CheckpointManager
+    from engine.runtime.checkpoint_manager.manager import CheckpointManager
 
     store = _get_checkpoint_store()
     manager = CheckpointManager(store)

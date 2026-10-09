@@ -602,3 +602,26 @@ class StoryNodeRepository:
         finally:
             if self._should_close_after_use():
                 conn.close()
+
+    def get_chapter_node_id(self, novel_id: str, chapter_number: int) -> Optional[str]:
+        """按全局章号取章节节点 ID（SQL 直查，替代调用方的全树线性扫描）。
+
+        此前 context_budget_allocator 与 character_narrative_kernel 各有一份
+        get_by_novel_sync 全量拉取 + 线性过滤的实现——O(全树) 且两处口径漂移。
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id FROM story_nodes
+                WHERE novel_id = ? AND node_type = 'chapter' AND number = ?
+                ORDER BY order_index LIMIT 1
+                """,
+                (novel_id, int(chapter_number)),
+            )
+            row = cursor.fetchone()
+            return row["id"] if row else None
+        finally:
+            if self._should_close_after_use():
+                conn.close()

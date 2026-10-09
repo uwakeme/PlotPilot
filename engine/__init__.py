@@ -20,15 +20,18 @@ Naming Convention:
 - engine.runtime.* (not engine.application.*) — 运行时统一
 
 Quick Start:
-    from engine.pipeline import BaseStoryPipeline, PipelineContext
+    from engine.pipeline import BaseStoryPipeline, PipelineContext, StepResult
 
     class MyPipeline(BaseStoryPipeline):
         DEFAULT_TARGET_WORDS = 1500
 
-        def _step_build_context(self, ctx):
-            ctx = super()._step_build_context(ctx)
-            ctx.context_text += "\\n【强制规则】每3分钟必须有一个反转。"
-            return ctx
+        async def _step_build_context(self, ctx):
+            result = await super()._step_build_context(ctx)
+            # 所有 _step_* 必须返回 StepResult（不是 ctx）；
+            # ctx 是可变引用，步骤内的修改直接生效
+            if result.passed:
+                ctx.context_text += "\\n【强制规则】每3分钟必须有一个反转。"
+            return result
 
     pipeline = MyPipeline()
     result = await pipeline.run_chapter(ctx)

@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Dict, Any, List
 
-from engine.application.quality_guardrails.plot_density_guardrail import PlotDensityGuardrail
+from engine.runtime.quality_guardrails.plot_density_guardrail import PlotDensityGuardrail
 
 logger = logging.getLogger(__name__)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Mapping
 
 from domain.novel.entities.novel import AutopilotStatus, Novel, NovelStage
@@ -15,7 +16,7 @@ def _read_shared_state(novel_id: str) -> dict[str, Any]:
     return read_autopilot_shared_state(novel_id)
 
 
-def _consume_pending_macro_plan(host: Any, *, novel_id: str, target_chapters: int) -> dict[str, Any] | None:
+def _consume_pending_macro_plan(host: "DaemonHostProtocol", *, novel_id: str, target_chapters: int) -> dict[str, Any] | None:
     shared = _read_shared_state(novel_id)
     pending_target = int(shared.get("autopilot_pending_macro_target_chapters") or 0)
     pending = shared.get("autopilot_pending_macro_plan")
@@ -81,7 +82,7 @@ def _write_macro_variables(*, novel_id: str, variables: Mapping[str, Any], node_
         )
 
 
-def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
+def _pause_for_invocation(host: "DaemonHostProtocol", novel: Novel, outcome) -> None:
     session = outcome.payload.get("session") if isinstance(outcome.payload, Mapping) else None
     policy_value = getattr(getattr(session, "policy", ""), "value", "") or "AUTOPILOT_PAUSE"
     host._update_shared_state(
@@ -103,7 +104,7 @@ def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
     host._flush_novel(novel)
 
 
-async def _request_macro_invocation(host: Any, novel: Novel, *, target_chapters: int) -> Any:
+async def _request_macro_invocation(host: "DaemonHostProtocol", novel: Novel, *, target_chapters: int) -> Any:
     from application.ai_invocation.autopilot.factory import get_or_create_autopilot_orchestrator
     from application.ai_invocation.autopilot.intents import AutopilotInvocationIntent
     from application.ai_invocation.autopilot.policy import AutopilotInvocationPolicyResolver
@@ -155,7 +156,7 @@ async def _request_macro_invocation(host: Any, novel: Novel, *, target_chapters:
     )
 
 
-async def run_macro_planning(host: Any, novel: Novel) -> None:
+async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     """处理宏观规划（规划部/卷/幕）- 使用极速模式让 AI 自主推断结构"""
     if not host._is_still_running(novel):
         return

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 import hashlib
+from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Dict, Literal
 
 from infrastructure.engine.story_pipeline_environment import (
@@ -78,7 +79,7 @@ def _build_runner(daemon: Any):
     return runner
 
 
-async def run_writing(host: Any, novel: Any) -> None:
+async def run_writing(host: "DaemonHostProtocol", novel: Any) -> None:
     """写作阶段统一入口 — 按 host 配置或环境变量选择新/旧管线"""
     if getattr(host, "use_story_pipeline_for_writing", False):
         await run_story_pipeline_writing(host, novel)

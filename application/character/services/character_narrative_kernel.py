@@ -410,10 +410,7 @@ class CharacterNarrativeKernel:
         if not self.story_node_repo:
             return None
         try:
-            for node in self.story_node_repo.get_by_novel_sync(novel_id):
-                nt = node.node_type.value if hasattr(node.node_type, "value") else str(node.node_type)
-                if nt == "chapter" and int(node.number) == int(chapter_number):
-                    return node.id
+            return self.story_node_repo.get_chapter_node_id(novel_id, int(chapter_number))
         except Exception as e:
             logger.debug("chapter node lookup failed novel=%s ch=%s: %s", novel_id, chapter_number, e)
         return None

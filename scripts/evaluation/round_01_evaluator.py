@@ -15,18 +15,18 @@ from typing import Dict, Any, List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from engine.application.quality_guardrails.language_style_guardrail import (
+from engine.runtime.quality_guardrails.language_style_guardrail import (
     LanguageStyleGuardrail, StyleViolation,
 )
-from engine.application.quality_guardrails.character_consistency_guardrail import (
+from engine.runtime.quality_guardrails.character_consistency_guardrail import (
     CharacterConsistencyGuardrail, ConsistencyViolation,
 )
-from engine.application.quality_guardrails.plot_density_guardrail import (
+from engine.runtime.quality_guardrails.plot_density_guardrail import (
     PlotDensityGuardrail, DensityViolation,
 )
-from engine.application.quality_guardrails.naming_guardrail import NamingGuardrail
-from engine.application.quality_guardrails.viewpoint_guardrail import ViewpointGuardrail
-from engine.application.quality_guardrails.rhythm_guardrail import RhythmGuardrail
+from engine.runtime.quality_guardrails.naming_guardrail import NamingGuardrail
+from engine.runtime.quality_guardrails.viewpoint_guardrail import ViewpointGuardrail
+from engine.runtime.quality_guardrails.rhythm_guardrail import RhythmGuardrail
 from engine.core.value_objects.character_mask import CharacterMask
 
 logger = logging.getLogger(__name__)

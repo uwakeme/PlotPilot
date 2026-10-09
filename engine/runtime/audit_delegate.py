@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import hashlib
 from datetime import datetime, timezone
+from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Mapping
 
 from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
@@ -113,7 +114,7 @@ def _extract_commit_continuation(outcome_payload: Mapping[str, Any] | None) -> d
 
 
 def _consume_pending_payload(
-    host: Any,
+    host: "DaemonHostProtocol",
     *,
     novel_id: str,
     chapter_number: int,
@@ -143,7 +144,7 @@ def _consume_pending_payload(
     return dict(pending_payload)
 
 
-def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
+def _pause_for_invocation(host: "DaemonHostProtocol", novel: Novel, outcome) -> None:
     session = outcome.payload.get("session") if isinstance(outcome.payload, Mapping) else None
     policy_value = getattr(getattr(session, "policy", ""), "value", "") or "AUTOPILOT_PAUSE"
     host._update_shared_state(
@@ -163,7 +164,7 @@ def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
 
 
 async def _request_autopilot_invocation(
-    host: Any,
+    host: "DaemonHostProtocol",
     *,
     novel: Novel,
     chapter_number: int,
@@ -200,7 +201,7 @@ async def _request_autopilot_invocation(
     )
 
 
-async def run_chapter_audit(host: Any, novel: Novel) -> None:
+async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     """处理审计（含张力打分）— host 提供基础设施 helper"""
     if not host._is_still_running(novel):
         return

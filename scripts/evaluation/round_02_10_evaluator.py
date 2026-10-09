@@ -25,13 +25,13 @@ from typing import Dict, Any, List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from engine.application.quality_guardrails.language_style_guardrail import LanguageStyleGuardrail
-from engine.application.quality_guardrails.character_consistency_guardrail import CharacterConsistencyGuardrail
-from engine.application.quality_guardrails.plot_density_guardrail import PlotDensityGuardrail
-from engine.application.quality_guardrails.naming_guardrail import NamingGuardrail
-from engine.application.quality_guardrails.viewpoint_guardrail import ViewpointGuardrail
-from engine.application.quality_guardrails.rhythm_guardrail import RhythmGuardrail
-from engine.application.quality_guardrails.quality_guardrail import QualityGuardrail
+from engine.runtime.quality_guardrails.language_style_guardrail import LanguageStyleGuardrail
+from engine.runtime.quality_guardrails.character_consistency_guardrail import CharacterConsistencyGuardrail
+from engine.runtime.quality_guardrails.plot_density_guardrail import PlotDensityGuardrail
+from engine.runtime.quality_guardrails.naming_guardrail import NamingGuardrail
+from engine.runtime.quality_guardrails.viewpoint_guardrail import ViewpointGuardrail
+from engine.runtime.quality_guardrails.rhythm_guardrail import RhythmGuardrail
+from engine.runtime.quality_guardrails.quality_guardrail import QualityGuardrail
 from engine.core.value_objects.character_mask import CharacterMask
 from engine.core.value_objects.checkpoint import Checkpoint, CheckpointId, CheckpointType
 from engine.core.value_objects.emotion_ledger import EmotionLedger, EmotionalWound, EmotionalBoon, PowerShift, OpenLoop
@@ -39,7 +39,7 @@ from engine.core.entities.story import Story, StoryPhase
 from engine.core.entities.character import Character, VoiceStyle, Wound, CharacterPatch
 from engine.core.entities.foreshadow import Foreshadow, ForeshadowStatus, ForeshadowBinding
 from engine.infrastructure.persistence.checkpoint_store import CheckpointStore
-from engine.application.plot_state_machine.state_machine import PlotStateMachine
+from engine.runtime.plot_state_machine.state_machine import PlotStateMachine
 from infrastructure.ai.prompt_runtime import PromptRuntimeService
 
 logger = logging.getLogger(__name__)

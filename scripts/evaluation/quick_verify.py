@@ -115,7 +115,7 @@ def test_character_mask():
     print("✅ CharacterMask OK")
 
 def test_quality_guardrail():
-    from engine.application.quality_guardrails.quality_guardrail import QualityGuardrail
+    from engine.runtime.quality_guardrails.quality_guardrail import QualityGuardrail
     guardrail = QualityGuardrail()
     report = guardrail.advise(
         text="他愣了半晌，攥紧的拳头慢慢松开。她笑了，眼底有光。",
@@ -126,7 +126,7 @@ def test_quality_guardrail():
     print(f"✅ QualityGuardrail OK (score: {report.overall_score:.2f})")
 
 def test_plot_state_machine():
-    from engine.application.plot_state_machine.state_machine import PlotStateMachine
+    from engine.runtime.plot_state_machine.state_machine import PlotStateMachine
     from engine.core.entities.story import StoryPhase
     sm = PlotStateMachine()
     assert sm.current_phase == StoryPhase.OPENING
@@ -149,7 +149,7 @@ def test_event_bus():
     print("✅ EventBus OK")
 
 def test_naming_guardrail():
-    from engine.application.quality_guardrails.naming_guardrail import NamingGuardrail
+    from engine.runtime.quality_guardrails.naming_guardrail import NamingGuardrail
     g = NamingGuardrail()
     score, violations = g.check(["李天", "王刚", "苏沉渊"], era="ancient")
     assert score < 1.0  # 李天和王刚应该有问题

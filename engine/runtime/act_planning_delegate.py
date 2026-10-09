@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Dict, List, Mapping
 
 from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
@@ -43,7 +44,7 @@ def _read_shared_state(novel_id: str) -> dict[str, Any]:
     return read_autopilot_shared_state(novel_id)
 
 
-def _clear_invocation_shared_state(host: Any, novel_id: str) -> None:
+def _clear_invocation_shared_state(host: "DaemonHostProtocol", novel_id: str) -> None:
     host._update_shared_state(
         novel_id,
         active_invocation_session_id="",
@@ -86,7 +87,7 @@ def _invocation_age_seconds(updated_at: Any) -> float:
     return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
-def _cancel_stalled_invocation(host: Any, novel_id: str, session_id: str) -> bool:
+def _cancel_stalled_invocation(host: "DaemonHostProtocol", novel_id: str, session_id: str) -> bool:
     """取消「前生成阶段停滞超时」的 invocation 并清理共享内存。
 
     返回 True 表示已清理（调用方应继续重新规划）；False 表示会话仍在
@@ -139,7 +140,7 @@ def _cancel_stalled_invocation(host: Any, novel_id: str, session_id: str) -> boo
     return True
 
 
-def _consume_pending_act_plan(host: Any, *, novel_id: str, act_id: str) -> dict[str, Any] | None:
+def _consume_pending_act_plan(host: "DaemonHostProtocol", *, novel_id: str, act_id: str) -> dict[str, Any] | None:
     shared = _read_shared_state(novel_id)
     pending_act_id = str(shared.get("autopilot_pending_act_plan_id") or "")
     pending = shared.get("autopilot_pending_act_chapters")
@@ -187,7 +188,7 @@ def _write_act_variables(*, novel_id: str, act_id: str, context: str, chapter_co
         )
 
 
-def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
+def _pause_for_invocation(host: "DaemonHostProtocol", novel: Novel, outcome) -> None:
     session = outcome.payload.get("session") if isinstance(outcome.payload, Mapping) else None
     policy_value = getattr(getattr(session, "policy", ""), "value", "") or "AUTOPILOT_PAUSE"
     host._update_shared_state(
@@ -207,7 +208,7 @@ def _pause_for_invocation(host: Any, novel: Novel, outcome) -> None:
 
 
 async def _request_act_invocation(
-    host: Any,
+    host: "DaemonHostProtocol",
     novel: Novel,
     *,
     target_act: StoryNode,
@@ -268,7 +269,7 @@ async def _request_act_invocation(
     )
 
 
-async def run_act_planning(host: Any, novel: Novel) -> None:
+async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     """处理幕级规划（插入缓冲章策略 + 动态幕生成）"""
     if not host._is_still_running(novel):
         return

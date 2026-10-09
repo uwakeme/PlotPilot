@@ -199,9 +199,8 @@ class MemoryOrchestratorImpl(MemoryOrchestrator):
 
     def _apply_budget_pressure(self, assembly: ContextAssembly, budget: TokenBudget) -> ContextAssembly:
         """Token预算挤压（T3→T2→T1，T0绝对保护）"""
-        # 粗略估算Token数（中文约1.5字/token）
-        def estimate_tokens(text: str) -> int:
-            return len(text) // 2 if text else 0
+        # 统一口径：domain.shared.token_estimation（中英加权，原为 2字/token 粗估）
+        from domain.shared.token_estimation import estimate_tokens
 
         total = estimate_tokens(assembly.t0_content) + estimate_tokens(assembly.t1_content) + estimate_tokens(assembly.t2_content) + estimate_tokens(assembly.t3_content)
         assembly.total_tokens = total

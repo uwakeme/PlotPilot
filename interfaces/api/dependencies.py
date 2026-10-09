@@ -791,12 +791,10 @@ def build_auto_workflow(llm_service: LLMService) -> AutoNovelGenerationWorkflow:
     )
 
 
+@lru_cache(maxsize=1)
 def get_auto_workflow() -> AutoNovelGenerationWorkflow:
-    """获取自动小说生成工作流
-
-    Returns:
-        AutoNovelGenerationWorkflow 实例
-    """
+    """获取自动小说生成工作流（进程级单例：工作流无状态、底层仓储线程本地，
+    旧实现每次请求重建 17 个仓储对象图——D4）"""
     llm_service = get_llm_service()
     if llm_runtime_is_mock(llm_service):
         logger.warning("No API key found, using MockProvider for workflow")
@@ -1346,4 +1344,28 @@ def get_unified_prop_context_builder():
     return PropContextBuilder(
         get_unified_prop_repository(),
         get_prop_event_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_continuous_planning_service():
+    """ContinuousPlanningService 的唯一装配点（B1 工厂收敛）。
+
+    此前 3 个路由文件各自内联逐行复制的工厂（continuous_planning_routes /
+    story_structure / generation）+ start_daemon/base_evaluator 手工装配，
+    共 5 处漂移源；统一收敛到此处。服务无状态、底层仓储线程本地，
+    进程级单例安全（lru_cache）。
+    """
+    from application.blueprint.services.continuous_planning_service import ContinuousPlanningService
+    from application.world.services.bible_service import BibleService
+    from infrastructure.persistence.database.chapter_element_repository import ChapterElementRepository
+
+    db_path = get_db_path()
+    return ContinuousPlanningService(
+        story_node_repo=StoryNodeRepository(db_path),
+        chapter_element_repo=ChapterElementRepository(db_path),
+        llm_service=get_llm_service(),
+        bible_service=BibleService(get_bible_repository()),
+        chapter_repository=get_chapter_repository(),
+        novel_repository=get_novel_repository(),
     )

@@ -219,29 +219,10 @@ class ContextBudgetAllocator:
         return format_storyline_context_block(sl, confluences, chapter_number)
 
     def estimate_tokens(self, text: str) -> int:
-        """估算文本的 Token 数量
-        
-        混合文本的估算策略：
-        - 检测中文字符比例
-        - 根据比例加权计算
-        """
-        if not text:
-            return 0
-        
-        # 统计中文字符
-        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        total_chars = len(text)
-        
-        if total_chars == 0:
-            return 0
-        
-        chinese_ratio = chinese_chars / total_chars
-        
-        # 加权估算
-        zh_tokens = chinese_chars / self.CHARS_PER_TOKEN_ZH
-        en_tokens = (total_chars - chinese_chars) / self.CHARS_PER_TOKEN_EN
-        
-        return int(zh_tokens * chinese_ratio + en_tokens * (1 - chinese_ratio) + 0.5)
+        """估算文本的 Token 数量（委托 domain.shared.token_estimation 统一口径）。"""
+        from domain.shared.token_estimation import estimate_tokens
+
+        return estimate_tokens(text)
     
     def allocate(
         self,
@@ -1311,17 +1292,11 @@ class ContextBudgetAllocator:
             return {}
 
     def _get_chapter_node_id(self, novel_id: str, chapter_number: int) -> Optional[str]:
-        """通过 story_node_repo 获取指定章节的 story_nodes.id。"""
+        """通过 story_node_repo 获取指定章节的 story_nodes.id（SQL 直查，B5 收敛）。"""
         if not self.story_node_repo:
             return None
         try:
-            nodes = self.story_node_repo.get_by_novel_sync(novel_id)
-            for node in nodes:
-                nt = node.node_type
-                nt_val = nt.value if hasattr(nt, 'value') else str(nt)
-                if nt_val == 'chapter' and node.number == chapter_number:
-                    return node.id
-            return None
+            return self.story_node_repo.get_chapter_node_id(novel_id, int(chapter_number))
         except Exception as e:
             logger.warning(f"获取章节节点ID失败: {e}")
             return None

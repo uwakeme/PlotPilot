@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Dict, List, Optional
 
 from application.ai_invocation.autopilot.intents import AutopilotInvocationIntent
@@ -27,7 +28,7 @@ from engine.runtime.target_reached_gate import (
 logger = logging.getLogger(__name__)
 
 
-def _get_autopilot_orchestrator(host: Any) -> AutopilotInvocationOrchestrator:
+def _get_autopilot_orchestrator(host: "DaemonHostProtocol") -> AutopilotInvocationOrchestrator:
     from application.ai_invocation.contracts import ensure_invocation_contract
     from application.ai_invocation.autopilot.factory import get_or_create_autopilot_orchestrator
     from infrastructure.persistence.database.connection import get_database
@@ -128,7 +129,7 @@ def _build_adopted_chapter_plan(
     )
 
 
-async def run_legacy_writing(host: Any, novel: Novel) -> None:
+async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
     """Legacy 写作（节拍级生成 + 断点续写）— host 提供基础设施 helper"""
     if not host._is_still_running(novel):
         return

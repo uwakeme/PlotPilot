@@ -259,9 +259,8 @@ class BeatSheetService:
         Returns:
             处理后的上下文
         """
-        # 粗略估算：1 token ≈ 1.5 字符（中文）
-        def estimate_tokens(text: str) -> int:
-            return int(len(text) / 1.5)
+        # 统一口径：domain.shared.token_estimation（中英加权，原为恒按中文粗估）
+        from domain.shared.token_estimation import estimate_tokens
 
         def estimate_context_tokens(ctx: Dict) -> int:
             """估算上下文的 tokens 数"""
