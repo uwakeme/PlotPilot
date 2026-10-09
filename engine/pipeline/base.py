@@ -536,6 +536,29 @@ class BaseStoryPipeline(ABC):
         run_id = ctx.active_pipeline_run_id or str(ctx.metadata.get("active_pipeline_run_id") or new_pipeline_run_id())
         ctx.active_pipeline_run_id = run_id
         ctx.chapter_generation_workspace = workspace
+
+        # 崩溃恢复（A4）：上次流式中断残留的半章 preview 不丢弃，作为本次
+        # 续写底稿注入——否则每次生成前 discard 会把已生成的几千字全部
+        # 丢弃、整章重付 token。新 run 的 preview 写独立文件，旧的由
+        # 成功后的 _discard_generation_workspace 全量清理。
+        _resumed_draft = ""
+        try:
+            prev_preview = workspace.read_latest_preview(ctx.novel_id, ctx.chapter_number)
+            if prev_preview and len(prev_preview.strip()) >= 500:
+                _resumed_draft = prev_preview.strip()
+                logger.info(
+                    "[%s] 检测到上次中断的半章底稿（%d 字），本次生成改为续写",
+                    ctx.novel_id, len(_resumed_draft),
+                )
+                ctx.context_text = (
+                    (ctx.context_text or "").rstrip()
+                    + f"\n\n【续写底稿】本章此前生成中断，已有以下前半章正文（约 {len(_resumed_draft)} 字）。"
+                    "请从其结尾处自然续写至全章完成，不要重复已有内容：\n"
+                    + _resumed_draft
+                )
+        except Exception as exc:
+            logger.debug("[%s] 读取续写底稿失败（按全新生成处理）: %s", ctx.novel_id, exc)
+
         workspace.discard(ctx.novel_id, ctx.chapter_number)
         workspace.begin(ctx.novel_id, ctx.chapter_number, run_id)
         ctx.metadata["active_pipeline_run_id"] = run_id
@@ -978,7 +1001,42 @@ class BaseStoryPipeline(ABC):
             "validation_passed": ctx.validation_passed,
         }
 
+        # 章完成自动 checkpoint（A4 接线）：CheckpointManager 文档承诺的行为
+        # 此前只被手动 API 调用，管线从不触发。失败不阻断 finalize
+        #（checkpoint 是恢复增强，不是主链路）。
+        await self._create_chapter_checkpoint(ctx)
+
         return StepResult.ok()
+
+    async def _create_chapter_checkpoint(self, ctx: PipelineContext) -> None:
+        if not ctx.chapter_saved:
+            return
+        try:
+            from engine.infrastructure.persistence.checkpoint_store import CheckpointStore
+            from engine.runtime.checkpoint_manager.manager import CheckpointManager
+            from infrastructure.persistence.database.connection import get_database
+
+            manager = CheckpointManager(CheckpointStore(get_database()))
+            await manager.on_chapter_completed(
+                story_id=str(ctx.novel_id),
+                chapter_number=int(ctx.chapter_number),
+                story_state={
+                    "word_count": ctx.word_count,
+                    "tension_composite": ctx.tension_composite,
+                    "chapter_number": int(ctx.chapter_number),
+                    "beat_index": getattr(ctx, "start_beat_index", 0) or 0,
+                },
+                character_masks={},
+                emotion_ledger={},
+                active_foreshadows=[],
+                outline=(ctx.outline or "")[:2000],
+                recent_summary=(ctx.chapter_content or "")[-500:],
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] 章 checkpoint 创建失败（不阻断 finalize）: %s",
+                ctx.novel_id, e,
+            )
 
     # ═══════════════════════════════════════════════════════════════
     # 辅助方法（protected，子类可覆写）
@@ -1022,7 +1080,9 @@ class BaseStoryPipeline(ABC):
         if workspace is None:
             return
         try:
-            workspace.discard(ctx.novel_id, ctx.chapter_number, getattr(ctx, "active_pipeline_run_id", "") or None)
+            # 全量清理（不传 run_id）：把历史崩溃残留的半章 preview 一并清掉，
+            # 防止 data/workspace 下孤儿文件无限累积
+            workspace.discard(ctx.novel_id, ctx.chapter_number)
         except Exception as e:
             logger.debug("[%s] workspace discard failed: %s", ctx.novel_id, e)
 
