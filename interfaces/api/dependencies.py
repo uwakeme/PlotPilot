@@ -1128,6 +1128,7 @@ def get_chapter_review_service():
         ChapterReviewService 实例
     """
     from application.audit.services.chapter_review_service import ChapterReviewService
+    from application.audit.services.setting_drift_audit import SettingDriftAuditService
     from infrastructure.persistence.database.sqlite_chapter_repository import SqliteChapterRepository
     from infrastructure.persistence.database.sqlite_cast_repository import SqliteCastRepository
     from infrastructure.persistence.database.sqlite_timeline_repository import SqliteTimelineRepository
@@ -1151,6 +1152,11 @@ def get_chapter_review_service():
         foreshadowing_repo=foreshadowing_repo,
         vector_store=vector_store,
         llm_service=llm_service
+    ,
+        setting_drift_audit=SettingDriftAuditService(
+            llm_service=get_llm_service(),
+            bible_repository=get_bible_repository(),
+        ),
     )
 
 

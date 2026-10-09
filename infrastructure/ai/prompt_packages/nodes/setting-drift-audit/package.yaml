@@ -1,0 +1,26 @@
+name: 设定漂移审计
+category: review
+source: application/audit/services/setting_drift_audit.py
+description: 章后校验正文是否违反 Bible 世界观与 FactLock 锁定事实（能力/地名/规则漂移）
+builtin: true
+tags:
+- 审计
+- 一致性
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+- name: setting_facts
+  desc: 基准事实清单（世界观/地点/FactLock 锁定事实的 JSON 文本）
+  type: string
+  required: true
+- name: chapter_content
+  desc: 章节正文
+  type: string
+  required: true
+id: setting-drift-audit
+sort_order: 107

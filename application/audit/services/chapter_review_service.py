@@ -29,6 +29,7 @@ from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
 if TYPE_CHECKING:
     from infrastructure.ai.chromadb_vector_store import ChromaDBVectorStore
+    from application.audit.services.setting_drift_audit import SettingDriftAuditService
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,8 @@ class ChapterReviewService:
         foreshadowing_repo: ForeshadowingRepository,
         vector_store: "ChromaDBVectorStore",
         llm_service: LLMService,
-        model: str = ""
+        model: str = "",
+        setting_drift_audit: Optional["SettingDriftAuditService"] = None,
     ):
         self.chapter_repo = chapter_repo
         self.cast_repo = cast_repo
@@ -126,6 +128,8 @@ class ChapterReviewService:
         self.vector_store = vector_store
         self.llm_service = llm_service
         self.model = model or LLMEnvironmentSettings.from_env().system_model
+        # 设定漂移审计（A1）：可选注入——未注入时不执行该项（向后兼容）
+        self.setting_drift_audit = setting_drift_audit
 
     @staticmethod
     def _render_review_prompt(review_type: str, variables: Dict[str, Any]):
@@ -166,10 +170,22 @@ class ChapterReviewService:
         foreshadowing_issues = await self._check_foreshadowing_usage(novel_id, chapter)
         issues.extend(foreshadowing_issues)
 
-        # 5. 生成改进建议
+        # 5. 设定漂移审计（Bible/FactLock vs 正文；漂移作为 issue 计入评分）
+        setting_drift = await self._check_setting_drift(novel_id, chapter)
+        if setting_drift.get("audited"):
+            for item in setting_drift.get("issues") or []:
+                issues.append(ConsistencyIssue(
+                    issue_type=f"setting_drift_{item.get('category', 'fact')}",
+                    severity=item.get("severity", "info"),
+                    description=item.get("description", ""),
+                    location=f"第 {chapter.number} 章（漂移分 {setting_drift.get('drift_score')}）",
+                    suggestion=item.get("suggestion") or None,
+                ))
+
+        # 6. 生成改进建议
         improvement_suggestions = await self._generate_improvement_suggestions(chapter, issues)
 
-        # 6. 计算总体评分
+        # 7. 计算总体评分
         overall_score = self._calculate_overall_score(issues)
 
         return ChapterReviewResult(
@@ -179,6 +195,20 @@ class ChapterReviewService:
             improvement_suggestions=improvement_suggestions,
             reviewed_at=datetime.now()
         )
+
+    async def _check_setting_drift(self, novel_id: str, chapter: Chapter) -> Dict[str, Any]:
+        """设定漂移审计（可选依赖：服务未注入或无基准时返回 unaudited）"""
+        if self.setting_drift_audit is None:
+            return {"audited": False, "reason": "服务未注入"}
+        try:
+            return await self.setting_drift_audit.audit_chapter(
+                novel_id=novel_id,
+                chapter_number=int(chapter.number),
+                content=chapter.content or "",
+            )
+        except Exception as e:
+            logger.warning("设定漂移审计异常 novel=%s: %s", novel_id, e)
+            return {"audited": False, "reason": str(e)[:120]}
 
     async def _check_character_consistency(
         self,

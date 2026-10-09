@@ -61,6 +61,7 @@ REVIEW_FORESHADOWING_USAGE = "review-foreshadowing-usage"
 REVIEW_IMPROVEMENT_SUGGESTIONS = "review-improvement-suggestions"
 CHAPTER_AI_REVIEW = "chapter-ai-review"
 CLICHE_SCAN = "cliche-scan"
+SETTING_DRIFT_AUDIT = "setting-drift-audit"
 
 # ── Memory ───────────────────────────────────────────────────────────────
 MEMORY_EXTRACTION = "memory-extraction"
@@ -161,7 +162,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     # Review
     REVIEW_CHARACTER_CONSISTENCY, REVIEW_TIMELINE_CONSISTENCY,
     REVIEW_STORYLINE_CONSISTENCY, REVIEW_FORESHADOWING_USAGE,
-    REVIEW_IMPROVEMENT_SUGGESTIONS, CHAPTER_AI_REVIEW, CLICHE_SCAN,
+    REVIEW_IMPROVEMENT_SUGGESTIONS, CHAPTER_AI_REVIEW, CLICHE_SCAN, SETTING_DRIFT_AUDIT,
     # Memory
     MEMORY_EXTRACTION, EMOTION_LEDGER_EXTRACTION,
     # Planning
