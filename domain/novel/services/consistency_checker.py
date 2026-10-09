@@ -259,6 +259,20 @@ class ConsistencyChecker:
             )
             all_issues.extend(issues)
 
+        # 事件时间线一致性：本章事件章号不得早于历史时间线最新章号（时间倒流）。
+        # 历史时间线来自 narrative_events 仓储（EventTimeline 接线后非空）。
+        timeline_events = context.event_timeline.events if context.event_timeline else []
+        if timeline_events:
+            last_chapter = max(e.chapter_number for e in timeline_events)
+            for event in chapter_state.events:
+                raw_chapter = event.get("chapter")
+                if isinstance(raw_chapter, bool) or not isinstance(raw_chapter, int):
+                    continue
+                if 1 <= raw_chapter < last_chapter:
+                    all_warnings.append(
+                        f"事件章号 {raw_chapter} 早于历史时间线最新章 {last_chapter}（疑似时间倒流/重复生成）"
+                    )
+
         # 检查伏笔解决
         for resolved in chapter_state.foreshadowing_resolved:
             issues = self.check_foreshadowing(

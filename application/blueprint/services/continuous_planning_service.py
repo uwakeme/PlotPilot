@@ -55,9 +55,13 @@ from application.blueprint.services.chapter_book_structure_sync import (
 )
 
 logger = logging.getLogger(__name__)
-_macro_plan_progress_store: Dict[str, Dict] = {}
-_macro_plan_result_store: Dict[str, Dict] = {}
-_act_chapters_llm_stream_store: Dict[str, str] = {}
+# 有界存储（容量 LRU + TTL）：替换裸 dict，根治长跑内存泄漏。
+# 进度/结果按 novel_id、LLM 流文本按 act_id 累积，无淘汰时无限增长。
+from application.blueprint.services.bounded_stores import BoundedStore
+
+_macro_plan_progress_store = BoundedStore(max_size=64, ttl_seconds=6 * 3600)
+_macro_plan_result_store = BoundedStore(max_size=64, ttl_seconds=6 * 3600)
+_act_chapters_llm_stream_store = BoundedStore(max_size=128, ttl_seconds=6 * 3600)
 
 
 def _macro_plan_progress_shared_key(novel_id: str) -> str:

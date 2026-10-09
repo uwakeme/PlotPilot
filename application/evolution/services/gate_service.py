@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from domain.evolution.models import EvolutionState
+
+# 大纲中的引号实体（《》「」『』）：角色/事件名的显式提及信号
+_QUOTED_ENTITY_RE = re.compile(r"[「『《]([^」』》]{1,12})[」』》]")
+
+
+def _outline_mentions(outline: str, labels) -> str:
+    """判断角色 labels 是否被大纲提及，返回命中的 label。
+
+    旧实现是裸子串匹配——单字角色名（如「林」）在中文大纲里几乎必然命中，
+    造成 DEAD_CHARACTER_REAPPEARS 大量误报。规则收紧为：
+    1. 引号实体精确匹配（任何长度都可信）；
+    2. 多字名允许裸匹配（≥2 字误报率低）；
+    3. 单字名只认引号实体。
+    """
+    if not outline:
+        return ""
+    quoted = {q.strip() for q in _QUOTED_ENTITY_RE.findall(outline)}
+    for label in labels:
+        if not label:
+            continue
+        if label in quoted:
+            return label
+        if len(str(label)) >= 2 and label in outline:
+            return label
+    return ""
 
 
 @dataclass
@@ -71,7 +97,7 @@ class EvolutionGateService:
         for char_id, char in (state.characters or {}).items():
             status = char.get("status")
             labels = character_labels.get(char_id) or {char_id}
-            hit = next((label for label in labels if label and label in outline), "")
+            hit = _outline_mentions(outline, labels)
             if status == "dead" and hit:
                 violations.append(
                     EvolutionGateViolation(

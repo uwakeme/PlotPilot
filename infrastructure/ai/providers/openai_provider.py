@@ -27,8 +27,16 @@ class OpenAIProvider(BaseProvider):
     - True：走 Chat Completions API
     """
 
-    # 静态类级别缓存：记录哪些 base_url 不支持 Responses API，从而避免重复降级带来的延迟开销
+    # 静态类级别缓存：记录哪些 base_url 不支持 Responses API，从而避免重复降级带来的延迟开销。
+    # key 是 base_url，规模天然有限；上限只是防御（误用时不会无界增长）
     _fallback_to_chat_cache: set[str] = set()
+    _CLASS_CACHE_MAX = 1024
+
+    @classmethod
+    def _remember_class_cache(cls, cache: "set[str]", key: str) -> None:
+        cache.add(key)
+        if len(cache) > cls._CLASS_CACHE_MAX:
+            cache.clear()  # 超限时整体重置：重试探一次降级的代价可接受
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
@@ -68,12 +76,12 @@ class OpenAIProvider(BaseProvider):
                     return await self._generate_via_responses(prompt, config)
                 except (openai.NotFoundError, openai.BadRequestError) as e:
                     logger.info(f"Responses API unsupported for {base_url}, falling back to chat completions: {str(e)}")
-                    self.__class__._fallback_to_chat_cache.add(base_url)
+                    self.__class__._remember_class_cache(self.__class__._fallback_to_chat_cache, base_url)
                 except Exception as e:
                     # 某些网关在路径错误时可能不抛严格的 404 而是抛出其他错误，如果消息含有明确路径错误也尝试降级
                     if "404" in str(e) or "Not Found" in str(e) or "400" in str(e) or "Account invalid" in str(e) or "INVALID_ARGUMENT" in str(e):
                         logger.info(f"Gateway returned error for Responses API ({base_url}), falling back: {str(e)}")
-                        self.__class__._fallback_to_chat_cache.add(base_url)
+                        self.__class__._remember_class_cache(self.__class__._fallback_to_chat_cache, base_url)
                     else:
                         raise
 
@@ -110,7 +118,7 @@ class OpenAIProvider(BaseProvider):
                             "json_schema 不支持，自动降级到 json_object: %s (错误: %s)",
                             base_url, str(e)[:100]
                         )
-                        self.__class__._json_schema_unsupported_cache.add(base_url)
+                        self.__class__._remember_class_cache(self.__class__._json_schema_unsupported_cache, base_url)
                         request_kwargs["response_format"] = {"type": "json_object"}
                         response = await self.async_client.chat.completions.create(**request_kwargs)
                     else:
@@ -173,11 +181,11 @@ class OpenAIProvider(BaseProvider):
                             yield content
                     return  # 正常完成则结束 generator
                 except (openai.NotFoundError, openai.BadRequestError):
-                    self.__class__._fallback_to_chat_cache.add(base_url)
+                    self.__class__._remember_class_cache(self.__class__._fallback_to_chat_cache, base_url)
                     logger.info(f"Stream: Responses API unsupported for {base_url}, falling back.")
                 except Exception as e:
                     if "404" in str(e) or "Not Found" in str(e) or "400" in str(e) or "Account invalid" in str(e) or "INVALID_ARGUMENT" in str(e):
-                        self.__class__._fallback_to_chat_cache.add(base_url)
+                        self.__class__._remember_class_cache(self.__class__._fallback_to_chat_cache, base_url)
                         logger.info(f"Stream: Gateway returned error for Responses API ({base_url}), falling back.")
                     else:
                         logger.error(f"[Responses Stream] Failed: {e}")
@@ -394,19 +402,6 @@ class OpenAIProvider(BaseProvider):
 
         choice = chunk.choices[0]
         delta = getattr(choice, "delta", None)
-        content = getattr(delta, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return OpenAIProvider._normalize_chat_completion_content(content)
-        return ""
-
-    @staticmethod
-    def _extract_text_from_stream_chunk(chunk: Any) -> str:
-        if not getattr(chunk, "choices", None):
-            return ""
-
-        delta = getattr(chunk.choices[0], "delta", None)
         content = getattr(delta, "content", None)
         if isinstance(content, str):
             return content

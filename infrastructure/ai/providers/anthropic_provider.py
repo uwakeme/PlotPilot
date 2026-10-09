@@ -107,7 +107,8 @@ class AnthropicProvider(BaseProvider):
             "timeout": 300.0,  # 5 分钟超时
             "max_retries": 2,
             "default_headers": {
-                "User-Agent": "claude-cli/2.1.87 (external, cli)",
+                # 产品标识：伪装官方 CLI 的 UA 会被端点按 CLI 客户端策略对待（限流/封禁口径不同）
+                "User-Agent": "plotpilot/1.0 (+https://github.com/shenminglinyi/PlotPilot)",
                 **(settings.extra_headers or {}),
             },
             "default_query": settings.extra_query or None,
@@ -255,7 +256,7 @@ class AnthropicProvider(BaseProvider):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-            "User-Agent": "claude-cli/2.1.87 (external, cli)",
+            "User-Agent": "plotpilot/1.0 (+https://github.com/shenminglinyi/PlotPilot)",
             **(self.settings.extra_headers or {}),
         }
         _, payload = self._build_message_request(prompt, config, stream=True)

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 from typing import Any, Dict, List, Optional
@@ -833,30 +834,54 @@ async def run_legacy_writing(host: Any, novel: Novel) -> None:
             if urgency_hint and not signal.beat_instruction:
                 beat_prompt = f"{urgency_hint}\n\n{beat_prompt}"
 
-            if use_wf:
-                prompt = host.chapter_workflow.build_chapter_prompt(
-                    bundle["context"], outline,
-                    storyline_context=bundle["storyline_context"],
-                    plot_tension=bundle["plot_tension"],
-                    style_summary=bundle["style_summary"],
-                    beat_prompt=beat_prompt,
-                    beat_index=i, total_beats=len(beats),
-                    beat_target_words=int(adjusted_target),  # 使用调整后的目标
-                    voice_anchors=voice_anchors,
-                    chapter_draft_so_far=accumulated_content,
-                )
-                from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
+            # 空拍重试：provider 空响应（llm_retry_policy 视为可重试场景）时同拍再试一次，
+            # 旧实现直接跳下一拍——章节中间缺一拍剧情只有字数下限兜底
+            beat_content = ""
+            for beat_attempt in range(1, 3):
+                if use_wf:
+                    prompt = host.chapter_workflow.build_chapter_prompt(
+                        bundle["context"], outline,
+                        storyline_context=bundle["storyline_context"],
+                        plot_tension=bundle["plot_tension"],
+                        style_summary=bundle["style_summary"],
+                        beat_prompt=beat_prompt,
+                        beat_index=i, total_beats=len(beats),
+                        beat_target_words=int(adjusted_target),  # 使用调整后的目标
+                        voice_anchors=voice_anchors,
+                        chapter_draft_so_far=accumulated_content,
+                    )
+                    from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
 
-                max_tokens = CHAPTER_PROSE_MAX_TOKENS
-                cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
-                beat_content = await host._stream_llm_with_stop_watch(
-                    prompt, cfg, novel=novel, chapter_draft_so_far=accumulated_content
+                    max_tokens = CHAPTER_PROSE_MAX_TOKENS
+                    cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
+                    beat_content = await host._stream_llm_with_stop_watch(
+                        prompt, cfg, novel=novel, chapter_draft_so_far=accumulated_content
+                    )
+                else:
+                    beat_content = await host._stream_one_beat(
+                        outline, context, beat_prompt, beat,
+                        novel=novel, voice_anchors=voice_anchors,
+                        chapter_draft_so_far=accumulated_content,
+                    )
+                if (beat_content or "").strip():
+                    break
+                if beat_attempt == 1:
+                    logger.warning(
+                        "[%s] 节拍 %d/%d 首次生成内容为空，退避后重试一次",
+                        novel.novel_id.value, i + 1, len(beats),
+                    )
+                    await asyncio.sleep(1.0)
+
+            if not (beat_content or "").strip():
+                # 两次都空：透出告警（不静默跳拍），审计/前端可见该拍缺失
+                host._update_shared_state(
+                    novel.novel_id.value,
+                    last_empty_beat_chapter=chapter_num,
+                    last_empty_beat_index=i + 1,
                 )
-            else:
-                beat_content = await host._stream_one_beat(
-                    outline, context, beat_prompt, beat,
-                    novel=novel, voice_anchors=voice_anchors,
-                    chapter_draft_so_far=accumulated_content,
+                logger.error(
+                    "[%s] 节拍 %d/%d 连续两次生成为空，跳过该拍（章节将有剧情缺口）",
+                    novel.novel_id.value, i + 1, len(beats),
                 )
 
             shared_state_after_call = _read_shared_state(novel.novel_id.value)

@@ -19,8 +19,22 @@ _PRE_GENERATION_STALL_STATUSES = {
     "prompt_compiled",
     "generating",
 }
-# 超过该时长仍停留在前生成阶段的 invocation 视为僵死（LLM 读超时默认 900s，取更短值兜底）
-_STALLED_INVOCATION_MAX_AGE_SECONDS = 600
+# 超过该时长仍停留在前生成阶段的 invocation 视为僵死。
+# 默认与 provider 读超时（900s）对齐：更短的阈值会把慢端点上合法的长规划
+# 误杀并重发同样的 LLM 请求（重复花费 token，且可能再次被杀形成循环）；
+# 需要更快回收时通过环境变量 PLOTPILOT_STALLED_INVOCATION_MAX_AGE_SECONDS 调低。
+import os as _os
+
+
+def _stalled_invocation_max_age_seconds() -> float:
+    raw = (_os.environ.get("PLOTPILOT_STALLED_INVOCATION_MAX_AGE_SECONDS") or "").strip()
+    if not raw:
+        return 900.0
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        logger.warning("无效 PLOTPILOT_STALLED_INVOCATION_MAX_AGE_SECONDS=%r，使用默认 900", raw)
+        return 900.0
 
 
 def _read_shared_state(novel_id: str) -> dict[str, Any]:
@@ -84,7 +98,7 @@ def _cancel_stalled_invocation(host: Any, novel_id: str, session_id: str) -> boo
         if status not in _PRE_GENERATION_STALL_STATUSES:
             return False
         age = _invocation_age_seconds(session.get("updated_at"))
-        if age < _STALLED_INVOCATION_MAX_AGE_SECONDS:
+        if age < _stalled_invocation_max_age_seconds():
             return False
         try:
             from infrastructure.persistence.database.connection import get_database

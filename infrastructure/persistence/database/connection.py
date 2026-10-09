@@ -605,6 +605,23 @@ class DatabaseConnection:
             self.get_connection().commit()
             self._maybe_checkpoint()
 
+    def flush_pending_writes(self, timeout: float = 2.0) -> bool:
+        """写后读辅助：等待入队写被消费者线程执行完毕。
+
+        入队写是最终一致语义——同请求内「写后立刻查」可能读到旧值
+        （写 SQL 已入队但消费者尚未执行）。需要强一致读的场景
+        （如 get-then-update、保存后立刻回读校验）先调用本方法。
+
+        Returns:
+            True：队列已排空（读到的即最新）；False：超时（读到的可能仍是旧值）。
+        """
+        from application.engine.services.persistence_queue import get_persistence_queue
+
+        pq = get_persistence_queue()
+        if pq is None or pq.get_queue() is None:
+            return True  # 队列未启用 = 直连写，天然已落盘
+        return bool(pq.wait_until_idle(timeout=timeout))
+
     def fetch_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         """查询单条记录
 

@@ -65,6 +65,8 @@ class BaseStoryPipeline(ABC):
     # ─── 可覆写的类属性（调参） ───
     DEFAULT_TARGET_WORDS: int = 2500
     VOICE_REWRITE_THRESHOLD: float = 0.68
+    # 章节落库效果确认的轮询预算（秒）；测试可覆盖为小值
+    CHAPTER_PERSIST_WAIT_SECONDS: float = 5.0
     VOICE_REWRITE_MAX_ATTEMPTS: int = 3
     VOICE_WARNING_DEFAULT_THRESHOLD: float = 0.75
     MIN_PASS_SCORE: float = 0.6
@@ -701,8 +703,10 @@ class BaseStoryPipeline(ABC):
             # 尝试推持久化队列
             pushed = self._push_persistence_command(ctx)
             if pushed:
-                self._wait_for_chapter_persistence(ctx)
-                if not self._chapter_completed_in_repository(ctx):
+                persisted = self._wait_for_chapter_persistence(ctx)
+                if not persisted:
+                    # 队列积压/消费者延迟导致超时：独立短连接直写兜底
+                    # （同一 payload 的幂等 upsert，队列任务后到无害）
                     await self._save_chapter_via_repository(ctx)
                 ctx.chapter_saved = True
                 ctx.save_method = "queue"
@@ -718,15 +722,23 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             return StepResult.fail(f"章节保存失败: {e}")
 
-    def _wait_for_chapter_persistence(self, ctx: PipelineContext) -> None:
-        try:
-            from application.engine.services.persistence_queue import get_persistence_queue
+    def _wait_for_chapter_persistence(self, ctx: PipelineContext) -> bool:
+        """轮询等待本章落库生效，返回是否在预算内确认。
 
-            pq = get_persistence_queue()
-            if pq is not None:
-                pq.wait_until_idle(timeout=5.0)
-        except Exception as exc:
-            logger.debug("[%s] wait chapter persistence skipped: %s", ctx.novel_id, exc)
+        旧实现 wait_until_idle 等的是整个 CQRS 队列排空——多小说并发时
+        5 秒预算被其他书的命令摊薄，本章尚未落库就超时走 fallback 直写。
+        改为按效果确认（轮询 repository 直到本章 completed 或超时）：
+        与 correlation-id ack 等价，且无需跨进程确认通道（push 在守护
+        进程、消费者在 API 进程）。
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + self.CHAPTER_PERSIST_WAIT_SECONDS
+        while _time.monotonic() < deadline:
+            if self._chapter_completed_in_repository(ctx):
+                return True
+            _time.sleep(0.1)
+        return self._chapter_completed_in_repository(ctx)
 
     def _chapter_completed_in_repository(self, ctx: PipelineContext) -> bool:
         try:
@@ -1271,7 +1283,10 @@ class BaseStoryPipeline(ABC):
             return None
         match = re.search(r"(\d+)", str(content))
         if not match:
-            return 50
+            # 解析失败不伪造中性分：与 _step_score_tension 的契约一致
+            #（「不再伪装成真实数据」），缺分由调用方决定是否走统计兜底
+            logger.warning("[%s] 单维张力评分输出无法解析: %r", ctx.novel_id, str(content)[:80])
+            return None
         score = int(match.group(1))
         return min(score, 10) * 10  # 1-10 → 0-100
 

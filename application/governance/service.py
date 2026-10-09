@@ -65,11 +65,62 @@ class NarrativeGovernanceService:
             "chapter_budget_preview": self.preview_chapter_budget(novel_id).to_dict(),
         }
 
-    def get_or_create_contract(self, novel_id: str) -> NarrativeContract:
-        existing = self.repository.get_contract(novel_id)
-        if existing:
-            return existing
+    def read_state(self, novel_id: str) -> dict[str, Any]:
+        """纯读版治理状态：不创建契约、不回填 storyline、不 emit 事件。
 
+        GET /state 这类读接口必须零写副作用——旧实现（get_state）并发首读
+        会重复创建契约并重复 emit NarrativeContractCreated 事件。缺契约时
+        返回与 get_or_create_contract 相同结构的内存视图（不落库），前端
+        拿到的结构不变；真正持久化发生在第一次写操作（update_contract 等）。
+        """
+        contract = self.repository.get_contract(novel_id)
+        contract_view = contract.to_dict() if contract else self._build_default_contract(novel_id).to_dict()
+        storylines = list(self.repository.list_storylines(novel_id))
+        if not storylines:
+            # 内存视图合并 legacy storyline（不 upsert；写路径仍由 backfill 负责）
+            storylines = self._legacy_storyline_views(novel_id)
+        latest_report = self.repository.latest_report(novel_id)
+        return {
+            "contract": contract_view,
+            "canonical_storylines": [s.to_dict() for s in storylines],
+            "open_debts": self.repository.list_open_debts(novel_id),
+            "latest_report": latest_report.to_dict() if latest_report else None,
+            "chapter_budget_preview": self.preview_chapter_budget(novel_id).to_dict(),
+        }
+
+    def _legacy_storyline_views(self, novel_id: str) -> list[CanonicalStoryline]:
+        """从 legacy storyline 仓储构造只读视图（不落库）。"""
+        if not self.legacy_storyline_repository:
+            return []
+        try:
+            from domain.novel.value_objects.novel_id import NovelId
+
+            legacy = self.legacy_storyline_repository.get_by_novel_id(NovelId(novel_id))
+        except Exception:
+            return []
+        views: list[CanonicalStoryline] = []
+        for item in legacy:
+            title = getattr(item, "name", "") or getattr(item, "description", "")[:40] or getattr(item, "id", "")
+            views.append(
+                CanonicalStoryline(
+                    canonical_id=canonical_id_for(novel_id, title, [getattr(item, "id", "")]),
+                    novel_id=novel_id,
+                    canonical_key=normalize_storyline_key(title),
+                    title=title,
+                    aliases=merge_aliases([getattr(item, "description", "")]),
+                    goal=getattr(item, "progress_summary", "") or "",
+                    span={
+                        "start": getattr(item, "estimated_chapter_start", None),
+                        "end": getattr(item, "estimated_chapter_end", None),
+                        "last_active": getattr(item, "last_active_chapter", None),
+                    },
+                    source_storyline_ids=[getattr(item, "id", "")],
+                )
+            )
+        return views
+
+    def _build_default_contract(self, novel_id: str) -> NarrativeContract:
+        """按小说标题/梗概构造默认契约（仅内存视图；持久化由 get_or_create_contract 决定）。"""
         novel = self._load_novel(novel_id)
         title = getattr(novel, "title", "") if novel is not None else ""
         premise = getattr(novel, "premise", "") if novel is not None else ""
@@ -78,7 +129,7 @@ class NarrativeGovernanceService:
         if promise.genre_signal:
             anchors.insert(0, promise.genre_signal)
 
-        contract = NarrativeContract(
+        return NarrativeContract(
             novel_id=novel_id,
             title_promise=promise.title or title or "未命名叙事承诺",
             core_question=promise.core_conflict or promise.opening_hook or premise[:180],
@@ -95,6 +146,18 @@ class NarrativeGovernanceService:
                 "finale": "payoff",
             },
         )
+
+    def get_or_create_contract(self, novel_id: str) -> NarrativeContract:
+        existing = self.repository.get_contract(novel_id)
+        if existing:
+            return existing
+
+        contract = self._build_default_contract(novel_id)
+        # 并发首读防重：持久化前二次检查，避免多个读请求各自 emit
+        # NarrativeContractCreated（upsert 幂等但事件会重复）
+        raced = self.repository.get_contract(novel_id)
+        if raced is not None:
+            return raced
         self.repository.save_contract(contract)
         self._emit(novel_id, "NarrativeContractCreated", None, contract.to_dict())
         return contract

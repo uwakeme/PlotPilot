@@ -1118,11 +1118,22 @@ class DaemonHostMixin:
             shared = sys.modules.get("__shared_state")
             if shared is not None:
                 key = f"novel:{novel_id}"
-                current = dict(shared.get(key, {}))
-                current.update(fields)
-                current["_updated_at"] = time.time()
-                # 🔥 同时更新守护进程心跳
-                shared["_daemon_heartbeat"] = time.time()
+                # Manager.dict 的 read-modify-write 非原子：API 进程与守护进程
+                # 同 key 并发写会互相覆盖字段。双读校验把竞态窗口压缩到
+                # 一次比较内（检测到被插写则重读重合；根治需要跨进程锁，
+                # 代价高于收益——丢一次字段更新会被下一轮重写自愈）
+                for _ in range(3):
+                    current = dict(shared.get(key, {}))
+                    baseline = current.get("_updated_at")
+                    current.update(fields)
+                    current["_updated_at"] = time.time()
+                    # 🔥 同时更新守护进程心跳
+                    shared["_daemon_heartbeat"] = time.time()
+                    latest = shared.get(key, {})
+                    if latest.get("_updated_at") == baseline:
+                        shared[key] = current
+                        return
+                # 三次都被插写（极重度并发）：最后一次尽力写入
                 shared[key] = current
                 return
         except Exception:
@@ -1222,9 +1233,20 @@ class DaemonHostMixin:
                     _last_timeout_label=label,
                     _last_timeout_at=time.time(),
                 )
+                # 超时计入共享内存失败计数：否则持续超时被熔断器当作成功，
+                # 也不触发「连续 3 次挂起」（与 writing/act_planning delegate 同一通道）
+                self._report_llm_failure(
+                    novel_id,
+                    f"{label or 'LLM 调用'}超时（{timeout}s），已用默认值降级",
+                )
             return timeout_default
         except Exception as e:
             logger.warning(f"[{novel_id}] {label} 异常: {e}，使用显式默认值")
+            if novel_id:
+                self._report_llm_failure(
+                    novel_id,
+                    f"{label or 'LLM 调用'}异常（{type(e).__name__}），已用默认值降级",
+                )
             return timeout_default
         finally:
             stop_detected.set()

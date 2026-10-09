@@ -1750,10 +1750,9 @@ class AutoNovelGenerationWorkflow:
                 character_registry=self._load_character_registry(bible, novel_id),
                 foreshadowing_registry=foreshadowing_registry or ForeshadowingRegistry(id="temp", novel_id=novel_id_obj),
                 plot_arc=self._load_plot_arc(novel_id_obj),
-                # EventTimeline / RelationshipGraph 尚无可靠数据源
-                # （workflow 未注入 narrative_event 仓储；Bible 的 relationships
+                event_timeline=self._load_event_timeline(novel_id),
+                # RelationshipGraph 尚无可靠数据源（Bible 的 relationships
                 # 元素结构不定型），保持空对象；接入后 checker 扩展即可消费。
-                event_timeline=EventTimeline(),
                 relationship_graph=RelationshipGraph()
             )
 
@@ -1795,6 +1794,51 @@ class AutoNovelGenerationWorkflow:
         except Exception as e:
             logger.debug(f"PlotArc load failed for consistency check: {e}")
         return PlotArc(id="temp", novel_id=novel_id_obj)
+
+    def _load_event_timeline(self, novel_id: str) -> "EventTimeline":
+        """从 narrative_events 仓储构建历史事件时间线（一致性检查第四类真实数据源）。
+
+        取最近 200 条防长篇爆量；加载失败降级为空时间线（不阻断检查）。
+        """
+        from domain.novel.value_objects.event_timeline import EventTimeline
+
+        timeline = EventTimeline()
+        try:
+            from domain.bible.value_objects.character_id import CharacterId
+            from domain.novel.value_objects.novel_event import EventType, NovelEvent
+            from infrastructure.persistence.database.connection import get_database
+            from infrastructure.persistence.database.sqlite_narrative_event_repository import (
+                SqliteNarrativeEventRepository,
+            )
+
+            rows = SqliteNarrativeEventRepository(get_database()).list_up_to_chapter(novel_id, 10**6)
+            for row in rows[-200:]:
+                try:
+                    tags = row.get("tags") or []
+                    etype = next(
+                        (EventType(t) for t in tags if t in EventType._value2member_map_),
+                        EventType.DECISION,
+                    )
+                    mutations = row.get("mutations") or {}
+                    involved = tuple(
+                        CharacterId(str(cid))
+                        for cid in (mutations.get("characters") or [])
+                        if cid
+                    )
+                    summary = str(row.get("event_summary") or "").strip()
+                    if not summary:
+                        continue
+                    timeline.add_event(NovelEvent(
+                        chapter_number=max(1, int(row.get("chapter_number") or 1)),
+                        event_type=etype,
+                        description=summary[:200],
+                        involved_characters=involved,
+                    ))
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"EventTimeline load failed for consistency check: {e}")
+        return timeline
 
     def _detect_conflicts(
         self,

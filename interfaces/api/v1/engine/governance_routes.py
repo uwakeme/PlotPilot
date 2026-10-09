@@ -69,7 +69,9 @@ def _payload_dict(model: BaseModel, *, exclude_none: bool = False) -> dict[str, 
 @router.get("/state")
 async def get_governance_state(novel_id: str) -> dict[str, Any]:
     try:
-        return _service().get_state(novel_id)
+        # 纯读：读接口不创建契约/不回填 storyline（避免并发首读重复 emit 事件）；
+        # 缺契约时返回同结构内存视图，前端无感知
+        return _service().read_state(novel_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"governance state failed: {exc}") from exc
 
