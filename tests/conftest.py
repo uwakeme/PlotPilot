@@ -26,3 +26,28 @@ def pytest_configure(config):
     if root_str in sys.path:
         sys.path.remove(root_str)
     sys.path.insert(0, root_str)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_level_caches():
+    """每个测试前清进程级缓存，保证 env patch 的隔离性。
+
+    get_backend_settings 现为 lru_cache 进程级缓存（D9），
+    不清会让前一个测试的 env 泄漏到后续测试。
+    """
+    try:
+        from interfaces.api.settings import reset_backend_settings_cache
+
+        reset_backend_settings_cache()
+    except Exception:
+        pass
+    yield
+    try:
+        from interfaces.api.settings import reset_backend_settings_cache
+
+        reset_backend_settings_cache()
+    except Exception:
+        pass

@@ -1525,7 +1525,22 @@ class DaemonHostMixin:
 
 
     def _sum_completed_chapter_words(self, novel_id: str) -> int:
-        """已完结章节字数合计，用于宏观诊断字数间隔锚点。"""
+        """已完结章节字数合计，用于宏观诊断字数间隔锚点。
+
+        SQL SUM 聚合：旧实现 list_by_novel 把全书章节实体（含正文）拉进
+        内存求和，千章长篇是 O(全书) 内存/IO。word_count 缺失行按 0 计。
+        """
+        try:
+            from infrastructure.persistence.database.connection import get_database
+
+            row = get_database().fetch_one(
+                "SELECT SUM(COALESCE(word_count, 0)) AS total FROM chapters WHERE novel_id = ? AND status = 'completed'",
+                (novel_id,),
+            )
+            if row is not None:
+                return int(row.get("total") or 0)
+        except Exception as e:
+            logger.debug("[%s] SQL 字数聚合失败，回退实体求和: %s", novel_id, e)
         chapters = self.chapter_repository.list_by_novel(NovelId(novel_id))
         total = 0
         for c in chapters:

@@ -205,14 +205,27 @@ async def list_ai_traces(
 
 
 @router.get("/{novel_id}/traces/{trace_id}/timeline", response_model=AiTraceTimelineResponse)
-async def ai_trace_timeline(novel_id: str, trace_id: str):
-    """按 trace_id 查询 AI 调用 timeline。"""
+async def ai_trace_timeline(
+    novel_id: str,
+    trace_id: str,
+    include_full: bool = Query(False, description="包含 prompt_full/response_full 等全文（默认仅摘要）"),
+):
+    """按 trace_id 查询 AI 调用 timeline。
+
+    默认摘要视图：*_full 字段（prompt/响应全文，单 span 可达数十 KB）
+    置空；调试需要全文时显式传 include_full=true。preview 字段保留。
+    """
     if not _novel_exists(novel_id):
         raise HTTPException(status_code=404, detail="Novel not found")
 
     store = _get_trace_store()
     rows = store.get_ai_timeline(trace_id=trace_id, novel_id=novel_id)
     spans = [AiTraceSpanDTO(**row) for row in rows]
+    if not include_full:
+        for span in spans:
+            span.prompt_full = None
+            span.response_full = None
+            span.variables_full = None
     return AiTraceTimelineResponse(trace_id=trace_id, spans=spans, total=len(spans))
 
 

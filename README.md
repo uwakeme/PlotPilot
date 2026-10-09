@@ -72,14 +72,14 @@ PlotPilot 内核由五个相互协作的子系统构成：
 
 引擎维护两条并行索引：
 
-- **章内容索引**：基于 FAISS / ChromaDB 的本地向量库，对所有已写章节做语义切片索引
+- **章内容索引**：基于 ChromaDB（本地）/ Qdrant 的向量库，对所有已写章节做语义切片索引
 - **三元组索引**：从正文中自动抽取的 `(主体, 关系, 客体)` 三元组，支持结构化与语义混合查询
 
 生成时，引擎通过当前场景语义自动召回相关历史内容，注入上下文，消除"模型失忆"问题。嵌入服务支持 OpenAI 兼容 API（轻量）和本地 `sentence-transformers` 模型（离线高性能）。
 
 ### 3. 剧情引擎运行时（Engine Runtime）
 
-这是引擎最核心的系统组件。当前生产入口收敛在 `engine/runtime/engine_daemon.py`：由 `EngineDaemon` 承接守护进程生命周期，委托 `StoryPipelineRunner` 运行章节规划、写作、审计与状态推进；章节写作默认走 `BaseStoryPipeline` 十步管线。
+这是引擎最核心的系统组件。当前生产入口收敛在 `engine/runtime/engine_daemon.py`：由 `EngineDaemon` 承接守护进程生命周期，委托 `StoryPipelineRunner` 运行章节规划、写作、审计与状态推进；章节写作默认走 `BaseStoryPipeline` 12 步管线。
 
 ```
 宏观规划（部 / 卷 / 幕结构）
@@ -164,7 +164,7 @@ PlotPilot 内核（本仓库）
 | 后端框架 | FastAPI + uvicorn | 原生异步 + 自动 OpenAPI 文档，SSE 支持开箱即用 |
 | 架构范式 | DDD 分层 + 独立 `engine/` 运行内核 | 领域逻辑、用例编排、生产写作管线与技术实现分离，生态扩展不污染内核 |
 | AI 接入 | OpenAI 兼容协议 / Anthropic Claude / 火山方舟 Doubao | 统一接口抽象，模型切换不改业务代码 |
-| 向量存储 | ChromaDB（默认）/ FAISS | 本地部署，零外部依赖，冷启动快 |
+| 向量存储 | ChromaDB（默认）/ Qdrant | 本地部署，零外部依赖，冷启动快 |
 | 嵌入模型 | OpenAI 兼容 API / 本地 `bge-small-zh-v1.5` | 在线轻量与离线高性能双模式 |
 | 主数据库 | SQLite + Write Dispatch 单写者路由 | 嵌入式零依赖，并发写冲突由调度层解决 |
 | 前端 | Vue 3 + TypeScript + Vite + Naive UI + ECharts | 组件类型安全，知识图谱与 DAG 可视化由 ECharts 驱动 |
@@ -306,7 +306,7 @@ cd frontend && npm install && npm run dev
 │
 ├── engine/                # 剧情引擎内核 — 生产运行时、章节写作管线与题材扩展
 │   ├── runtime/           # EngineDaemon、StoryPipelineRunner、守护进程委托、质量守门
-│   ├── pipeline/          # BaseStoryPipeline 十步章节生成管线
+│   ├── pipeline/          # BaseStoryPipeline 12 步章节生成管线
 │   ├── pipelines/         # 题材 Pipeline 注册与扩展（如武侠、通用题材桥接）
 │   ├── core/              # 引擎侧实体、端口、服务契约
 │   └── infrastructure/    # 引擎事件、记忆编排、checkpoint 适配

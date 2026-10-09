@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from infrastructure.ai.embedding_environment import EmbeddingEnvironmentSettings
@@ -137,5 +138,21 @@ class BackendSettings:
         )
 
 
-def get_backend_settings() -> BackendSettings:
+@lru_cache(maxsize=1)
+def _cached_backend_settings() -> BackendSettings:
     return BackendSettings.from_env()
+
+
+def get_backend_settings() -> BackendSettings:
+    """进程级缓存的 backend 设置。
+
+    env 在进程生命周期内视为不可变（生产语义）；被约 10 处每请求执行的
+    FastAPI dependency 高频调用，旧实现每次重解析全部环境变量并重建
+    4 个 dataclass。测试需要改 env 时先调 reset_backend_settings_cache()。
+    """
+    return _cached_backend_settings()
+
+
+def reset_backend_settings_cache() -> None:
+    """显式失效（测试/热载场景）。"""
+    _cached_backend_settings.cache_clear()

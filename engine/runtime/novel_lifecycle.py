@@ -112,7 +112,18 @@ async def process_novel(host: Any, novel: Novel) -> None:
             logger.debug("[%s] 等待人工审阅", novel.novel_id)
             return
         elif novel.current_stage == NovelStage.COMPLETED:
-            # 目标章数是软目标：完结书被调大目标后允许续写，否则保持完结（daemon 空转等待）
+            # 目标章数是软目标：完结书被调大目标后允许续写，否则保持完结。
+            # 每 tick 一次 COUNT 也是开销（每 5s 建一次短连接）——60s 内
+            # 已查过且结果为「无需续写」的直接跳过，避免永久忙轮询
+            last_check = getattr(novel, "_completed_check_at", 0.0)
+            try:
+                import time as _time
+
+                if _time.time() - last_check < 60.0:
+                    return
+                novel._completed_check_at = _time.time()
+            except Exception:
+                pass
             completed_count = host._count_completed_chapters(novel.novel_id)
             if completed_count < (novel.target_chapters or 0):
                 logger.info(

@@ -225,11 +225,11 @@ async def get_novel(
 
 
 @router.get("/", response_model=List[NovelDTO])
-async def list_novels(
+def list_novels(
     response: Response,
     service: NovelService = Depends(get_novel_service),
 ):
-    """列出所有小说
+    """列出所有小说（同步路由：FastAPI 自动进线程池，不阻塞事件循环）
 
     Args:
         service: Novel 服务

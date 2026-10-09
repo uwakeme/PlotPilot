@@ -11,6 +11,7 @@
 命名保持 ChromaDB 以兼容现有代码。
 """
 from typing import List
+import asyncio
 import json
 import os
 import logging
@@ -149,7 +150,15 @@ class ChromaDBVectorStore(VectorStore):
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         self.collections = {}  # {collection_name: {"index": faiss.Index, "metadata": dict}}
+        # 延迟落盘：每条 insert 全量 write_index + json.dump 是 O(n²) 磁盘写
+        #（千章积累下索引 MB 级），改为脏标记 + 阈值触发 + 退出兜底
+        self._dirty: dict = {}          # {collection: pending_writes}
+        self._last_flush_at: dict = {}  # {collection: monotonic}
+        self._op_lock = asyncio.Lock()
         self._load_collections()
+        import atexit
+
+        atexit.register(self._atexit_flush)
 
     def _load_collections(self):
         """加载所有已存在的集合"""
@@ -195,41 +204,54 @@ class ChromaDBVectorStore(VectorStore):
         vector: List[float],
         payload: dict
     ) -> None:
-        """插入向量到集合中"""
+        """插入向量到集合中（内存立即生效，落盘延迟批量执行）"""
+        await self.insert_batch(collection, [(id, vector, payload)])
+
+    async def insert_batch(
+        self,
+        collection: str,
+        items: List[tuple],
+    ) -> None:
+        """批量插入向量：一次矩阵 add + 一次脏标记，供章级/三元组批量索引用。"""
         try:
             if collection not in self.collections:
                 raise Exception(f"Collection {collection} does not exist")
 
-            coll = self.collections[collection]
-            vec_array = _as_vector_matrix(vector)
-            actual_dim = len(vector)
-
-            # 用实际向量维度检测 FAISS 索引维度，不匹配则重建
-            if coll["index"].d != actual_dim:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "FAISS索引维度不匹配，自动重建 collection=%s old_dim=%d actual_dim=%d",
-                    collection, coll["index"].d, actual_dim
-                )
-                await self.delete_collection(collection)
-                await self.create_collection(collection, actual_dim)
+            async with self._op_lock:
                 coll = self.collections[collection]
 
-            # 如果 ID 已存在，先删除旧的
-            if id in coll["metadata"]:
-                await self.delete(collection, id)
+                dimension = None
+                filtered = []
+                for point_id, vector, payload in items:
+                    if dimension is None:
+                        dimension = len(vector)
+                    elif len(vector) != dimension:
+                        raise Exception("insert_batch vectors must share one dimension")
+                    # 已存在的 ID 先移除旧记录（FAISS 端由 compact 回收）
+                    coll["metadata"].pop(point_id, None)
+                    filtered.append((point_id, vector, payload))
 
-            # 添加到 FAISS 索引
-            coll["index"].add(vec_array)
-            idx = coll["index"].ntotal - 1
+                if filtered and coll["index"].d != dimension:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "FAISS索引维度不匹配，自动重建 collection=%s old_dim=%d actual_dim=%d",
+                        collection, coll["index"].d, dimension
+                    )
+                    await self._delete_collection_locked(collection)
+                    await self._create_collection_locked(collection, dimension)
+                    coll = self.collections[collection]
 
-            # 保存元数据
-            coll["metadata"][id] = {
-                "idx": idx,
-                "payload": payload
-            }
+                index_backend = _get_vector_index_backend()
+                matrix = _as_vector_batch([v for _, v, _ in filtered])
+                coll["index"].add(matrix)
+                base_idx = coll["index"].ntotal - len(filtered)
+                for offset, (point_id, _vec, payload) in enumerate(filtered):
+                    coll["metadata"][point_id] = {
+                        "idx": base_idx + offset,
+                        "payload": payload
+                    }
 
-            self._save_collection(collection)
+                self._mark_dirty(collection, writes=len(filtered))
         except Exception as e:
             raise Exception(f"Failed to insert vector: {str(e)}")
 
@@ -274,12 +296,42 @@ class ChromaDBVectorStore(VectorStore):
         except Exception as e:
             raise Exception(f"Failed to search vectors: {str(e)}")
 
+    def _mark_dirty(self, collection: str, writes: int = 1) -> None:
+        """累计脏写；达到阈值（32 条或距上次落盘 ≥5s）时批量落盘。"""
+        import time as _time
+
+        pending = self._dirty.get(collection, 0) + writes
+        last = self._last_flush_at.get(collection, 0.0)
+        if pending >= 32 or (pending > 0 and _time.monotonic() - last >= 5.0):
+            self._flush_collection(collection)
+            return
+        self._dirty[collection] = pending
+
+    def _flush_collection(self, collection: str) -> None:
+        import time as _time
+
+        if collection in self.collections:
+            self._save_collection(collection)
+        self._dirty.pop(collection, None)
+        self._last_flush_at[collection] = _time.monotonic()
+
+    def flush(self) -> None:
+        """立即落盘所有脏集合（进程退出兜底 / 关键路径显式调用）。"""
+        for collection in list(self._dirty.keys()):
+            self._flush_collection(collection)
+
+    def _atexit_flush(self) -> None:
+        try:
+            self.flush()
+        except Exception:
+            pass
+
     async def delete(
         self,
         collection: str,
         id: str
     ) -> None:
-        """删除向量（标记删除 + 碎片整理）
+        """删除向量（标记删除 + 碎片整理；落盘走脏标记延迟批量）
 
         当累计删除数量超过阈值时自动触发 compact()，
         重建索引并回收已删除向量的空间，防止内存持续增长。
@@ -288,13 +340,14 @@ class ChromaDBVectorStore(VectorStore):
             if collection not in self.collections:
                 raise Exception(f"Collection {collection} does not exist")
 
-            coll = self.collections[collection]
-            if id in coll["metadata"]:
-                del coll["metadata"][id]
-                self._save_collection(collection)
+            async with self._op_lock:
+                coll = self.collections[collection]
+                if id in coll["metadata"]:
+                    del coll["metadata"][id]
+                    self._mark_dirty(collection)
 
-                # 碎片整理：当 metadata 条目数 < 索引向量数的 50% 时触发重建
-                self._maybe_compact(collection)
+                    # 碎片整理：当 metadata 条目数 < 索引向量数的 50% 时触发重建
+                    self._maybe_compact(collection)
         except Exception as e:
             raise Exception(f"Failed to delete vector: {str(e)}")
 
@@ -304,6 +357,15 @@ class ChromaDBVectorStore(VectorStore):
         dimension: int
     ) -> None:
         """创建集合（若已存在且维度匹配则跳过；维度不匹配时删除后重建）"""
+        async with self._op_lock:
+            await self._create_collection_locked(collection, dimension)
+
+    async def _create_collection_locked(
+        self,
+        collection: str,
+        dimension: int
+    ) -> None:
+        """create_collection 的锁内实现（调用方须已持有 _op_lock）。"""
         index_backend = _get_vector_index_backend()
 
         try:
@@ -317,7 +379,7 @@ class ChromaDBVectorStore(VectorStore):
                     "向量集合维度不匹配，重建索引 collection=%s old_dim=%d new_dim=%d",
                     collection, existing_dim, dimension
                 )
-                await self.delete_collection(collection)
+                await self._delete_collection_locked(collection)
 
             # 创建 FAISS 索引（使用 L2 距离）
             index = index_backend.IndexFlatL2(dimension)
@@ -326,6 +388,9 @@ class ChromaDBVectorStore(VectorStore):
                 "metadata": {}
             }
             self._save_collection(collection)
+            import time as _time
+
+            self._last_flush_at[collection] = _time.monotonic()  # 建集合即落盘基线，避免首条 insert 误判超时
         except Exception as e:
             raise Exception(f"Failed to create collection: {repr(e)}")
 
@@ -334,11 +399,17 @@ class ChromaDBVectorStore(VectorStore):
         collection: str
     ) -> None:
         """删除集合"""
+        async with self._op_lock:
+            await self._delete_collection_locked(collection)
+
+    async def _delete_collection_locked(self, collection: str) -> None:
+        """delete_collection 的锁内实现（调用方须已持有 _op_lock）。"""
         import shutil
 
         try:
             if collection in self.collections:
                 del self.collections[collection]
+            self._dirty.pop(collection, None)
 
             # 删除磁盘文件
             collection_dir = self.persist_directory / collection

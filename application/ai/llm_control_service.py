@@ -130,6 +130,10 @@ class LLMTestResult(BaseModel):
 class LLMControlService:
     """LLM 控制面板服务 —— 配置全部持久化到 SQLite（llm_profiles + llm_config_meta 表）。"""
 
+    # 实例字段默认值（服务为容器单例；无 __init__）
+    _active_profile_cache: Optional['LLMProfile'] = None
+    _active_profile_cache_at: float = 0.0
+
     @staticmethod
     def mask_api_key(key: str) -> str:
         """GET 面板返回用掩码；空 key 原样返回空串。"""
@@ -407,7 +411,31 @@ class LLMControlService:
         )
 
         logger.info("LLM 配置已保存到数据库 (%d 个 profiles)", len(sanitized.profiles))
+        self._invalidate_active_profile_cache()
         return sanitized
+
+    # 激活 profile 短 TTL 缓存：DynamicLLMService 每次 generate/stream 都会
+    # resolve_active_profile（1 次 SELECT + 2 次 meta 读），章后管线串十几个
+    # 调用放大明显。写配置（save_config/激活切换）时主动失效。
+    ACTIVE_PROFILE_CACHE_TTL_SECONDS: float = 10.0
+
+    def _invalidate_active_profile_cache(self) -> None:
+        self._active_profile_cache = None
+        self._active_profile_cache_at = 0.0
+
+    def _cached_active_profile(self) -> 'tuple[Optional[LLMProfile], float]':
+        import time as _time
+
+        now = _time.monotonic()
+        if (
+            self._active_profile_cache is not None
+            and now - self._active_profile_cache_at < self.ACTIVE_PROFILE_CACHE_TTL_SECONDS
+        ):
+            return self._active_profile_cache, self._active_profile_cache_at
+        resolved = self.resolve_active_profile()
+        self._active_profile_cache = resolved
+        self._active_profile_cache_at = now
+        return resolved, self._active_profile_cache_at
 
     def get_active_profile(self, config: Optional[LLMControlConfig] = None) -> Optional[LLMProfile]:
         cfg = config or self.get_config()

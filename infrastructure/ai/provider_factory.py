@@ -120,7 +120,15 @@ class DynamicLLMService(LLMService):
         self._cached_key: Optional[str] = None
 
     async def _resolve_provider(self) -> LLMService:
-        profile = self.factory.control_service.resolve_active_profile()
+        # 短 TTL 缓存的激活 profile：每次 generate/stream 不再打满 DB
+        #（1 次 SELECT llm_profiles + 2 次 meta 读 × 章后管线十几次调用）。
+        # duck-typing 兼容测试替身（未实现缓存接口时直连解析）。
+        control = self.factory.control_service
+        cached_getter = getattr(control, "_cached_active_profile", None)
+        if callable(cached_getter):
+            profile, _ = cached_getter()
+        else:
+            profile = control.resolve_active_profile()
         key = _make_cache_key(profile) if profile else "__mock__"
 
         if key == self._cached_key and self._cached_provider is not None:

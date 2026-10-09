@@ -46,9 +46,18 @@ def is_story_pipeline_writing_enabled() -> bool:
 
 
 def _build_runner(daemon: Any):
+    """构建（并按 daemon 实例缓存）StoryPipelineRunner。
+
+    runner 只是把 daemon 启动时注入的固定依赖打包，每章重建纯属浪费；
+    daemon 属性（planning_service 等）在运行期不变，缓存安全。
+    """
+    cached = daemon.__dict__.get("_cached_story_runner")
+    if cached is not None:
+        return cached
+
     from engine.runtime.runner import StoryPipelineRunner
 
-    return StoryPipelineRunner(
+    runner = StoryPipelineRunner(
         novel_repository=daemon.novel_repository,
         llm_service=daemon.llm_service,
         context_builder=daemon.context_builder,
@@ -65,6 +74,8 @@ def _build_runner(daemon: Any):
         foreshadowing_repository=daemon.foreshadowing_repository,
         knowledge_service=daemon.knowledge_service,
     )
+    daemon._cached_story_runner = runner
+    return runner
 
 
 async def run_writing(host: Any, novel: Any) -> None:
@@ -150,7 +161,16 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
     )
     ctx.writing_progress_sink = _writing_sink
 
-    pipeline = get_pipeline_registry().create_pipeline(genre)
+    # pipeline 无状态（状态全在 ctx），按 daemon+genre 缓存避免每章重建
+    # （用 __dict__ 而非 getattr：MagicMock 的 getattr 会自动产 Mock 导致缓存误命中）
+    pipelines = daemon.__dict__.get("_cached_pipelines")
+    if pipelines is None:
+        pipelines = {}
+        daemon._cached_pipelines = pipelines
+    pipeline = pipelines.get(genre)
+    if pipeline is None:
+        pipeline = get_pipeline_registry().create_pipeline(genre)
+        pipelines[genre] = pipeline
     result = await pipeline.run_chapter(ctx)
 
     if not result.success and result.error == "awaiting_ai_review":

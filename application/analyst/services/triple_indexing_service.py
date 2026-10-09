@@ -217,9 +217,11 @@ class TripleIndexingService:
         # 批量生成向量
         vectors = await self._embedding_service.embed_batch(valid_texts)
 
-        # 批量写入
+        # 批量写入（向量库 insert_batch：一次矩阵 add + 延迟落盘，
+        # 替代逐条 insert 的 O(n²) 全量重写）
         collection_name = self._get_collection_name(novel_id)
         indexed = 0
+        batch_items: list = []
 
         for triple, vector in zip(valid_triples, vectors):
             triple_id = triple.get("id") or triple.get("triple_id")
@@ -239,13 +241,19 @@ class TripleIndexingService:
                 "text": self._triple_to_text(triple),
             }
 
-            await self._vector_store.insert(
-                collection=collection_name,
-                id=triple_id,
-                vector=vector,
-                payload=payload
-            )
+            batch_items.append((triple_id, vector, payload))
             indexed += 1
+
+        if batch_items and hasattr(self._vector_store, "insert_batch"):
+            await self._vector_store.insert_batch(collection_name, batch_items)
+        else:
+            for point_id, vector, payload in batch_items:
+                await self._vector_store.insert(
+                    collection=collection_name,
+                    id=point_id,
+                    vector=vector,
+                    payload=payload
+                )
 
         logger.info(f"Indexed {indexed} triples for novel {novel_id}")
         return indexed

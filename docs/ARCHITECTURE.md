@@ -33,7 +33,7 @@
 │
 ├── engine/                # 剧情引擎内核 - 生产运行时、章节写作管线与题材扩展
 │   ├── runtime/           # EngineDaemon、StoryPipelineRunner、守护进程委托、质量守门
-│   ├── pipeline/          # BaseStoryPipeline 十步章节生成管线
+│   ├── pipeline/          # BaseStoryPipeline 12 步章节生成管线
 │   ├── pipelines/         # 题材 Pipeline 注册与扩展
 │   ├── core/              # 引擎侧实体、端口、服务契约
 │   └── infrastructure/    # 引擎事件、记忆编排、checkpoint 适配
@@ -81,7 +81,7 @@
 | 模块 | 职责 |
 |------|------|
 | `runtime/` | `EngineDaemon`、`StoryPipelineRunner`、守护进程委托与质量守门 |
-| `pipeline/` | `BaseStoryPipeline` 十步章节生成管线 |
+| `pipeline/` | `BaseStoryPipeline` 12 步章节生成管线 |
 | `pipelines/` | 题材 Pipeline 注册与扩展 |
 | `core/` | 引擎侧实体、端口和服务契约 |
 
@@ -166,5 +166,5 @@ python -m pytest tests/integration -v
 ## 数据库与数据目录
 
 - **主数据库**：默认 SQLite 文件名为 `data/plotpilot.db`（旧版为 `aitext.db`，`get_db_path()` 会自动沿用）；实际目录由 `application.paths.DATA_DIR` 解析（未设置 `PLOTPILOT_PROD_DATA_DIR` / 旧名 `AITEXT_PROD_DATA_DIR` 且非冻结运行时指向仓库内 `data/`）。
-- **向量存储**：默认在 `data/chromadb/` 下持久化（实现为本地 FAISS + 元数据，与 `.env` 中 `VECTOR_STORE_TYPE=chromadb` 对应）。
+- **向量存储**：默认在 `data/chromadb/` 下持久化（本地 ChromaDB 实现 + 元数据，与 `.env` 中 `VECTOR_STORE_TYPE=chromadb` 对应）。
 - **应用日志**：默认 `logs/plotpilot.log`（由 `LOG_FILE` 控制，见 `.env.example`）。

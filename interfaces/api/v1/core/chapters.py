@@ -137,20 +137,27 @@ class EnsureChapterRequest(BaseModel):
 
 # Routes
 @router.get("/{novel_id}/chapters", response_model=List[ChapterDTO])
-async def list_chapters(
+def list_chapters(
     novel_id: str,
     service: ChapterService = Depends(get_chapter_service)
 ):
-    """列出小说的所有章节
+    """列出小说的所有章节（同步路由：FastAPI 自动进线程池，不阻塞事件循环）
+
+    列表为摘要视图：content 置空（前端正文一律走单章 getChapter——
+    useWorkbench.goToChapter 已验证不消费列表项 content）。千章长篇的
+    全量正文列表响应可达几十 MB，此改动将其降为元数据量级。
 
     Args:
         novel_id: 小说 ID
         service: Chapter 服务
 
     Returns:
-        章节 DTO 列表
+        章节 DTO 列表（content 为空串，详情按需取）
     """
-    return service.list_chapters_by_novel(novel_id)
+    items = service.list_chapters_by_novel(novel_id)
+    for dto in items:
+        dto.content = ""
+    return items
 
 
 @router.post("/{novel_id}/chapters", response_model=NovelDTO, status_code=201)
