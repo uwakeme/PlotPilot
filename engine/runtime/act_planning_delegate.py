@@ -305,26 +305,36 @@ async def run_act_planning(host: Any, novel: Novel) -> None:
         parent_volume = host._find_parent_volume_for_new_act(
             volume_nodes=volume_nodes,
             act_nodes=act_nodes,
-            current_auto_chapters=novel.current_auto_chapters or 0,
-            target_chapters=target_chapters,
             rec_acts_per_volume=rec_acts_per_volume,
             novel_id=novel.novel_id,
         )
 
         if parent_volume:
-            logger.info(
-                "[%s] 动态生成第 %s 幕（父卷：第 %s 卷，每幕建议 %s 章）",
-                novel.novel_id,
-                target_act_number,
-                parent_volume.number,
-                rec_chapters_per_act,
-            )
             try:
                 last_act = act_nodes[-1] if act_nodes else None
                 if last_act:
-                    await host.planning_service.create_next_act_auto(
+                    create_result = await host.planning_service.create_next_act_auto(
                         novel_id=novel_id,
                         current_act_id=last_act.id,
+                        parent_volume_id=parent_volume.id,
+                    )
+                    # 日志必须反映落库后的真实父卷（历史上选卷与挂载脱钩，日志曾长期失真）
+                    created_act = {}
+                    if isinstance(create_result, Mapping):
+                        candidate = create_result.get("next_act")
+                        if isinstance(candidate, Mapping):
+                            created_act = candidate
+                    actual_volume = next(
+                        (v for v in volume_nodes if v.id == created_act.get("parent_id")),
+                        parent_volume,
+                    )
+                    logger.info(
+                        "[%s] 动态生成第 %s 幕（父卷：第 %s 卷《%s》，每幕建议 %s 章）",
+                        novel.novel_id,
+                        created_act.get("number", target_act_number),
+                        actual_volume.number,
+                        actual_volume.title,
+                        rec_chapters_per_act,
                     )
                 else:
                     logger.info("[%s] 创建首幕", novel.novel_id)

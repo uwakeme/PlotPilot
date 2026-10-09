@@ -620,14 +620,24 @@ def get_embedding_service():
                 base_url=_base_url or None,
                 model=_model,
             )
-        else:
-            # 默认 local 模式
+        elif _mode == "local":
             if not (_model_path or "").strip():
                 logger.warning("embedding mode=local 但未配置 model_path，向量检索已禁用")
                 return None
             from infrastructure.ai.local_embedding_service import LocalEmbeddingService
             logger.info("使用本地嵌入服务 (DB配置): path=%s, gpu=%s", _model_path, _use_gpu)
             return LocalEmbeddingService(model_name=_model_path, use_gpu=_use_gpu)
+        else:
+            # 显式拒绝未知模式，而不是静默当作 local：
+            # 旧实现是 `if openai: ... else: 当作 local`，任何拼写错误
+            # （如 EMBEDDING_SERVICE=opnai / siliconflow 这类网关名）都会退化成
+            # local → model_path 为空 → 向量检索静默失效，用户只看到功能"变差"。
+            logger.error(
+                "未知的 embedding mode=%r（仅支持 openai / local），向量检索已禁用。"
+                "网关名（如 siliconflow）应填在 base_url，而非 mode。",
+                _mode,
+            )
+            return None
     except Exception as e:
         logger.warning("EmbeddingService 初始化失败: %s", e)
         return None

@@ -22,6 +22,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from interfaces.api.local_access import assert_local_request
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"], include_in_schema=False)
@@ -49,12 +51,13 @@ _install_status: dict = {
 
 
 def _assert_localhost(request: Request) -> None:
-    """仅允许本机访问"""
-    if not request.client:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    host = request.client.host or ""
-    if host not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
-        raise HTTPException(status_code=403, detail="Only localhost access allowed")
+    """仅允许本机访问。
+
+    委托给 `interfaces.api.local_access.assert_local_request`：除 client host 外
+    还校验 `Origin`。旧实现只看 client host，而网页发起的跨域请求 client host
+    同样是 127.0.0.1，等于对恶意网页完全不设防。
+    """
+    assert_local_request(request)
 
 
 def _get_project_root() -> Path:

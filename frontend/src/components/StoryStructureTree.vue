@@ -147,6 +147,8 @@ const props = defineProps<{
     word_count: number
   }>
   currentChapterId?: number | null
+  /** 全托管正在写作的章节号（自动驾驶 SSE streamingChapterNumber）；用于自动展开写作中章节的目录 */
+  writingChapterNumber?: number | null
   /** 与 NovelDTO.generation_prefs 一致；影响章节节点展示文案 */
   generationPrefs?: GenerationPrefsDTO | null
 }>()
@@ -582,23 +584,79 @@ const showMacroPreviewTailLoading = computed(
     macroPlanLoadingMore.value,
 )
 
-/** 收集所有非章节节点的 key，用于自动展开 */
-const collectNonChapterKeys = (nodes: StoryNode[]): string[] => {
+/** 收集树中全部节点 key（用于过滤失效的展开项 / 预览树全展开） */
+const collectAllKeys = (nodes: StoryNode[]): string[] => {
   const keys: string[] = []
   const traverse = (node: StoryNode) => {
-    if (node.node_type !== 'chapter') {
-      keys.push(node.id)
-    }
+    keys.push(node.id)
     node.children?.forEach(traverse)
   }
   nodes.forEach(traverse)
   return keys
 }
 
+/** 收集目标章节所在路径上的祖先容器 key（部/卷/幕），找不到返回 null */
+const findChapterAncestorKeys = (
+  nodes: StoryNode[],
+  chapterNum: number,
+  path: string[] = [],
+): string[] | null => {
+  for (const node of nodes) {
+    if (node.node_type === 'chapter' && node.number === chapterNum) {
+      return path
+    }
+    if (node.children?.length) {
+      const found = findChapterAncestorKeys(node.children, chapterNum, [...path, node.id])
+      if (found) return found
+    }
+  }
+  return null
+}
+
+/** 定位锚点章节应展开的祖先容器 key（部/卷/幕）；找不到返回 null */
+const collectChapterAnchorKeys = (nodes: StoryNode[], chapterNum: number): string[] | null => {
+  const exact = findChapterAncestorKeys(nodes, chapterNum)
+  if (exact) return exact
+  /* 写作中的章节往往尚未写入结构树：回退到 ≤ 目标章号的最近章节，展开其所在目录（即正在写的幕） */
+  const best: { num: number; keys: string[] | null } = { num: -1, keys: null }
+  const dfs = (list: StoryNode[], path: string[]) => {
+    for (const node of list) {
+      if (
+        node.node_type === 'chapter' &&
+        typeof node.number === 'number' &&
+        node.number >= 1 &&
+        node.number <= chapterNum &&
+        node.number > best.num
+      ) {
+        best.num = node.number
+        best.keys = path
+      }
+      if (node.children?.length) dfs(node.children, [...path, node.id])
+    }
+  }
+  dfs(nodes, [])
+  return best.keys
+}
+
 watch(
-  displayTreeData,
-  (nodes) => {
-    expandedKeys.value = collectNonChapterKeys(nodes as unknown as StoryNode[])
+  [displayTreeData, () => props.currentChapterId, () => props.writingChapterNumber],
+  () => {
+    const nodes = displayTreeData.value as unknown as StoryNode[]
+    /* 预览树（宏观规划中）：部/卷/幕逐条流式载入，保持全展开便于观察规划进度 */
+    if (isMacroPreviewTree.value) {
+      expandedKeys.value = collectAllKeys(nodes)
+      return
+    }
+    /* 正式树：默认全部收起，只展开当前章/写作中章节的目录；保留用户手动展开的节点（树自动刷新不重置浏览状态） */
+    const validKeys = new Set(collectAllKeys(nodes))
+    const anchors = [props.writingChapterNumber ?? null, props.currentChapterId ?? null]
+    const merged = new Set(expandedKeys.value.filter((k) => validKeys.has(k)))
+    for (const anchor of anchors) {
+      if (anchor == null || anchor < 1) continue
+      const keys = collectChapterAnchorKeys(nodes, anchor)
+      keys?.forEach((k) => merged.add(k))
+    }
+    expandedKeys.value = Array.from(merged)
   },
   { deep: true, immediate: true },
 )

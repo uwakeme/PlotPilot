@@ -11,6 +11,7 @@ from infrastructure.ai.process_environment import (
     configure_huggingface_process_environment,
 )
 from infrastructure.ai.vector_store_environment import VectorStoreEnvironmentSettings
+from interfaces.api.local_access import DEFAULT_CORS_ORIGINS
 
 
 APP_RELEASE_VERSION = "1.0.2"
@@ -26,8 +27,14 @@ def configure_process_environment() -> None:
 
 
 def _split_csv_env(value: str) -> list[str]:
-    values = [item.strip() for item in value.split(",") if item.strip()]
-    return values or ["*"]
+    """解析逗号分隔的 origin 列表。
+
+    注意：空值返回 []，**不再兜底成 ["*"]**。后端没有用户登录态，
+    放行 `*` 意味着任何被用户浏览器打开的网页都能直接读写本机 API
+    （读小说正文、读 LLM 密钥、改数据、触发 pip 安装）。
+    调用方负责在解析结果为空时套用 DEFAULT_CORS_ORIGINS。
+    """
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 @dataclass(frozen=True)
@@ -102,7 +109,7 @@ class BackendSettings:
     stats_api_prefix: str = STATS_API_PREFIX
     log_level: str = "INFO"
     log_file: str = "logs/plotpilot.log"
-    cors_origins: tuple[str, ...] = ("*",)
+    cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
     disable_auto_daemon: bool = False
     frontend_dir: Path = Path("frontend/dist")
     llm: LLMEnvironmentSettings = field(default_factory=LLMEnvironmentSettings)
@@ -112,7 +119,7 @@ class BackendSettings:
     @classmethod
     def from_env(cls, root: Path | None = None) -> "BackendSettings":
         project_root = root or Path(__file__).resolve().parents[2]
-        cors_origins = tuple(_split_csv_env(os.getenv("CORS_ORIGINS", "")))
+        cors_origins = tuple(_split_csv_env(os.getenv("CORS_ORIGINS", ""))) or DEFAULT_CORS_ORIGINS
         disable_auto_daemon = os.getenv("DISABLE_AUTO_DAEMON", "").lower() in (
             "1",
             "true",

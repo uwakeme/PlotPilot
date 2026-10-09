@@ -5,6 +5,7 @@ from interfaces.api.settings import (
     BackendSettings,
     configure_process_environment,
 )
+from interfaces.api.local_access import DEFAULT_CORS_ORIGINS
 
 
 def test_backend_settings_defaults(monkeypatch, tmp_path):
@@ -36,7 +37,10 @@ def test_backend_settings_defaults(monkeypatch, tmp_path):
     assert settings.api_v1_prefix == API_V1_PREFIX
     assert settings.log_level == "INFO"
     assert settings.log_file == "logs/plotpilot.log"
-    assert settings.cors_origins == ("*",)
+    # 默认必须是显式白名单，绝不是 "*"：后端无登录态，放行 * 等于让任意网页
+    # 直接读写本机 API（读小说正文、读 LLM 密钥、触发 pip 安装）。
+    assert settings.cors_origins == DEFAULT_CORS_ORIGINS
+    assert "*" not in settings.cors_origins
     assert settings.disable_auto_daemon is False
     assert settings.frontend_dir == tmp_path / "frontend" / "dist"
     assert settings.vector_store.enabled is True

@@ -118,12 +118,13 @@ const slug = computed(() => String(route.params.slug ?? ''))
 const chapterListRef = ref<ComponentPublicInstance<{ refreshStoryTree: () => void }> | null>(null)
 const workAreaRef = ref<ComponentPublicInstance<{
   ensureAssistedMode: () => void
-  streamingChapterNumber: import('vue').Ref<number | null>
-  writingPipelineStep: import('vue').ComputedRef<number | null>
+  /* defineExpose 暴露的 ref 经 expose proxy（proxyRefs）自动解包，模板引用上拿到的就是值本身而非 Ref */
+  streamingChapterNumber: number | null
+  writingPipelineStep: number | null
 }> | null>(null)
 
-const writingChapterNumber = computed(() => workAreaRef.value?.streamingChapterNumber?.value ?? null)
-const writingPipelineStep = computed(() => workAreaRef.value?.writingPipelineStep?.value ?? null)
+const writingChapterNumber = computed(() => workAreaRef.value?.streamingChapterNumber ?? null)
+const writingPipelineStep = computed(() => workAreaRef.value?.writingPipelineStep ?? null)
 
 async function onSidebarChapterSelect(chapterId: number, title = '') {
   await handleChapterSelect(chapterId, title)

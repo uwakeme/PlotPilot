@@ -78,3 +78,14 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
 - LLM key 至少配一个；缺 key 会落到 `MockProvider`，不代表能上线
 - 写盘测试一律设 `PLOTPILOT_ALLOW_DIRECT_SQLITE_WRITES=1`；**应用代码不要设**，会绕开单一写者派发器
 - Windows 是主要开发平台；桌面端走 Tauri；`tools/plotpilot.bat` 是统一启动器
+- **本机访问边界（`interfaces/api/local_access.py` 是唯一事实来源）**：后端没有登录态，
+  唯一边界就是"只有本机进程与本机前端能调 API"。**不要把 CORS 改回 `*`**，也不要把高危端点的
+  守卫退回"只看 `request.client.host`"——网页发来的跨域请求 client host 同样是 `127.0.0.1`。
+  - `DEFAULT_CORS_ORIGINS` 必须同时包含 Tauri v2 两个平台的 webview origin：
+    `http://tauri.localhost`（Windows/Android/WebView2）与 `tauri://localhost`（macOS/Linux）。
+    缺一个就有一端直接不可用，且失败表现为静默的 "Failed to fetch"。
+  - 桌面模式 webview origin → `127.0.0.1:<动态端口>` 是跨域的，所以 CORS 仍然必需；
+    浏览器开发模式走 Vite 代理是同源，不需要 CORS。
+  - 改完跑 `tests/unit/interfaces/api/test_local_access.py` 验证没有放宽。
+- **已存密钥不得外发**：`/llm-control/models` 复用已存 key 时会校验请求 base_url 与激活 profile 同源；
+  错误响应不回显上游响应体（上游可能把 Authorization 回显出来）。改动前先读该文件的注释。

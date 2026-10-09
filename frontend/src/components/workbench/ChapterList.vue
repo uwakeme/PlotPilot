@@ -70,6 +70,7 @@
           :slug="slug"
           :chapters="chapters"
           :current-chapter-id="currentChapterId"
+          :writing-chapter-number="writingChapterNumber"
           :generation-prefs="generationPrefs"
           @select-chapter="handleChapterClick"
           @plan-act="handlePlanAct"

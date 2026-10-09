@@ -130,7 +130,7 @@
                       type="textarea"
                       placeholder="章节内容..."
                       :autosize="false"
-                      :readonly="true"
+                      :readonly="editorReadonly"
                       @update:value="handleContentChange"
                     />
                     <div
@@ -1595,6 +1595,12 @@ const { snapshot: guardrailSnapshot, load: loadGuardrailSnapshot } = useChapterG
 
 const hasChanges = computed(() => {
   return chapterContent.value !== originalContent.value
+})
+
+/** 编辑框只读条件：托管运行中（保存被禁）或正在流式写本章（编辑会与流式快照打架） */
+const editorReadonly = computed(() => {
+  if (isAssistedReadOnly.value) return true
+  return isAutopilotRunning.value && streamingChapterNumber.value === currentChapter.value?.number
 })
 
 const wordCount = computed(() => {
