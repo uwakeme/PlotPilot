@@ -201,12 +201,28 @@ def test_api_routes_do_not_read_log_file_env_directly():
     assert offenders == []
 
 
+def _collect_route_paths(routes, prefix=""):
+    """收集所有可路由路径；新版 FastAPI 的 include_router 是延迟包含
+    （_IncludedRouter 无 .path），需递归展开子路由器并拼 prefix。"""
+    paths = set()
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.add(prefix + path)
+            continue
+        ctx = getattr(route, "include_context", None)
+        inner = getattr(ctx, "included_router", None)
+        if inner is not None:
+            paths |= _collect_route_paths(inner.routes, prefix + (getattr(ctx, "prefix", "") or ""))
+    return paths
+
+
 def test_app_factory_registers_legacy_and_api_routes(tmp_path):
     from interfaces.api.settings import BackendSettings
     from interfaces.main import create_app
 
     app = create_app(BackendSettings(frontend_dir=tmp_path / "dist"))
-    routes = {route.path for route in app.routes}
+    routes = _collect_route_paths(app.routes)
 
     assert "/" in routes
     assert "/health" in routes

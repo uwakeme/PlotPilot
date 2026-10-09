@@ -1,4 +1,5 @@
 """导出功能API路由"""
+import asyncio
 import urllib.parse
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,11 +27,11 @@ async def export_novel(
     export_service: ExportService = Depends(get_export_service)
 ):
     """导出小说
-    
+
     Args:
         novel_id: 小说ID
         format: 导出格式，支持 epub, pdf, docx, markdown
-        
+
     Returns:
         流式响应，包含导出的文件
     """
@@ -39,13 +40,16 @@ async def export_novel(
         valid_formats = ["epub", "pdf", "docx", "markdown"]
         if format not in valid_formats:
             raise HTTPException(status_code=400, detail=f"不支持的导出格式: {format}")
-        
-        # 执行导出
-        file_content, media_type, filename = export_service.export_novel(novel_id, format)
-        
+
+        # EPUB/PDF 生成是 CPU+IO 密集同步操作，丢线程池执行，
+        # 避免阻塞事件循环卡住所有并发请求（含 SSE 生成流的 keep-alive）
+        file_content, media_type, filename = await asyncio.to_thread(
+            export_service.export_novel, novel_id, format
+        )
+
         # 对文件名进行URL编码，避免中文编码错误
         encoded_filename = urllib.parse.quote(filename)
-        
+
         # 返回流式响应
         return StreamingResponse(
             iter([file_content]),
@@ -56,8 +60,10 @@ async def export_novel(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="导出失败，请查看服务端日志")
 
 
 @router.get("/chapter/{chapter_id}")
@@ -95,12 +101,14 @@ async def export_chapter(
                 raise HTTPException(status_code=404, detail=f"章节不存在: 小说={novel_id}, 编号={chapter_number}")
             chapter_id = chapter_dto.id
 
-        # 执行导出
-        file_content, media_type, filename = export_service.export_chapter(chapter_id, format)
-        
+        # 同上：同步导出丢线程池
+        file_content, media_type, filename = await asyncio.to_thread(
+            export_service.export_chapter, chapter_id, format
+        )
+
         # 对文件名进行URL编码，避免中文编码错误
         encoded_filename = urllib.parse.quote(filename)
-        
+
         # 返回流式响应
         return StreamingResponse(
             iter([file_content]),
@@ -111,5 +119,7 @@ async def export_chapter(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="导出失败，请查看服务端日志")

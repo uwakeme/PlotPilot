@@ -1145,10 +1145,98 @@ class BaseStoryPipeline(ABC):
         ctx.chapter_repository.save(chapter)
 
     async def _apply_voice_rewrite_loop(self, ctx: PipelineContext) -> None:
-        """声线漂移定向改写循环"""
-        ctx.rewrite_applied = True
-        ctx.rewrite_attempts = min(self.VOICE_REWRITE_MAX_ATTEMPTS, 1)
-        # 具体改写逻辑委托给 voice_drift_service
+        """声线漂移定向改写循环（真实改写，复用 CPMS VOICE_REWRITE 节点）。
+
+        历史缺陷：此方法曾只置 rewrite_applied=True 而不改任何内容——声线
+        严重漂移的章节「改写」后一字未变，审计快照与前端都误以为修过文。
+        现在与 legacy 路径（daemon_host._apply_voice_rewrite_loop）同语义：
+        有限次改写 + 即时复评，改写失败或无变化时如实记录 attempts。
+        """
+        from application.engine.services.style_constraint_builder import build_style_summary
+
+        style_summary = ""
+        try:
+            fingerprint_repo = getattr(ctx.voice_drift_service, "fingerprint_repo", None)
+            if fingerprint_repo:
+                fingerprint = fingerprint_repo.get_by_novel(ctx.novel_id, None)
+                style_summary = build_style_summary(fingerprint)
+        except Exception as e:
+            logger.debug("[%s] 改写循环取风格指纹失败: %s", ctx.novel_id, e)
+
+        style_block = style_summary.strip() or "暂无明确统计摘要，优先保持既有作者语气与句式节奏。"
+        outline = (ctx.outline or "").strip() or "无单独大纲，必须严格保留现有剧情事实。"
+
+        # 首轮由调用方保证 drift_alert 且 similarity < 阈值；后续轮看复评结果
+        for attempt in range(1, self.VOICE_REWRITE_MAX_ATTEMPTS + 1):
+            variables = {
+                "style_fingerprint": style_block,
+                "anchor_block": "无额外角色声线锚点。",
+                "chapter_number": str(ctx.chapter_number),
+                "attempt": str(attempt),
+                "similarity_score": f"{float(ctx.similarity_score or 0.0):.4f}",
+                "threshold": f"{self.VOICE_REWRITE_THRESHOLD:.2f}",
+                "outline": outline,
+                "content": ctx.chapter_content,
+            }
+            rewritten_text = await self._invoke_voice_rewrite(ctx, variables)
+            ctx.rewrite_attempts = attempt
+            if not rewritten_text or rewritten_text.strip() == ctx.chapter_content.strip():
+                logger.warning(
+                    "[%s] 定向修文未产生有效变化，停止继续重试（attempt=%d）",
+                    ctx.novel_id, attempt,
+                )
+                break
+
+            ctx.chapter_content = rewritten_text
+            ctx.rewrite_applied = True
+            # 即时复评：达标则停止循环
+            try:
+                vr = ctx.voice_drift_service.score_chapter(
+                    novel_id=ctx.novel_id,
+                    chapter_number=ctx.chapter_number,
+                    content=ctx.chapter_content,
+                )
+                ctx.similarity_score = vr.get("similarity_score")
+                ctx.drift_alert = bool(vr.get("drift_alert", False))
+            except Exception as e:
+                logger.warning("[%s] 改写后复评失败: %s", ctx.novel_id, e)
+                break
+            if not (
+                ctx.drift_alert
+                and (ctx.similarity_score or 0) < self.VOICE_REWRITE_THRESHOLD
+            ):
+                break
+
+    async def _invoke_voice_rewrite(self, ctx: PipelineContext, variables: dict) -> Optional[str]:
+        """执行一次 VOICE_REWRITE 调用，返回改写后正文（失败返回 None）。"""
+        from application.ai_invocation.autopilot.factory import get_or_create_autopilot_helper_invoker
+        from application.ai_invocation.autopilot.helper_invoker import AutopilotHelperRequest
+        from application.ai.llm_output_sanitize import strip_reasoning_artifacts
+        from infrastructure.ai.prompt_keys import VOICE_REWRITE
+
+        content = variables.get("content", "")
+        max_tokens = max(4096, min(8192, int(len(content) * 1.5)))
+        try:
+            owner = type("PipelineVoiceRewriteOwner", (), {"llm_service": ctx.llm_service})()
+            rewritten_text = await get_or_create_autopilot_helper_invoker(owner).invoke_text(
+                AutopilotHelperRequest(
+                    novel_id=str(ctx.novel_id or "global"),
+                    stage="audit",
+                    operation="autopilot.voice.rewrite",
+                    node_key=VOICE_REWRITE,
+                    explicit_variables=variables,
+                    context={
+                        "novel_id": str(ctx.novel_id or "global"),
+                        "chapter_number": ctx.chapter_number,
+                    },
+                    metadata={"source": "story_pipeline.voice_rewrite"},
+                    config={"max_tokens": max_tokens, "temperature": 0.35},
+                )
+            )
+        except Exception as e:
+            logger.warning("[%s] 文风定向修文调用失败: %s", ctx.novel_id, e)
+            return None
+        return strip_reasoning_artifacts((rewritten_text or "").strip()) or None
 
     async def _score_tension_via_llm(self, ctx: PipelineContext) -> Optional[int]:
         """通过 AI Invocation 评分。

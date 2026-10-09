@@ -101,10 +101,71 @@ def sql_is_mutating(sql: str) -> bool:
 Params = Union[tuple, list]
 
 
-class _EnqueuedStmtCursor:
-    """非 writer 线程上 execute(INSERT/UPDATE…) 入队后对调用方的最小兼容。"""
+def _count_placeholders_outside_quotes(text: str) -> int:
+    """统计 SQL 片段中字符串字面量之外的 ``?`` 占位符个数（避免 'why?' 误计）。"""
+    count = 0
+    quote: Optional[str] = None
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch == "?":
+            count += 1
+    return count
 
-    rowcount = 1
+
+_MUTATING_SQL_RE = re.compile(
+    r"^\s*(DELETE\s+FROM|UPDATE)\s+(?P<table>[A-Za-z_][\w]*)\s*(?P<rest>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def estimate_mutating_rowcount(db: Any, sql: str, params: Optional[Params]) -> Optional[int]:
+    """入队前在只读连接上估算 DELETE/UPDATE 将影响的行数。
+
+    背景：非 writer 线程的写 SQL 入队后，真实影响行数要等消费者执行才知道；
+    历史实现 ``_EnqueuedStmtCursor.rowcount`` 硬编码 1，导致十余处
+    ``cur.rowcount > 0`` 的删除/更新判定对「目标不存在」也返回成功。
+    这里把简单单表 DELETE/UPDATE 改写成 SELECT COUNT(*) 预检——存在毫秒级的
+    检查-执行窗口（TOCTOU），但把 100% 失真的判定纠正为近似准确。
+
+    返回 None 表示语句模式不受支持（如 CTE），调用方回退旧行为。
+    """
+    m = _MUTATING_SQL_RE.match(strip_sql_comments(sql))
+    if not m:
+        return None
+    rest = m.group("rest")
+    where_match = re.search(r"\bWHERE\b", rest, re.IGNORECASE)
+    plist = list(params) if params else []
+
+    if where_match is None:
+        where_clause = ""
+        where_params: list = []
+    else:
+        where_clause = " WHERE " + rest[where_match.end():]
+        skip = _count_placeholders_outside_quotes(rest[: where_match.start()])
+        where_params = plist[skip:] if skip <= len(plist) else []
+
+    count_sql = f"SELECT COUNT(*) AS c FROM {m.group('table')}{where_clause}"
+    try:
+        row = db.fetch_one(count_sql, tuple(where_params))
+        return int(row["c"]) if row else 0
+    except Exception:
+        logger.debug("rowcount 预检失败，回退入队默认值: %s", sql[:120], exc_info=True)
+        return None
+
+
+class _EnqueuedStmtCursor:
+    """非 writer 线程上 execute(INSERT/UPDATE…) 入队后对调用方的最小兼容。
+
+    rowcount 为入队前的只读估算值（见 estimate_mutating_rowcount）；
+    INSERT 等无法估算的语句保持默认 1（与 sqlite3 直连插入的行为一致）。
+    """
+
+    def __init__(self, rowcount: int = 1) -> None:
+        self.rowcount = rowcount
 
     def fetchone(self):
         return None
@@ -114,7 +175,12 @@ class _EnqueuedStmtCursor:
 
 
 class TxnCollectingConnection:
-    """在 API 线程上收集 SQL，退出 `transaction()` 时一次性 EXECUTE_SQL_TXN_BATCH。"""
+    """在 API 线程上收集 SQL，退出 `transaction()` 时一次性 EXECUTE_SQL_TXN_BATCH。
+
+    提供与 sqlite3.Connection 相同的 cursor()/commit()/rollback() 最小接口，
+    使仓储的 ``*_on_conn`` 写入方法在直连与收集两种事务模式下行为一致；
+    commit/rollback 由外层 `transaction()` 统一处理，此处为 no-op。
+    """
 
     def __init__(self) -> None:
         self.operations: List[Tuple[str, tuple]] = []
@@ -128,6 +194,15 @@ class TxnCollectingConnection:
             p = (params,)
         self.operations.append((sql, p))
         return _EnqueuedStmtCursor()
+
+    def cursor(self) -> "TxnCollectingConnection":
+        return self
+
+    def commit(self) -> None:  # no-op：事务边界由 transaction() 上下文管理
+        pass
+
+    def rollback(self) -> None:  # no-op：收集模式下抛异常即丢弃整批
+        pass
 
 
 def enqueue_execute_sql(sql: str, params: Optional[Params] = None) -> bool:

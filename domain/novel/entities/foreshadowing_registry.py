@@ -336,9 +336,21 @@ class ForeshadowingRegistry(BaseEntity):
             overflow = eligible[max_items:]
             deferred.extend(overflow)
             eligible = eligible[:max_items]
-            logger.debug(
-                f"[T0截断] {len(overflow)} 个低优先级伏笔被剥离到 T1/T3"
-            )
+            # 排序保证溢出多为低优先级，但高优先级伏笔也可能因数量被挤出——
+            # 这是承诺强度最高的线索，静默丢失会导致回收断链，必须告警
+            high_overflow = [
+                f for f in overflow if f.importance.value >= ImportanceLevel.HIGH.value
+            ]
+            if high_overflow:
+                logger.warning(
+                    f"[T0截断] {len(high_overflow)} 个高优先级伏笔被挤出 T0（共 "
+                    f"{len(overflow)} 个溢出），存在回收断链风险: "
+                    + "; ".join(f.description[:40] for f in high_overflow[:3])
+                )
+            else:
+                logger.debug(
+                    f"[T0截断] {len(overflow)} 个低优先级伏笔被剥离到 T1/T3"
+                )
 
         if deferred:
             logger.info(

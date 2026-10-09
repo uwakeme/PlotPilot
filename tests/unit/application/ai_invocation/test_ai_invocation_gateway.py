@@ -141,8 +141,11 @@ def test_variable_resolver_uses_explicit_then_hub_then_default():
     assert plan.aliases["role"] == "专业小说家"
     assert plan.lineage["outline"] == "explicit"
     assert plan.snapshot_hash
-    assert [item["key"] for item in plan.snapshot_items] == ["bible"]
-    assert plan.snapshot_items[0]["source"] == "variable_hub"
+    # story 级变量自动快照后，snapshot 还包含 novel.bible 的别名视图；
+    # 本测试关注 binding 项的快照语义（来源 variable_hub），不做全集断言
+    bible_items = [i for i in plan.snapshot_items if i["key"] == "bible"]
+    assert len(bible_items) == 1
+    assert bible_items[0]["source"] == "variable_hub"
 
 
 def test_extract_path_value_can_read_worldbuilding_dimension_from_aggregate_value():
@@ -188,8 +191,9 @@ def test_variable_resolver_snapshots_prompt_input_when_hub_fact_exists():
     )
 
     assert plan.aliases["core_rules"] == "【核心法则】异能体系"
-    assert [item["key"] for item in plan.snapshot_items] == ["core_rules"]
-    assert plan.snapshot_items[0]["source"] == "variable_hub"
+    core_items = [i for i in plan.snapshot_items if i["key"] == "core_rules"]
+    assert len(core_items) == 1
+    assert core_items[0]["source"] == "variable_hub"
 
 
 def test_variable_resolver_snapshot_includes_all_context_values():
@@ -520,13 +524,15 @@ def test_variable_resolver_autopilot_macro_reads_setup_variable_hub():
     assert plan.aliases["genre_opening_profile"]["opening_mechanism"] == "即时压迫"
     assert plan.lineage["premise"] == "variable:novel.setup.premise"
     assert plan.lineage["planning_depth"] == "variable:novel.planning.macro.depth"
-    assert {item["key"] for item in plan.snapshot_items} == {
+    # story 级变量自动快照会额外记录各别名视图（novel.setup.premise 等），
+    # 核心绑定项必须在场即可，不做全集断言
+    assert {
         "premise",
         "target_chapters",
         "characters",
         "planning_depth",
         "rec_parts",
-    }
+    } <= {item["key"] for item in plan.snapshot_items}
 
 
 def test_prompt_assembler_freezes_snapshot_without_package_fallback():

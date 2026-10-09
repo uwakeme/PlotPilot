@@ -96,22 +96,48 @@ def _normalize_model_items(data: Dict[str, Any]) -> List[ModelItem]:
     return items
 
 
-@router.post('/models', response_model=ModelListResponse)
-async def list_models(payload: ModelListRequest) -> ModelListResponse:
-    """根据当前配置的 endpoint 拉取模型列表（OpenAI / Anthropic 兼容）。"""
+def _endpoint_host(base_url: str, protocol: str) -> str:
+    """取"实际会被请求到的主机名"，用于判断密钥能否安全复用。
+
+    base_url 为空时按协议落到官方默认端点——否则"未填 base_url 的已存 profile"
+    与"用户显式填了官方 base_url"会被误判为不同源，导致正常流程要求重输密钥。
+    """
+    raw = (base_url or '').strip()
+    if not raw:
+        raw = 'https://api.anthropic.com' if (protocol or '').strip().lower() == 'anthropic' \
+            else 'https://api.openai.com'
+    if '://' not in raw:
+        raw = f'https://{raw}'
+    parsed = urlparse(raw)
+    return (parsed.netloc or '').lower()
+
+
+async def _list_models_impl(payload: ModelListRequest) -> ModelListResponse:
     candidate = payload.model_dump()
-    if not candidate.get('api_key'):
-        # 尝试从当前激活配置中获取 key 作为 fallback
+    api_format = (candidate.get('protocol') or '').strip().lower()
+    base_url = (candidate.get('base_url') or '').strip()
+
+    if not (candidate.get('api_key') or '').strip():
+        # 仅当请求的端点与"已存激活 profile"的端点同源时，才回填已存密钥。
+        # 否则调用方可以把 base_url 指向任意主机，从而把用户密钥发到外部并在其
+        # 访问日志里读到——这是密钥外泄路径，必须要求调用方显式提供该主机的密钥。
         active = _service.get_active_profile()
         if active:
-            candidate['api_key'] = active.api_key
+            same_endpoint = _endpoint_host(base_url, api_format) == _endpoint_host(
+                active.base_url, active.protocol
+            )
+            if same_endpoint:
+                candidate['api_key'] = active.api_key
+            else:
+                logger.warning(
+                    '拒绝复用已存 API Key：请求 base_url=%s 与激活 profile 端点不同源',
+                    base_url or '(默认)',
+                )
 
-    api_format = (candidate.get('protocol') or '').strip().lower()
     api_key = (candidate.get('api_key') or '').strip()
     if not api_key:
         raise HTTPException(status_code=400, detail='API key is required to fetch model list')
 
-    base_url = (candidate.get('base_url') or '').strip()
     runtime_settings = get_llm_control_runtime_settings()
     timeout_ms = candidate.get('timeout_ms') or runtime_settings.model_list_timeout_ms
     timeout = max(1.0, timeout_ms / 1000)
@@ -138,10 +164,13 @@ async def list_models(payload: ModelListRequest) -> ModelListResponse:
             try:
                 data = response.json()
             except json.JSONDecodeError:
-                snippet = (response.text or '')[:240].replace('\n', ' ')
+                # 不回显上游响应体片段：上游可能把 Authorization/x-api-key 反射进错误正文。
                 raise HTTPException(
                     status_code=502,
-                    detail=f'上游未返回 JSON（请检查 Base URL 与协议是否匹配 OpenAI 兼容）。请求 URL：{url}。片段：{snippet}',
+                    detail=(
+                        '上游未返回 JSON（请检查 Base URL 与协议是否匹配 OpenAI 兼容）。'
+                        f'请求 URL：{url}'
+                    ),
                 )
         normalized = _normalize_model_items(data)
         return ModelListResponse(
@@ -152,22 +181,30 @@ async def list_models(payload: ModelListRequest) -> ModelListResponse:
     except HTTPException:
         raise
     except httpx.HTTPStatusError as exc:
-        body = (exc.response.text or '')[:400].replace('\n', ' ')
+        # 同样不回显上游响应体（可能含密钥回显），只给状态码与请求 URL。
         raise HTTPException(
             status_code=502,
-            detail=f'上游模型列表 HTTP {exc.response.status_code}：{body or exc.response.reason_phrase}（请求 {url}）',
+            detail=(
+                f'上游模型列表 HTTP {exc.response.status_code}'
+                f'（请求 {url}，请检查 Base URL / 协议 / API Key 是否正确）'
+            ),
         ) from exc
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
             detail=(
-                f'连接上游失败：{exc}（请求 {url}）。'
+                f'连接上游失败：{type(exc).__name__}（请求 {url}）。'
                 '若日志里出现连向 127.0.0.1 某端口，多为系统 HTTP 代理注入导致 TLS 异常；'
                 '当前接口已禁用继承环境代理，请更新后端后重试。仍失败请检查本机防火墙/DNS。'
             ),
         ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'拉取模型列表失败：{exc}') from exc
+        raise HTTPException(status_code=502, detail=f'拉取模型列表失败：{type(exc).__name__}') from exc
+
+
+@router.post('/models', response_model=ModelListResponse)
+async def list_models(payload: ModelListRequest) -> ModelListResponse:
+    return await _list_models_impl(payload)
 
 
 # ---------- 核心 CRUD + 测试 ----------
@@ -186,7 +223,7 @@ def _invalidate_llm_panel_cache() -> None:
 
 @router.get('', response_model=LLMControlPanelData)
 async def get_llm_control_panel() -> LLMControlPanelData:
-    """获取 LLM 控制面板数据（带短 TTL 进程缓存）。"""
+    """获取 LLM 控制面板数据（带短 TTL 进程缓存；api_key 以掩码返回，明文不再出库）。"""
     import time
     global _llm_panel_cache, _llm_panel_cache_ts
 
@@ -195,25 +232,47 @@ async def get_llm_control_panel() -> LLMControlPanelData:
     if _llm_panel_cache is not None and (now - _llm_panel_cache_ts) < cache_ttl:
         return _llm_panel_cache
 
-    data = _service.get_control_panel_data()
+    data = _mask_panel_api_keys(_service.get_control_panel_data())
     _llm_panel_cache = data
     _llm_panel_cache_ts = now
     return data
+
+
+def _mask_panel_api_keys(data: LLMControlPanelData) -> LLMControlPanelData:
+    """面板响应脱敏：GET/PUT 一律返回掩码，掩码回传保存时由 service 恢复明文。"""
+    masked = data.model_copy(deep=True)
+    for profile in masked.config.profiles:
+        profile.api_key = _service.mask_api_key(profile.api_key)
+    return masked
 
 
 @router.put('', response_model=LLMControlPanelData)
 async def save_llm_control_panel(config: LLMControlConfig) -> LLMControlPanelData:
     _invalidate_llm_panel_cache()
     saved = _service.save_config(config)
-    return LLMControlPanelData(
-        config=saved,
-        presets=_service.get_presets(),
-        runtime=_service.get_runtime_summary(saved),
+    return _mask_panel_api_keys(
+        LLMControlPanelData(
+            config=saved,
+            presets=_service.get_presets(),
+            runtime=_service.get_runtime_summary(saved),
+        )
     )
 
 
 @router.post('/test', response_model=LLMTestResult)
 async def test_llm_profile(profile: LLMProfile) -> LLMTestResult:
+    # 前端可能把 GET 拿到的掩码原样传回测试：先恢复为库中明文再测
+    if '***' in (profile.api_key or ''):
+        try:
+            stored = _service.get_config()
+        except Exception:
+            stored = None
+        if stored:
+            incoming = profile.api_key.strip()
+            for sp in stored.profiles:
+                if _service.mask_api_key(sp.api_key) == incoming:
+                    profile = profile.model_copy(update={'api_key': sp.api_key})
+                    break
     try:
         return await _service.test_profile_model(profile, _factory.create_from_profile)
     except Exception as exc:

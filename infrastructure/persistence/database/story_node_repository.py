@@ -176,58 +176,7 @@ class StoryNodeRepository:
             return nodes
         conn = self._get_connection()
         try:
-            cursor = conn.cursor()
-            for node in nodes:
-                try:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO story_nodes (
-                            id, novel_id, parent_id, node_type, number, title, description, order_index,
-                            planning_status, planning_source,
-                            chapter_start, chapter_end, chapter_count, suggested_chapter_count,
-                            content, outline, word_count, status,
-                            themes, key_events, narrative_arc, conflicts,
-                            pov_character_id, timeline_start, timeline_end,
-                            metadata, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        node.id,
-                        node.novel_id,
-                        node.parent_id,
-                        node.node_type.value,
-                        node.number,
-                        node.title,
-                        node.description,
-                        node.order_index,
-                        node.planning_status.value,
-                        node.planning_source.value,
-                        node.chapter_start,
-                        node.chapter_end,
-                        node.chapter_count,
-                        node.suggested_chapter_count,
-                        node.content,
-                        node.outline,
-                        node.word_count,
-                        node.status,
-                        json.dumps(node.themes),
-                        json.dumps(node.key_events),
-                        node.narrative_arc,
-                        json.dumps(node.conflicts),
-                        node.pov_character_id,
-                        node.timeline_start,
-                        node.timeline_end,
-                        json.dumps(node.metadata),
-                        node.created_at.isoformat(),
-                        node.updated_at.isoformat(),
-                    ))
-                except sqlite3.IntegrityError as e:
-                    if "FOREIGN KEY" in str(e):
-                        if not self._novel_exists(cursor, node.novel_id):
-                            logger.warning(
-                                "save_batch: novel %s 已被删除，跳过 story_node %s 的写入",
-                                node.novel_id, node.id,
-                            )
-                            continue
-                    raise
+            self.save_batch_on_conn(conn, nodes)
             conn.commit()
             return nodes
         finally:
@@ -238,6 +187,102 @@ class StoryNodeRepository:
     def _novel_exists(cursor: sqlite3.Cursor, novel_id: str) -> bool:
         cursor.execute("SELECT 1 FROM novels WHERE id = ?", (novel_id,))
         return cursor.fetchone() is not None
+
+    @staticmethod
+    def _insert_params_from_node(node: StoryNode) -> tuple:
+        return (
+            node.id,
+            node.novel_id,
+            node.parent_id,
+            node.node_type.value,
+            node.number,
+            node.title,
+            node.description,
+            node.order_index,
+            node.planning_status.value,
+            node.planning_source.value,
+            node.chapter_start,
+            node.chapter_end,
+            node.chapter_count,
+            node.suggested_chapter_count,
+            node.content,
+            node.outline,
+            node.word_count,
+            node.status,
+            json.dumps(node.themes),
+            json.dumps(node.key_events),
+            node.narrative_arc,
+            json.dumps(node.conflicts),
+            node.pov_character_id,
+            node.timeline_start,
+            node.timeline_end,
+            json.dumps(node.metadata),
+            node.created_at.isoformat(),
+            node.updated_at.isoformat(),
+        )
+
+    _INSERT_OR_REPLACE_SQL = """
+        INSERT OR REPLACE INTO story_nodes (
+            id, novel_id, parent_id, node_type, number, title, description, order_index,
+            planning_status, planning_source,
+            chapter_start, chapter_end, chapter_count, suggested_chapter_count,
+            content, outline, word_count, status,
+            themes, key_events, narrative_arc, conflicts,
+            pov_character_id, timeline_start, timeline_end,
+            metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    def save_batch_on_conn(self, conn, nodes: List[StoryNode]) -> None:
+        """在调用方提供的事务连接上批量写入节点；不 commit，由外层事务统一提交/回滚。"""
+        cursor = conn.cursor()
+        for node in nodes:
+            try:
+                cursor.execute(
+                    self._INSERT_OR_REPLACE_SQL, self._insert_params_from_node(node)
+                )
+            except sqlite3.IntegrityError as e:
+                if "FOREIGN KEY" in str(e) and not self._novel_exists(cursor, node.novel_id):
+                    logger.warning(
+                        "save_batch_on_conn: novel %s 已被删除，跳过 story_node %s 的写入",
+                        node.novel_id, node.id,
+                    )
+                    continue
+                raise
+
+    def update_node_on_conn(self, conn, node: StoryNode) -> None:
+        """在调用方提供的事务连接上更新节点；不 commit。"""
+        node.updated_at = datetime.now()
+        conn.execute(
+            """
+                UPDATE story_nodes SET
+                    parent_id = ?, node_type = ?, number = ?, title = ?,
+                    description = ?, order_index = ?, planning_status = ?,
+                    planning_source = ?, chapter_start = ?, chapter_end = ?,
+                    chapter_count = ?, suggested_chapter_count = ?, content = ?,
+                    outline = ?, word_count = ?, status = ?, themes = ?,
+                    key_events = ?, narrative_arc = ?, conflicts = ?,
+                    pov_character_id = ?, timeline_start = ?, timeline_end = ?,
+                    metadata = ?, updated_at = ?
+                WHERE id = ?
+            """,
+            (
+                node.parent_id, node.node_type.value, node.number, node.title,
+                node.description, node.order_index, node.planning_status.value,
+                node.planning_source.value, node.chapter_start, node.chapter_end,
+                node.chapter_count, node.suggested_chapter_count, node.content,
+                node.outline, node.word_count, node.status,
+                json.dumps(node.themes), json.dumps(node.key_events),
+                node.narrative_arc, json.dumps(node.conflicts),
+                node.pov_character_id, node.timeline_start, node.timeline_end,
+                json.dumps(node.metadata), node.updated_at.isoformat(),
+                node.id,
+            ),
+        )
+
+    def delete_node_on_conn(self, conn, node_id: str) -> None:
+        """在调用方提供的事务连接上删除节点；不 commit。"""
+        conn.execute("DELETE FROM story_nodes WHERE id = ?", (node_id,))
 
     async def get_by_id(self, node_id: str) -> Optional[StoryNode]:
         """根据 ID 获取节点"""

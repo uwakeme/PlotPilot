@@ -11,6 +11,8 @@ from application.ai.trace_context import (
     preview_text,
     prompt_preview,
     prompt_to_hash_payload,
+    trace_full_prompt,
+    trace_full_text,
 )
 from domain.ai.services.llm_service import GenerationConfig, GenerationResult, LLMService
 from domain.ai.value_objects.prompt import Prompt
@@ -234,7 +236,7 @@ class DynamicLLMService(LLMService):
             generation_profile=generation_profile,
             prompt_hash=content_hash(prompt_to_hash_payload(prompt)),
             prompt_preview=prompt_preview(prompt),
-            prompt_full=prompt_to_hash_payload(prompt),
+            prompt_full=trace_full_prompt(prompt),
             metadata=request_metadata,
         )
         started = time.perf_counter()
@@ -269,7 +271,7 @@ class DynamicLLMService(LLMService):
             generation_profile=generation_profile,
             response_hash=content_hash(content),
             response_preview=preview_text(content),
-            response_full=content,
+            response_full=trace_full_text(content),
             token_input=getattr(usage, "input_tokens", None),
             token_output=getattr(usage, "output_tokens", None),
             latency_ms=int((time.perf_counter() - started) * 1000),
@@ -303,7 +305,7 @@ class DynamicLLMService(LLMService):
             generation_profile=generation_profile,
             prompt_hash=content_hash(prompt_to_hash_payload(prompt)),
             prompt_preview=prompt_preview(prompt),
-            prompt_full=prompt_to_hash_payload(prompt),
+            prompt_full=trace_full_prompt(prompt),
             metadata=request_metadata,
         )
         started = time.perf_counter()
@@ -348,7 +350,7 @@ class DynamicLLMService(LLMService):
                 generation_profile=generation_profile,
                 response_hash=content_hash(content_for_hash),
                 response_preview=preview_text("".join(preview_parts)),
-                response_full=content_for_hash,
+                response_full=trace_full_text(content_for_hash),
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 metadata={**request_metadata, "content_length": total_chars},
             )

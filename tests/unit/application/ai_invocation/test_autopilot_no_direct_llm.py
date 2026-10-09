@@ -31,7 +31,9 @@ def test_autopilot_runtime_no_longer_contains_direct_llm_fallback_copy():
 def test_daemon_stream_watch_routes_novel_calls_to_invocation_before_provider_stream():
     text = Path("engine/runtime/daemon_host.py").read_text(encoding="utf-8")
     invocation_call = "return await self._stream_llm_via_autopilot_invocation("
-    provider_stream = "async for chunk in self.llm_service.stream_generate(prompt, config):"
+    # 受控流消费（生产者任务 + 队列）取代了裸 `async for`，
+    # provider 流的创建点仍是路由顺序的锚点
+    provider_stream = "_stream = self.llm_service.stream_generate(prompt, config)"
     direct_failure = "raise"
 
     assert invocation_call in text

@@ -115,14 +115,18 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
 
     Returns:
         JSONResponse with unified error format
+
+    Notes:
+        500 响应不回显异常原文——SQLite/provider 异常可能携带绝对路径、
+        base_url、请求 ID 甚至密钥片段；原文只进服务端日志。
     """
     error_message = str(exc) if exc else "An unexpected error occurred"
 
-    # Log the error at error level
+    # Log the error at error level（含完整原文与堆栈）
     logger.exception(f"Unhandled exception: {error_message}")
 
     error_response = ErrorResponse(
-        message=error_message,
+        message="服务器内部错误，请查看服务端日志",
         code="INTERNAL_ERROR"
     )
 

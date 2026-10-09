@@ -107,3 +107,92 @@ def test_row_to_profile_preserves_max_tokens_above_global_floor():
     profile = LLMControlService()._row_to_profile(row)
 
     assert profile.max_tokens == DEFAULT_MAX_OUTPUT_TOKENS + 1000
+
+
+def test_mask_api_key_shapes():
+    assert LLMControlService.mask_api_key("") == ""
+    assert LLMControlService.mask_api_key("short") == "***"
+    long_key = "sk-1234567890abcdef"
+    masked = LLMControlService.mask_api_key(long_key)
+    assert masked == "sk-***cdef"
+    assert long_key not in masked
+
+
+def test_save_config_restores_masked_key_roundtrip(monkeypatch, tmp_path):
+    """GET 返回掩码 → 前端原样 PUT → 保存时必须恢复库中明文，不得把掩码写库。"""
+    import sqlite3
+    from infrastructure.persistence.database.connection import DatabaseConnection
+    from pathlib import Path
+
+    schema = (
+        Path(__file__).resolve().parents[4]
+        / "infrastructure" / "persistence" / "database" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    conn.executescript(schema)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "application.ai.llm_control_service.get_database",
+        lambda *a, **k: DatabaseConnection(str(tmp_path / "t.db")),
+    )
+    svc = LLMControlService()
+    from application.ai.llm_control_service import LLMControlConfig
+
+    plain = "sk-roundtrip-secret-key"
+    cfg = LLMControlConfig(
+        version=1,
+        active_profile_id="p1",
+        profiles=[
+            LLMProfile(
+                id="p1", name="P1", protocol="openai", base_url="",
+                api_key=plain, model="m1",
+            )
+        ],
+    )
+    svc.save_config(cfg)
+
+    # 模拟前端把 GET 返回的掩码原样保存
+    masked_back = cfg.model_copy(deep=True)
+    masked_back.profiles[0].api_key = svc.mask_api_key(plain)
+    svc.save_config(masked_back)
+
+    restored = svc.get_config()
+    assert restored.profiles[0].api_key == plain  # 掩码未被写库
+
+
+def test_save_config_rejects_unmatched_mask(monkeypatch, tmp_path):
+    """对不上任何已存 key 的掩码（伪造探测）→ 置空而非把掩码存进库。"""
+    import sqlite3
+    from infrastructure.persistence.database.connection import DatabaseConnection
+    from pathlib import Path
+    from application.ai.llm_control_service import LLMControlConfig
+
+    schema = (
+        Path(__file__).resolve().parents[4]
+        / "infrastructure" / "persistence" / "database" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    conn.executescript(schema)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "application.ai.llm_control_service.get_database",
+        lambda *a, **k: DatabaseConnection(str(tmp_path / "t.db")),
+    )
+    svc = LLMControlService()
+    svc.save_config(LLMControlConfig(
+        version=1,
+        active_profile_id="p1",
+        profiles=[LLMProfile(id="p1", name="P1", protocol="openai", api_key="sk-real-key-123", model="m1")],
+    ))
+
+    forged = LLMControlConfig(
+        version=1,
+        active_profile_id="p1",
+        profiles=[LLMProfile(id="p1", name="P1", protocol="openai", api_key="sk-***zzzz", model="m1")],
+    )
+    svc.save_config(forged)
+    assert svc.get_config().profiles[0].api_key == ""

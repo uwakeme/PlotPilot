@@ -182,6 +182,8 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
         return
 
     if result.success:
+        # 写作成功：清除模型失败摘要与连续计数（前端提示随之消失）
+        daemon._clear_llm_error_summary(novel_id)
         chapter_num = result.chapter_number or ctx.chapter_number
         if getattr(result, "audit_snapshot", None):
             pending = getattr(daemon, "_pending_story_pipeline_aftermath", None)
@@ -250,6 +252,25 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
         daemon._flush_novel(novel)
         return
 
+    # 模型调用失败摘要透出给前端（/status: autopilot_last_error_summary）；
+    # 连续计数用共享内存承载——novel.consecutive_error_count 会在每个
+    # 「status 仍是 RUNNING」的 tick 尾部被 process_novel 重置，若只靠它，
+    # 持续失败会被无限重试且熔断器始终记成功（对齐 act_planning_delegate 的做法）。
+    from domain.novel.entities.novel import AutopilotStatus
+
+    from application.ai_invocation.autopilot.shared_state import read_autopilot_shared_state
+
+    failure_count = int(read_autopilot_shared_state(novel_id).get("autopilot_llm_failure_count") or 0) + 1
+    chapter_label = f"第 {result.chapter_number} 章" if getattr(result, "chapter_number", None) else "本轮章节"
+    summary = f"{chapter_label}写作失败（连续第 {failure_count}/3 次）：{str(error)[:140]}"
+    daemon._report_llm_failure(novel_id, summary, failure_count=failure_count)
     novel.consecutive_error_count = (getattr(novel, "consecutive_error_count", 0) or 0) + 1
+    if failure_count >= 3:
+        novel.autopilot_status = AutopilotStatus.ERROR
+        logger.error(
+            "[%s] 写作连续失败 %s 次，已挂起等待处理（可在更换模型端点后解除）",
+            novel_id,
+            failure_count,
+        )
     daemon._flush_novel(novel)
     logger.error("[%s] StoryPipeline 写作失败: %s", novel_id, error)

@@ -18,28 +18,30 @@ class SqliteChapterRepository(ChapterRepository):
     # 删除章节后重排序号：先加偏移避免 UNIQUE(novel_id, number) 冲突，再整体减回
     _RENUMBER_OFFSET = 1_000_000
 
+    _SAVE_SQL = """
+        INSERT INTO chapters (id, novel_id, number, title, content, outline, status,
+                              tension_score, plot_tension, emotional_tension, pacing_tension,
+                              generation_hint, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            content = excluded.content,
+            outline = excluded.outline,
+            status = excluded.status,
+            tension_score = excluded.tension_score,
+            plot_tension = excluded.plot_tension,
+            emotional_tension = excluded.emotional_tension,
+            pacing_tension = excluded.pacing_tension,
+            generation_hint = excluded.generation_hint,
+            updated_at = excluded.updated_at
+    """
+
     def __init__(self, db: DatabaseConnection):
         self.db = db
 
     def save(self, chapter: Chapter) -> None:
         """保存章节"""
-        sql = """
-            INSERT INTO chapters (id, novel_id, number, title, content, outline, status,
-                                  tension_score, plot_tension, emotional_tension, pacing_tension,
-                                  generation_hint, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                title = excluded.title,
-                content = excluded.content,
-                outline = excluded.outline,
-                status = excluded.status,
-                tension_score = excluded.tension_score,
-                plot_tension = excluded.plot_tension,
-                emotional_tension = excluded.emotional_tension,
-                pacing_tension = excluded.pacing_tension,
-                generation_hint = excluded.generation_hint,
-                updated_at = excluded.updated_at
-        """
+        sql = self._SAVE_SQL
         now = datetime.utcnow().isoformat()
         chapter_id = chapter.id.value if hasattr(chapter.id, 'value') else chapter.id
         novel_id = chapter.novel_id.value if hasattr(chapter.novel_id, 'value') else chapter.novel_id
@@ -148,16 +150,15 @@ class SqliteChapterRepository(ChapterRepository):
             deleted_number,
         )
 
-    def _delete_chapter_transaction_body(
-        self,
-        conn: sqlite3.Connection,
-        novel_id: str,
-        deleted_number: int,
-        chapter_row_id: str,
-        now_iso: str,
+    def delete_chapter_relations_on_conn(
+        self, conn, novel_id: str, number: int, chapter_row_id: str
     ) -> None:
-        d = deleted_number
-        off = self._RENUMBER_OFFSET
+        """在给定事务连接上删除单章的全部关联数据与自身行；不 commit、不触发重排序号。
+
+        供 ``_delete_chapter_transaction_body``（含 renumber 级联）与
+        ``delete_chapter_cascade_on_conn``（同号替换场景，无 renumber）复用。
+        """
+        d = number
 
         conn.execute(
             """
@@ -165,36 +166,18 @@ class SqliteChapterRepository(ChapterRepository):
             SET chapter_number = NULL, updated_at = ?
             WHERE novel_id = ? AND chapter_number = ?
             """,
-            (now_iso, novel_id, d),
+            (datetime.utcnow().isoformat(), novel_id, d),
         )
         conn.execute(
             "DELETE FROM triple_more_chapters WHERE novel_id = ? AND chapter_number = ?",
             (novel_id, d),
         )
 
-        try:
-            conn.execute(
-                "DELETE FROM beat_sheets WHERE chapter_id = ?",
-                (chapter_row_id,),
-            )
-        except sqlite3.OperationalError:
-            pass
-
-        try:
-            conn.execute(
-                "DELETE FROM chapter_scenes WHERE chapter_id = ?",
-                (chapter_row_id,),
-            )
-        except sqlite3.OperationalError:
-            pass
-
-        try:
-            conn.execute(
-                "DELETE FROM chapter_elements WHERE chapter_id = ?",
-                (chapter_row_id,),
-            )
-        except sqlite3.OperationalError:
-            pass
+        for table in ("beat_sheets", "chapter_scenes", "chapter_elements"):
+            try:
+                conn.execute(f"DELETE FROM {table} WHERE chapter_id = ?", (chapter_row_id,))
+            except sqlite3.OperationalError:
+                pass
 
         conn.execute(
             "DELETE FROM chapter_style_scores WHERE novel_id = ? AND chapter_number = ?",
@@ -240,6 +223,53 @@ class SqliteChapterRepository(ChapterRepository):
         )
 
         conn.execute("DELETE FROM chapters WHERE id = ?", (chapter_row_id,))
+
+    def delete_chapter_cascade_on_conn(
+        self, conn, chapter_row_id: str, novel_id: str, number: int
+    ) -> None:
+        """在调用方事务内级联删除单章（关联表 + 正文行 + 树节点行），不重排序号。
+
+        用于「同号替换」场景（如幕级规划重新确认）：新章会立即占用被删章号，
+        全书 shift（renumber cascade）在这里既多余又会把后续章节号搅乱。
+        """
+        self.delete_chapter_relations_on_conn(conn, novel_id, number, chapter_row_id)
+
+    def save_on_conn(self, conn, chapter: Chapter) -> None:
+        """在调用方提供的事务连接上写入章节；不 commit。"""
+        now = datetime.utcnow().isoformat()
+        chapter_id = chapter.id.value if hasattr(chapter.id, 'value') else chapter.id
+        novel_id = chapter.novel_id.value if hasattr(chapter.novel_id, 'value') else chapter.novel_id
+        status = chapter.status.value if hasattr(chapter.status, 'value') else chapter.status
+        conn.execute(self._SAVE_SQL, (
+            chapter_id,
+            novel_id,
+            chapter.number,
+            chapter.title,
+            chapter.content,
+            chapter.outline,
+            status,
+            chapter.tension_score,
+            chapter.plot_tension,
+            chapter.emotional_tension,
+            chapter.pacing_tension,
+            getattr(chapter, 'generation_hint', ''),
+            now,
+            now
+        ))
+
+    def _delete_chapter_transaction_body(
+        self,
+        conn: sqlite3.Connection,
+        novel_id: str,
+        deleted_number: int,
+        chapter_row_id: str,
+        now_iso: str,
+    ) -> None:
+        d = deleted_number
+        off = self._RENUMBER_OFFSET
+
+        self.delete_chapter_relations_on_conn(conn, novel_id, d, chapter_row_id)
+
 
         cur = conn.execute(
             """

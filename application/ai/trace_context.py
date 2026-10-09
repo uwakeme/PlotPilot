@@ -205,6 +205,26 @@ def prompt_to_hash_payload(prompt: Any) -> dict[str, str]:
     }
 
 
+DEFAULT_TRACE_FULL_TEXT_CHARS = 16_000
+
+
+def trace_full_text(text: str, max_chars: int = DEFAULT_TRACE_FULL_TEXT_CHARS) -> str:
+    """trace ``*_full`` 字段落库截断。
+
+    整章正文与完整 prompt 单次可达 MB 级，全文落库会让 ai_trace_spans
+    在长篇积累下膨胀到 GB 级（hash 已保全全文指纹，截断只影响回放粒度）。
+    """
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n...[trace 截断：全文 {len(text)} 字，超出 {len(text) - max_chars} 字未落库]"
+
+
+def trace_full_prompt(prompt: Any, max_chars: int = DEFAULT_TRACE_FULL_TEXT_CHARS) -> dict[str, str]:
+    """prompt 的 ``*_full`` 截断视图（system/user 各自截断）。"""
+    payload = prompt_to_hash_payload(prompt)
+    return {key: trace_full_text(value, max_chars) for key, value in payload.items()}
+
+
 def prompt_preview(prompt: Any) -> dict[str, str]:
     payload = prompt_to_hash_payload(prompt)
     return {

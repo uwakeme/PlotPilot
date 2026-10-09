@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -316,3 +317,229 @@ async def test_generate_macro_plan_precise_mode_repairs_missing_act_fields_and_r
     assert progress["status"] == "completed"
     assert progress["current"] == 5
     assert progress["total"] == 5
+
+
+# ==================== 动态建幕换卷（parent_volume_id）====================
+
+import application.blueprint.services.continuous_planning_service as _cp_module
+from domain.structure.story_node import NodeType
+
+
+def _current_act_node():
+    return SimpleNamespace(
+        id="act-7",
+        number=7,
+        parent_id="vol-1",
+        order_index=41,
+        node_type=SimpleNamespace(value="act"),
+    )
+
+
+def test_next_act_prompt_injects_volume_switch_note_for_new_volume(monkeypatch):
+    """换卷建幕：prompt 必须携带新卷的阶段定位，让幕内容衔接新卷承诺。"""
+    captured = {}
+
+    def fake_render(_contract, variables):
+        captured.update(variables)
+        return Prompt(system="system", user=str(variables))
+
+    monkeypatch.setattr(
+        ContinuousPlanningService, "_render_contract_prompt", staticmethod(fake_render)
+    )
+    svc = _make_service()
+    current_act = SimpleNamespace(
+        id="act-7", number=7, parent_id="vol-1", title="第七幕", description="收束反噬线"
+    )
+    target_volume = SimpleNamespace(
+        id="vol-2", number=2, title="因果反噬的焦痕", description="反噬开始具象化"
+    )
+
+    svc._build_next_act_prompt_with_dual_track(current_act, {}, target_volume=target_volume)
+
+    assert "【卷切换】" in captured["context_block"]
+    assert "因果反噬的焦痕" in captured["context_block"]
+    assert "反噬开始具象化" in captured["context_block"]
+
+
+def test_next_act_prompt_no_switch_note_for_same_volume(monkeypatch):
+    captured = {}
+
+    def fake_render(_contract, variables):
+        captured.update(variables)
+        return Prompt(system="system", user=str(variables))
+
+    monkeypatch.setattr(
+        ContinuousPlanningService, "_render_contract_prompt", staticmethod(fake_render)
+    )
+    svc = _make_service()
+    current_act = SimpleNamespace(
+        id="act-7", number=7, parent_id="vol-1", title="第七幕", description="收束反噬线"
+    )
+    same_volume = SimpleNamespace(id="vol-1", number=1, title="卷一", description="")
+
+    svc._build_next_act_prompt_with_dual_track(current_act, {}, target_volume=same_volume)
+
+    assert "【卷切换】" not in captured["context_block"]
+
+
+@pytest.mark.asyncio
+async def test_create_next_act_auto_default_keeps_current_parent():
+    """不传 parent_volume_id（手动「创建下一幕」入口）：保持挂当前父卷的历史语义。"""
+    svc = _make_service()
+    svc.story_node_repo.get_by_id = AsyncMock(return_value=_current_act_node())
+    svc._get_bible_context = Mock(return_value={})
+    gen_info = AsyncMock(return_value={"title": "第八幕", "description": "推进"})
+    svc._generate_next_act_info = gen_info
+    svc.story_node_repo.save = AsyncMock()
+
+    result = await svc.create_next_act_auto("n-1", "act-7")
+
+    saved = svc.story_node_repo.save.await_args.args[0]
+    assert saved.parent_id == "vol-1"
+    assert saved.number == 8
+    assert saved.order_index == 42
+    assert gen_info.await_args.kwargs.get("target_volume") is None
+    assert result["next_act"]["parent_id"] == "vol-1"
+
+
+@pytest.mark.asyncio
+async def test_create_next_act_auto_with_parent_volume_id_switches_volume():
+    """守护进程传入选卷结果：新幕挂到指定卷，并把目标卷交给 prompt 构建。"""
+    svc = _make_service()
+    target_volume = SimpleNamespace(
+        id="vol-2",
+        number=2,
+        title="因果反噬的焦痕",
+        description="反噬开始具象化",
+        node_type=SimpleNamespace(value="volume"),
+    )
+    svc.story_node_repo.get_by_id = AsyncMock(
+        side_effect=[_current_act_node(), target_volume]
+    )
+    svc._get_bible_context = Mock(return_value={})
+    gen_info = AsyncMock(return_value={"title": "第八幕", "description": "推进"})
+    svc._generate_next_act_info = gen_info
+    svc.story_node_repo.save = AsyncMock()
+
+    result = await svc.create_next_act_auto("n-1", "act-7", parent_volume_id="vol-2")
+
+    saved = svc.story_node_repo.save.await_args.args[0]
+    assert saved.parent_id == "vol-2"
+    assert saved.number == 8
+    assert saved.order_index == 42
+    assert gen_info.await_args.kwargs["target_volume"] is target_volume
+    assert result["next_act"]["parent_id"] == "vol-2"
+
+
+@pytest.mark.asyncio
+async def test_create_next_act_auto_falls_back_when_volume_missing():
+    """指定父卷不存在/非卷节点：回退挂当前父卷，不阻断建幕。"""
+    svc = _make_service()
+    svc.story_node_repo.get_by_id = AsyncMock(
+        side_effect=[_current_act_node(), None]
+    )
+    svc._get_bible_context = Mock(return_value={})
+    gen_info = AsyncMock(return_value={"title": "第八幕", "description": "推进"})
+    svc._generate_next_act_info = gen_info
+    svc.story_node_repo.save = AsyncMock()
+
+    await svc.create_next_act_auto("n-1", "act-7", parent_volume_id="vol-x")
+
+    saved = svc.story_node_repo.save.await_args.args[0]
+    assert saved.parent_id == "vol-1"
+    assert gen_info.await_args.kwargs["target_volume"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_act_planning_refreshes_volume_chapter_ranges(monkeypatch):
+    """动态补幕后必须回填卷/部聚合章节范围，否则卷摘要/卷完结诊断钩子永不触发。"""
+    svc = _make_service()
+    act_node = SimpleNamespace(
+        id="act-7",
+        novel_id="n-1",
+        order_index=41,
+        node_type=NodeType.ACT,
+        chapter_start=None,
+        chapter_end=None,
+        chapter_count=None,
+    )
+    svc.story_node_repo.get_by_id = AsyncMock(return_value=act_node)
+    svc.chapter_element_repo = Mock()
+    svc.story_node_repo.get_children_sync = Mock(
+        return_value=[
+            SimpleNamespace(id="chapter-n-1-chapter-4", number=4, node_type=NodeType.CHAPTER),
+            SimpleNamespace(id="chapter-n-1-chapter-5", number=5, node_type=NodeType.CHAPTER),
+        ]
+    )
+    svc._normalize_act_chapter_row = Mock(
+        side_effect=lambda raw, act_local_index: {"title": raw["title"]}
+    )
+    svc._merged_elements_dict = Mock(return_value={})
+    svc._create_elements_from_data = Mock(return_value=[])
+    svc._write_chapter_plan_variables = Mock()
+    update_ranges = AsyncMock()
+    svc.story_node_repo.update_chapter_ranges = update_ranges
+
+    monkeypatch.setattr(_cp_module, "validate_lightweight_act_plan", Mock(return_value=[]))
+    monkeypatch.setattr(
+        _cp_module, "collect_structure_chapter_numbers", Mock(return_value={1, 2, 3, 4, 5})
+    )
+
+    recorded: dict = {}
+
+    class _RecordingTxn:
+        def __enter__(self):
+            recorded["entered"] = True
+            return self
+
+        def __exit__(self, *exc):
+            recorded["exc"] = exc[0]
+            return False
+
+    svc._write_txn = _RecordingTxn
+
+    result = await svc.confirm_act_planning(
+        act_id="act-7", chapters=[{"title": "章一"}, {"title": "章二"}]
+    )
+
+    # 同号替换：本幕旧章占 4-5，新规划 2 章沿用起始号 4-5
+    assert result["success"] is True
+    assert act_node.chapter_start == 4
+    assert act_node.chapter_end == 5
+    assert act_node.chapter_count == 2
+    assert recorded["entered"] is True
+    assert recorded["exc"] is None
+    update_ranges.assert_awaited_once_with("n-1")
+
+
+async def test_confirm_act_planning_rejects_number_clash_with_later_acts(monkeypatch):
+    """新规划章数扩张撞上后续幕占用的章号时显式报错，而非静默产生同号双节点。"""
+    svc = _make_service()
+    act_node = SimpleNamespace(
+        id="act-7",
+        novel_id="n-1",
+        order_index=41,
+        node_type=NodeType.ACT,
+        chapter_start=None,
+        chapter_end=None,
+        chapter_count=None,
+    )
+    svc.story_node_repo.get_by_id = AsyncMock(return_value=act_node)
+    svc.story_node_repo.get_children_sync = Mock(
+        return_value=[
+            SimpleNamespace(id="chapter-n-1-chapter-4", number=4, node_type=NodeType.CHAPTER),
+        ]
+    )
+    monkeypatch.setattr(_cp_module, "validate_lightweight_act_plan", Mock(return_value=[]))
+    monkeypatch.setattr(
+        _cp_module, "collect_structure_chapter_numbers", Mock(return_value={4, 7, 8})
+    )
+
+    svc._write_txn = Mock()
+    with pytest.raises(ValueError, match="已被其他幕的章节占用"):
+        await svc.confirm_act_planning(
+            act_id="act-7",
+            chapters=[{"title": f"章{i}"} for i in range(5)],  # 新 5 章：4-8 撞幕C 的 7-8
+        )
+
+    svc._write_txn.assert_not_called()

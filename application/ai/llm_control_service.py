@@ -130,6 +130,44 @@ class LLMTestResult(BaseModel):
 class LLMControlService:
     """LLM 控制面板服务 —— 配置全部持久化到 SQLite（llm_profiles + llm_config_meta 表）。"""
 
+    @staticmethod
+    def mask_api_key(key: str) -> str:
+        """GET 面板返回用掩码；空 key 原样返回空串。"""
+        key = (key or '').strip()
+        if not key:
+            return ''
+        if len(key) <= 10:
+            return '***'
+        return f'{key[:3]}***{key[-4:]}'
+
+    @staticmethod
+    def _looks_masked(key: str) -> bool:
+        return '***' in (key or '')
+
+    def _restore_masked_keys(self, config: LLMControlConfig) -> LLMControlConfig:
+        """把回传的掩码 key 恢复为库中明文。
+
+        GET 已不再返回明文 key：前端原样保存时会把掩码回传。
+        掩码与已存同 id profile 的明文掩码一致 → 恢复明文；
+        掩码对不上任何已存 key（可能是伪造探测）→ 置空，强制用户重输。
+        """
+        try:
+            stored = self.get_config()
+        except Exception:
+            return config
+        for profile in config.profiles:
+            if not self._looks_masked(profile.api_key):
+                continue
+            incoming = profile.api_key.strip()
+            candidates = [p for p in stored.profiles if p.id == profile.id]
+            if not candidates:
+                candidates = stored.profiles
+            profile.api_key = next(
+                (sp.api_key for sp in candidates if self.mask_api_key(sp.api_key) == incoming),
+                '',
+            )
+        return config
+
     # ---- 内部 DB 辅助 ------------------------------------------------
 
     def _db(self):
@@ -326,7 +364,8 @@ class LLMControlService:
         return 'unified'
 
     def save_config(self, config: LLMControlConfig) -> LLMControlConfig:
-        """将配置全量写入数据库（先清后写）。"""
+        """将配置全量写入数据库（先清后写；回传的掩码 key 先恢复为已存明文）。"""
+        config = self._restore_masked_keys(config)
         sanitized = self._sanitize_config(config)
         db = self._db()
 

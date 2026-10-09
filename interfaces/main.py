@@ -47,12 +47,14 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from starlette.requests import Request
 import threading
 import signal
 
+from interfaces.api.local_access import DEFAULT_ALLOWED_HOSTS, assert_local_request
 from interfaces.api.routes import register_api_routes
 from interfaces.daemon_manager import AutopilotDaemonManager
 from interfaces.runtime import BackendLifecycle, get_backend_lifecycle_settings
@@ -153,12 +155,12 @@ def _sync_daemon_compat_state() -> None:
 
 def _register_spa_fallback(created: FastAPI) -> None:
     @created.get("/{full_path:path}", include_in_schema=False)
-    @created.post("/{full_path:path}", include_in_schema=False)
-    @created.put("/{full_path:path}", include_in_schema=False)
-    @created.patch("/{full_path:path}", include_in_schema=False)
-    @created.delete("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str, req: Request):
-        """SPA fallback — 所有未匹配的路径返回 index.html"""
+        """SPA fallback — 未匹配的 GET 路径返回 index.html。
+
+        只挂 GET：POST/PUT/PATCH/DELETE 打错路径时应得到 404 JSON，
+        返回 200 HTML 会把客户端错误静默吞掉（前端只见"响应不是 JSON"）。
+        """
         if (full_path.startswith("api/") or full_path.startswith("stats/")
                 or full_path.startswith("assets/") or full_path.startswith("_")):
             if not full_path.endswith('/'):
@@ -169,6 +171,13 @@ def _register_spa_fallback(created: FastAPI) -> None:
             return JSONResponse({"error": "Not Found"}, status_code=404)
         index_html = globals().get("_INDEX_HTML", _FRONTEND_DIR / "index.html")
         return FileResponse(str(index_html), media_type="text/html")
+
+    @created.post("/{full_path:path}", include_in_schema=False)
+    @created.put("/{full_path:path}", include_in_schema=False)
+    @created.patch("/{full_path:path}", include_in_schema=False)
+    @created.delete("/{full_path:path}", include_in_schema=False)
+    async def api_not_found(full_path: str):
+        return JSONResponse({"error": "Not Found", "path": full_path}, status_code=404)
 
 
 def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
@@ -214,6 +223,13 @@ def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+    # 阻断 DNS rebinding：只接受回环 Host 头，恶意站点无法用
+    # `evil.com -> 127.0.0.1` 的解析把请求打到本机 API 上。
+    created.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=list(DEFAULT_ALLOWED_HOSTS),
     )
 
     from interfaces.api.middleware.error_handler import add_error_handlers
@@ -286,11 +302,8 @@ def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
 app = create_app(settings)
 
 def _assert_internal_shutdown_localhost(request: Request) -> None:
-    if not request.client:
-        raise HTTPException(status_code=403, detail="forbidden")
-    host = request.client.host or ""
-    if host not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
-        raise HTTPException(status_code=403, detail="forbidden")
+    """关停端点守卫：校验 client host + Origin（仅本机进程 / 可信本机前端）。"""
+    assert_local_request(request)
 
 
 def _internal_shutdown_after_response() -> None:
@@ -401,4 +414,6 @@ if os.name == "nt":
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 本机访问边界（local_access.py）要求只监听回环地址；0.0.0.0 会把无鉴权 API
+    # 暴露给局域网（TrustedHost 只过滤 Host 头，拦不住直接 IP 访问）
+    uvicorn.run(app, host="127.0.0.1", port=8000)

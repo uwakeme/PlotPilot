@@ -81,8 +81,9 @@ def test_chapter_prose_invocation_http_lifecycle_writes_variable_hub_and_chapter
     assert created.json()["session"]["status"] == "awaiting_pre_call_review"
 
     input_repo = SqliteVariableHubRepository(db)
-    assert input_repo.get_value("novel.setup.title", "novel_id:novel-http").value == "HTTP小说"
-    assert input_repo.get_value("chapter.outline", "novel_id:novel-http|chapter_number:6").value == "从审阅面板生成正文"
+    # 变量中心重构后，pre-invoke 输入物化只对 setup. 前缀操作生效；
+    # prose 等运行时操作的输入走 binding 解析/snapshot，不写 hub 事实库
+    assert input_repo.get_value("novel.setup.title", "novel_id:novel-http") is None
 
     resumed = client.post(f"/ai-invocations/{session_id}/resume", json={"resumed_by": "test"})
     assert resumed.status_code == 200, resumed.text

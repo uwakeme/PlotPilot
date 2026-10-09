@@ -161,6 +161,39 @@ class ChapterElementRepository:
         db.commit()
         return int(getattr(cur, "rowcount", 0) or 0)
 
+    @staticmethod
+    def _element_params(element: ChapterElement) -> tuple:
+        return (
+            element.id,
+            element.chapter_id,
+            element.element_type.value,
+            element.element_id,
+            element.relation_type.value,
+            element.importance.value,
+            element.appearance_order,
+            element.notes,
+            element.created_at.isoformat(),
+        )
+
+    def save_batch_on_conn(self, conn, elements: List[ChapterElement]) -> None:
+        """在调用方提供的事务连接上批量写入元素关联；不 commit。"""
+        for element in elements:
+            conn.execute(
+                """
+                    INSERT OR REPLACE INTO chapter_elements (
+                        id, chapter_id, element_type, element_id,
+                        relation_type, importance, appearance_order, notes,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                self._element_params(element),
+            )
+
+    @staticmethod
+    def delete_by_chapter_on_conn(conn, chapter_id: str) -> None:
+        """在调用方提供的事务连接上删除章节的全部元素关联；不 commit。"""
+        conn.execute("DELETE FROM chapter_elements WHERE chapter_id = ?", (chapter_id,))
+
     async def exists(
         self,
         chapter_id: str,

@@ -64,6 +64,7 @@ def apply_migration_files(conn: sqlite3.Connection, migrations_dir: Path) -> Non
         return
 
     new_migrations = 0
+    failed: list[tuple[str, str]] = []
     for migration_path in sorted(migrations_dir.glob("*.sql")):
         migration_file = migration_path.name
         if migration_file in applied:
@@ -92,12 +93,23 @@ def apply_migration_files(conn: sqlite3.Connection, migrations_dir: Path) -> Non
                     exc,
                 )
             else:
+                failed.append((migration_file, err))
                 logger.warning("Migration %s failed: %s", migration_file, exc)
         except Exception as exc:
+            failed.append((migration_file, str(exc)))
             logger.warning("Failed to apply migration %s: %s", migration_file, exc)
 
     if new_migrations == 0 and applied:
         logger.debug("All %d migrations already applied, skipped", len(applied))
+
+    if failed:
+        # 迁移失败不阻断启动（历史库可能已有等价结构），但必须以 error 级
+        # 汇总暴露——静默继续会让数据库停留在不一致状态而无任何显性信号
+        logger.error(
+            "%d 个迁移文件应用失败（数据库可能缺列/缺表，相关功能将异常）: %s",
+            len(failed),
+            "; ".join(f"{name}: {err}" for name, err in failed),
+        )
 
 
 def apply_migration_files_legacy(

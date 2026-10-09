@@ -1020,10 +1020,18 @@ class ContextBudgetAllocator:
                 return ""
             
             deferred = registry.get_deferred_foreshadowings(current_chapter=chapter_number)
-            
+
             if not deferred:
                 return ""
-            
+
+            if len(deferred) > 8:
+                # T1 参考视图同样有 8 条展示上限：被完全挤出上下文的伏笔
+                # 数量必须可见，否则长篇后段伏笔堆积无从察觉
+                logger.warning(
+                    "伏笔堆积：待回收 %d 个，T0/T1 仅能承载其中一部分（T1 展示上限 8）novel=%s ch=%s",
+                    len(deferred), novel_id, chapter_number,
+                )
+
             lines = ["【冗余伏笔参考（爽文GC降级，非紧急）】"]
             for f in deferred[:8]:  # 最多 8 个
                 age = chapter_number - f.planted_in_chapter

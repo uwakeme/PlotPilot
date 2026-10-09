@@ -129,9 +129,32 @@ async def process_novel(host: Any, novel: Novel) -> None:
 
         host._merge_autopilot_status_from_db(novel)
         if novel.autopilot_status == AutopilotStatus.RUNNING:
-            if host.circuit_breaker:
-                host.circuit_breaker.record_success()
-            novel.consecutive_error_count = 0
+            # 本轮已有已知失败（delegate 写入共享内存 autopilot_llm_failure_count，
+            # 成功后才清零）时不给熔断器记成功、不清零失败计数——否则持续失败
+            # 的小说会被无限重试，且全局熔断器始终看到"成功"。
+            failed_this_tick = False
+            try:
+                from application.ai_invocation.autopilot.shared_state import (
+                    read_autopilot_shared_state,
+                )
+
+                failed_this_tick = (
+                    int(
+                        read_autopilot_shared_state(novel.novel_id.value).get(
+                            "autopilot_llm_failure_count"
+                        )
+                        or 0
+                    )
+                    > 0
+                )
+            except Exception:
+                failed_this_tick = False
+            if failed_this_tick:
+                logger.info("[%s] 本轮含模型/写作失败，不计熔断成功、不清零失败计数", novel.novel_id)
+            else:
+                if host.circuit_breaker:
+                    host.circuit_breaker.record_success()
+                novel.consecutive_error_count = 0
         else:
             logger.info("[%s] 本轮结束（用户已停止，不再计成功/重置熔断）", novel.novel_id)
         host._save_novel_state(novel)

@@ -63,8 +63,11 @@ def _bible_worldbuilding_runtime_values(_context: RuntimePromptContext) -> Mappi
     from application.world.worldbuilding_schema import build_fields_desc_for_prompt
 
     return {
+        # worldbuilding JSON 骨架的唯一真源（user.md 的 {fields_desc} 占位内容）
         "fields_desc": build_fields_desc_for_prompt(),
-        "genre_opening_profile": {},
+        # 类型画像三键：预留 genre 契约注入位（暂无数据源时给中性占位文本，
+        # 避免渲染出空块/裸 dict 字面量）
+        "genre_opening_profile": "（暂无类型画像约束，按题材基调节奏把握开篇）",
         "genre_reader_contract": {},
         "genre_rhythm_constraints": {},
     }

@@ -9,6 +9,7 @@ import logging
 import re
 import sys
 import copy
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 from datetime import datetime
 from json_repair import repair_json
@@ -51,7 +52,6 @@ from application.blueprint.services.chapter_planning_policy import validate_ligh
 from application.audit.services.macro_merge_engine import MacroMergeEngine, MergePlan, MergeConflictException
 from application.blueprint.services.chapter_book_structure_sync import (
     collect_structure_chapter_numbers,
-    purge_chapter_book_rows_not_matching_structure,
 )
 
 logger = logging.getLogger(__name__)
@@ -1567,26 +1567,26 @@ class ContinuousPlanningService:
                 self.chapter_repository.delete(ChapterId(n.id))
             await self.story_node_repo.delete(n.id)
 
-    def _assert_chapter_number_range_free(
-        self, novel_id_vo: NovelId, start: int, length: int
-    ) -> None:
-        """写入前兜底：若区间内仍有正文行残留（异步删未落盘等），报错。"""
-        if not self.chapter_repository:
-            return
-        bad: List[int] = []
-        for n in range(start, start + length):
-            existing = self.chapter_repository.get_by_novel_and_number(novel_id_vo, n)
-            if existing is not None:
-                bad.append(int(n))
-        if bad:
-            raise ValueError(
-                f"无法在本书写入新章节序号 {bad[0]}—{bad[-1]} ："
-                f"正文表中已存在行 {bad[:5]}{'…' if len(bad) > 5 else ''}，或与结构树未完成同步。"
-                f"请重试载入结构树以对齐。"
-            )
+    @contextmanager
+    def _write_txn(self):
+        """幕级确认的原子写事务：writer/直连线程上单连接 BEGIN..COMMIT，API 线程上收集为一条 TXN_BATCH 原子入队。"""
+        from infrastructure.persistence.database.connection import get_database
+
+        with get_database().transaction() as conn:
+            yield conn
 
     async def confirm_act_planning(self, act_id: str, chapters: List[Dict]) -> Dict:
-        """确认幕级规划：写入 story_nodes + chapters 表（供工作台侧栏列表），并关联 Bible 元素。"""
+        """确认幕级规划：在同一事务内原子替换本幕章节（story_nodes + chapters + chapter_elements）。
+
+        与旧实现的区别：
+        - 删旧与插新同事务提交：中途失败（外键冲突、SQL 错误）整体回滚，
+          不再出现「旧章已删、新章未写」的丢章窗口；
+        - 删除走「同号替换」语义（不触发全书重排序号）：旧实现复用带 renumber
+          级联的章节删除，重确认中间幕会把后续幕的正文行整体错号，随后被
+          树↔正文对齐逻辑当作孤儿行误删；
+        - 新章号沿用本幕原起始章号；若新规划章数扩张到撞上后续幕占用的章号，
+          显式报错而非静默产生同号双节点。
+        """
         logger.info(f"Confirming act planning for act {act_id}")
 
         act_node = await self.story_node_repo.get_by_id(act_id)
@@ -1597,45 +1597,53 @@ class ContinuousPlanningService:
         if validation_errors:
             raise ValueError("章节规划不完整/被截断：" + "；".join(validation_errors))
 
-        await self._remove_chapter_children_of_act(act_id)
-
         novel_id_str = act_node.novel_id
         novel_id_vo = NovelId(novel_id_str)
-        # ★ 树为真源：正文表多出或无对应树上章节的行一律清掉后再顺延编号
-        pruned = purge_chapter_book_rows_not_matching_structure(
-            self.story_node_repo,
-            self.chapter_repository,
-            novel_id_str,
-        )
-        if pruned:
-            logger.info("[ActPlanning] novel=%s 已对齐全书正文↔结构，删行 %s 条", novel_id_str, pruned)
 
-        chapter_nums_on_tree = collect_structure_chapter_numbers(self.story_node_repo, novel_id_str)
-        next_global_number = (max(chapter_nums_on_tree) + 1) if chapter_nums_on_tree else 1
+        # ---- 读阶段（纯读，无写副作用）----
+        old_children = self.story_node_repo.get_children_sync(act_id)
+        old_chapter_nodes = [n for n in old_children if n.node_type == NodeType.CHAPTER]
+        old_nums = {int(n.number) for n in old_chapter_nodes}
 
-        # 兜底清理：直接按章号范围删除残留正文行（list_by_novel 可能因缓存/事务隔离漏删）
+        tree_numbers = collect_structure_chapter_numbers(self.story_node_repo, novel_id_str)
+        if old_nums:
+            base_number = min(old_nums)
+        else:
+            base_number = (max(tree_numbers) + 1) if tree_numbers else 1
+        new_numbers = list(range(base_number, base_number + len(chapters)))
+
+        clash = sorted(n for n in new_numbers if n in tree_numbers and n not in old_nums)
+        if clash:
+            raise ValueError(
+                f"无法写入第 {clash[0]}—{clash[-1]} 章：目标章号已被其他幕的章节占用。"
+                f"本幕新规划共 {len(chapters)} 章（原起始章号 {base_number}），"
+                f"请减少章数或先调整后续幕结构。"
+            )
+
+        final_tree_numbers = (tree_numbers - old_nums) | set(new_numbers)
+        new_row_ids = {f"chapter-{novel_id_str}-chapter-{n}" for n in new_numbers}
+
+        def _cid(ch) -> str:
+            return getattr(ch.id, "value", ch.id)
+
+        # 孤儿行（树无此号）与目标区间内将被新章覆盖、但 id 不匹配的残留行
+        rows_to_delete: List = []
         if self.chapter_repository:
-            for n in range(next_global_number, next_global_number + len(chapters)):
-                existing = self.chapter_repository.get_by_novel_and_number(novel_id_vo, n)
-                if existing is not None:
-                    cid = getattr(existing.id, "value", existing.id)
-                    self.chapter_repository.delete(ChapterId(cid))
-                    logger.warning(
-                        "[ActPlanning] novel=%s 兜底清理残留正文行 #%s",
-                        novel_id_str,
-                        n,
-                    )
+            for ch in self.chapter_repository.list_by_novel(novel_id_vo):
+                num = int(ch.number)
+                if num not in final_tree_numbers or (
+                    num in new_numbers and _cid(ch) not in new_row_ids
+                ):
+                    rows_to_delete.append((ch, num))
 
-        self._assert_chapter_number_range_free(
-            novel_id_vo, next_global_number, len(chapters)
-        )
-
+        # ---- 构建阶段（纯内存）----
         created_chapters: List[StoryNode] = []
         created_elements: List[ChapterElement] = []
+        book_chapters: List[Chapter] = []
 
         for idx, raw in enumerate(chapters):
             row = self._normalize_act_chapter_row(raw, act_local_index=idx + 1)
-            global_number = next_global_number + idx
+            global_number = new_numbers[idx]
             # 与 novel_service.add_chapter / 前端树选择一致：id 以 chapter-{全局章号} 结尾
             story_chapter_id = f"chapter-{act_node.novel_id}-chapter-{global_number}"
 
@@ -1658,44 +1666,72 @@ class ContinuousPlanningService:
             )
             created_chapters.append(chapter_node)
 
-            elements_dict = self._merged_elements_dict(row)
-            elements = self._create_elements_from_data(story_chapter_id, elements_dict)
-            created_elements.extend(elements)
+            created_elements.extend(
+                self._create_elements_from_data(
+                    story_chapter_id, self._merged_elements_dict(row)
+                )
+            )
 
             if self.chapter_repository:
-                book_ch = Chapter(
-                    id=story_chapter_id,
-                    novel_id=novel_id_vo,
-                    number=global_number,
-                    title=row["title"],
-                    content="",
-                    outline=row.get("outline") or "",
-                    status=ChapterStatus.DRAFT,
+                book_chapters.append(
+                    Chapter(
+                        id=story_chapter_id,
+                        novel_id=novel_id_vo,
+                        number=global_number,
+                        title=row["title"],
+                        content="",
+                        outline=row.get("outline") or "",
+                        status=ChapterStatus.DRAFT,
+                    )
                 )
-                self.chapter_repository.save(book_ch)
 
+        # 幕聚合字段按新章集合直接计算（写后立刻回读在入队写模式下读不到刚写的行）
+        act_node.chapter_start = new_numbers[0] if new_numbers else None
+        act_node.chapter_end = new_numbers[-1] if new_numbers else None
+        act_node.chapter_count = len(new_numbers)
+
+        cascade_delete = getattr(
+            self.chapter_repository, "delete_chapter_cascade_on_conn", None
+        )
+
+        # ---- 写阶段：单事务原子提交 ----
+        with self._write_txn() as conn:
+            for n in old_chapter_nodes:
+                num = int(n.number)
+                if cascade_delete is not None:
+                    cascade_delete(conn, n.id, novel_id_str, num)
+                else:
+                    self.chapter_element_repo.delete_by_chapter_on_conn(conn, n.id)
+                    self.story_node_repo.delete_node_on_conn(conn, n.id)
+            for ch, num in rows_to_delete:
+                cascade_delete(conn, _cid(ch), novel_id_str, num)
+
+            self.story_node_repo.save_batch_on_conn(conn, created_chapters)
+            self.chapter_element_repo.save_batch_on_conn(conn, created_elements)
+            for book_ch in book_chapters:
+                self.chapter_repository.save_on_conn(conn, book_ch)
+
+            self.story_node_repo.update_node_on_conn(conn, act_node)
+
+        # 变量表写入是增强数据（失败已有内部兜底），不阻塞正文落库
+        for idx, raw in enumerate(chapters):
+            row = self._normalize_act_chapter_row(raw, act_local_index=idx + 1)
             self._write_chapter_plan_variables(
                 novel_id=novel_id_str,
-                chapter_number=global_number,
+                chapter_number=new_numbers[idx],
                 title=row["title"],
                 outline=row.get("outline") or "",
                 characters=row.get("characters") or [],
             )
 
-        await self.story_node_repo.save_batch(created_chapters)
-        await self.chapter_element_repo.save_batch(created_elements)
-
-        act_children = self.story_node_repo.get_children_sync(act_id)
-        chapter_nodes = [n for n in act_children if n.node_type == NodeType.CHAPTER]
-        if chapter_nodes:
-            nums = [n.number for n in chapter_nodes]
-            act_node.chapter_start = min(nums)
-            act_node.chapter_end = max(nums)
-        else:
-            act_node.chapter_start = None
-            act_node.chapter_end = None
-        act_node.chapter_count = len(chapter_nodes)
-        await self.story_node_repo.update(act_node)
+        # 回填卷/部聚合章节范围：守护进程动态补幕的卷只有在此刷新后，
+        # 卷摘要与卷完结宏观诊断钩子（按 chapter_end 比较）才能正常触发
+        try:
+            await self.story_node_repo.update_chapter_ranges(novel_id_str)
+        except Exception as e:
+            logger.warning(
+                "[ActPlanning] 回填卷/部章节范围失败 novel=%s: %s", novel_id_str, e
+            )
 
         return {
             "success": True,
@@ -1749,20 +1785,48 @@ class ContinuousPlanningService:
                 "message": f"继续第 {current_act.number} 幕"
             }
 
-    async def create_next_act_auto(self, novel_id: str, current_act_id: str) -> Dict:
-        """自动创建下一幕"""
+    async def create_next_act_auto(
+        self,
+        novel_id: str,
+        current_act_id: str,
+        parent_volume_id: Optional[str] = None,
+    ) -> Dict:
+        """自动创建下一幕
+
+        parent_volume_id：显式指定新幕的父卷。守护进程按「只向前换卷」策略
+        （daemon_host._find_parent_volume_for_new_act）选出后传入；
+        不传时保持历史语义——挂在 current_act 的父卷下（手动「创建下一幕」入口）。
+        """
         logger.info(f"Creating next act after {current_act_id}")
 
         current_act = await self.story_node_repo.get_by_id(current_act_id)
         if not current_act:
             raise ValueError(f"当前幕不存在: {current_act_id}")
 
+        target_volume = None
+        if parent_volume_id and parent_volume_id != current_act.parent_id:
+            candidate = await self.story_node_repo.get_by_id(parent_volume_id)
+            if candidate is not None and getattr(candidate.node_type, "value", "") == "volume":
+                target_volume = candidate
+            else:
+                logger.warning(
+                    "[create_next_act_auto] 指定父卷 %s 不存在或不是卷节点，回退挂到当前父卷",
+                    parent_volume_id,
+                )
+
+        parent_id = target_volume.id if target_volume is not None else current_act.parent_id
+
         bible_context = self._get_bible_context(novel_id)
-        next_act_info = await self._generate_next_act_info(novel_id, current_act, bible_context)
+        next_act_info = await self._generate_next_act_info(
+            novel_id,
+            current_act,
+            bible_context,
+            target_volume=target_volume,
+        )
 
         next_act = self._create_node_from_data(
             novel_id,
-            current_act.parent_id,
+            parent_id,
             NodeType.ACT,
             {
                 "number": current_act.number + 1,
@@ -2669,16 +2733,24 @@ class ContinuousPlanningService:
         acts = [n for n in tree.nodes if n.node_type == NodeType.ACT and n.number == current_act.number + 1]
         return acts[0] if acts else None
 
-    async def _generate_next_act_info(self, novel_id: str, current_act: StoryNode, bible_context: Dict) -> Dict:
+    async def _generate_next_act_info(
+        self,
+        novel_id: str,
+        current_act: StoryNode,
+        bible_context: Dict,
+        target_volume: Optional[StoryNode] = None,
+    ) -> Dict:
         """生成下一幕信息（双轨融合版）
-        
+
         轨道一：宏观摘要线
         - 注入前一卷/前一部的高浓缩摘要
         - 提供时空基石，防止时间线错乱
-        
+
         轨道二：微观高亮线
         - 强制注入待回收伏笔
         - 注入角色当前状态锚点
+
+        target_volume：新幕将要挂载的卷（换卷时传入），用于向 LLM 标注卷切换。
         """
         # 使用结构计算引擎获取推荐每幕章数（替代硬编码的 5）
         # 通过 current_act 的 novel_id 查找小说目标章节数
@@ -2686,9 +2758,13 @@ class ContinuousPlanningService:
 
         # 收集双轨上下文
         dual_track_context = await self._collect_dual_track_context(novel_id, current_act, bible_context)
-        
+
         # 构建增强型 Prompt
-        prompt = self._build_next_act_prompt_with_dual_track(current_act, dual_track_context)
+        prompt = self._build_next_act_prompt_with_dual_track(
+            current_act,
+            dual_track_context,
+            target_volume=target_volume,
+        )
         
         try:
             raw = await self._collect_llm_stream_text(
@@ -2816,6 +2892,7 @@ class ContinuousPlanningService:
         self,
         current_act: StoryNode,
         dual_track_context: Dict[str, str],
+        target_volume: Optional[StoryNode] = None,
     ) -> Prompt:
         """构建双轨融合的下一幕生成 Prompt。"""
         context_parts = [
@@ -2828,6 +2905,14 @@ class ContinuousPlanningService:
             )
             if dual_track_context.get(key)
         ]
+        if target_volume is not None and target_volume.id != current_act.parent_id:
+            # 换卷建幕：向 LLM 标注新卷的阶段定位，让幕内容衔接新卷的承诺与回报
+            note = f"【卷切换】本幕起进入第{target_volume.number}卷《{target_volume.title}》"
+            volume_desc = (target_volume.description or "").strip()
+            if volume_desc:
+                note += f"：{volume_desc}"
+            note += "\n请让剧情自然过渡到新卷的阶段目标，并在卷末给出阶段性回报。"
+            context_parts.append(note)
         context_block = "\n\n".join(context_parts) if context_parts else "暂无前文上下文"
         current_number = current_act.number or 0
 

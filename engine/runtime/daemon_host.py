@@ -1782,26 +1782,64 @@ class DaemonHostMixin:
         idle_watch_task = asyncio.create_task(_watch_idle_timeout())
 
         try:
-            async for chunk in self.llm_service.stream_generate(prompt, config):
-                if stop_detected.is_set():
-                    break
-                content += chunk
-                last_chunk_time = time.time()  # 更新最后收到数据的时间
+            # 受控流消费：旧实现 `async for` 只在收到下一个 chunk 时检查
+            # stop_detected——连接彻底挂死（无 chunk）时 watcher 置位也没人看，
+            # 空闲/总超时形同虚设。生产者任务 + 队列让消费侧每秒醒来检查
+            # 停止信号，超时路径可真正 cancel 并释放流生成器。
+            _DONE = object()
+            _q: "asyncio.Queue" = asyncio.Queue()
+            _stream = self.llm_service.stream_generate(prompt, config)
 
-                # 🔧 优化：高频小批量推送，实现流式打字机效果
-                if novel is not None and chunk:
-                    chunk_buffer.append(chunk)
-                    current_time = time.time()
-                    # 定期推送整章快照（含已完成节拍 + 当前节拍流式部分）
-                    if current_time - last_push_time >= CHUNK_PUSH_INTERVAL:
-                        await self._push_streaming_chunk(
-                            novel.novel_id.value,
-                            content=_live_chapter_snapshot(),
-                        )
-                        last_push_time = current_time
+            async def _pump_stream() -> None:
+                try:
+                    async for ch in _stream:
+                        await _q.put(ch)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # 传递给消费侧重新抛出
+                    await _q.put(exc)
+                else:
+                    await _q.put(_DONE)
 
-                if stop_detected.is_set():
-                    break
+            _producer = asyncio.create_task(_pump_stream())
+            try:
+                while True:
+                    if stop_detected.is_set():
+                        break
+                    try:
+                        item = await asyncio.wait_for(_q.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        # 空闲/总超时由 watcher 置位 stop_detected，这里 1s 粒度响应
+                        continue
+                    if item is _DONE:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    chunk = item
+                    content += chunk
+                    last_chunk_time = time.time()  # 更新最后收到数据的时间
+
+                    # 🔧 优化：高频小批量推送，实现流式打字机效果
+                    if novel is not None and chunk:
+                        chunk_buffer.append(chunk)
+                        current_time = time.time()
+                        # 定期推送整章快照（含已完成节拍 + 当前节拍流式部分）
+                        if current_time - last_push_time >= CHUNK_PUSH_INTERVAL:
+                            await self._push_streaming_chunk(
+                                novel.novel_id.value,
+                                content=_live_chapter_snapshot(),
+                            )
+                            last_push_time = current_time
+            finally:
+                _producer.cancel()
+                try:
+                    await _producer
+                except (asyncio.CancelledError, Exception):
+                    pass
+                try:
+                    await _stream.aclose()  # 释放底层连接，避免挂死的 socket 悬空
+                except Exception:
+                    pass
         except asyncio.CancelledError:
             logger.info(f"[{nid}] 流式生成被取消")
             raise
@@ -2205,46 +2243,71 @@ class DaemonHostMixin:
         self,
         volume_nodes: list,
         act_nodes: list,
-        current_auto_chapters: int,
-        target_chapters: int,
         rec_acts_per_volume: int,
         novel_id: str,
     ):
-        """智能选择新幕的父卷。
+        """为新幕选择父卷（只向前换卷策略）。
 
-        核心改进（替代原来的线性均分算法）：
-        1. 统计每个已有卷下已挂载了多少幕
-        2. 优先选择「当前写入卷」（幕数尚未达到 rec_acts_per_volume 的卷）
-        3. 只有当前卷的幕数已经满了，才跳到下一卷
-        4. 这样确保每卷都能写够足够多的幕，而不是写3幕就跑路
+        1. 锚点 = 最后一个幕所在的卷（幕按全局 number 排序，act_nodes[-1] 即最新幕）；
+           还没有任何幕时锚点 = 第一卷
+        2. 锚点卷幕数未达 rec_acts_per_volume → 留在锚点卷
+        3. 锚点卷已满 → 按 number 顺序只向后找第一个未满卷。
+           绝不回填锚点之前的空卷：partial 宏观规划会留下大量空壳卷，
+           若允许回填，后期章节会倒挂到早期剧情定位的卷下
+        4. 所有卷都已满 → 挂到最后一卷（允许超发）
+        5. 锚点卷不在卷列表中（父卷被删等脏数据）→ 回退为「从第一卷起第一个未满卷」
         """
         if not volume_nodes:
             logger.warning(f"[{novel_id}] 无可用卷节点，无法确定父卷")
             return None
 
-        # 统计每个卷下的幕数量
-        volume_act_counts: Dict[int, int] = {}
-        for v in volume_nodes:
-            volume_act_counts[v.number] = sum(
-                1 for a in act_nodes if a.parent_id == v.id
-            )
+        def _act_count(volume) -> int:
+            return sum(1 for a in act_nodes if a.parent_id == volume.id)
 
-        # 策略：从第一个卷开始找，返回第一个「幕数 < rec_acts_per_volume」的卷
-        # 如果所有卷都满了，返回最后一个卷（允许超发）
-        for v in volume_nodes:
-            current_count = volume_act_counts.get(v.number, 0)
-            if current_count < rec_acts_per_volume:
+        def _describe(volume) -> str:
+            return f"第{volume.number}卷《{volume.title}》"
+
+        ordered = sorted(
+            volume_nodes,
+            key=lambda v: v.number if v.number is not None else 0,
+        )
+
+        anchor = None
+        if act_nodes:
+            last_act = act_nodes[-1]
+            anchor = next((v for v in ordered if v.id == last_act.parent_id), None)
+            if anchor is None:
+                logger.warning(
+                    "[%s] 最新幕 %s 的父卷 %s 不在卷列表中，回退为第一个未满卷",
+                    novel_id, last_act.id, last_act.parent_id,
+                )
+
+        if anchor is not None:
+            anchor_count = _act_count(anchor)
+            if anchor_count < rec_acts_per_volume:
                 logger.info(
-                    f"[{novel_id}] 父卷选择：第{v}卷已有{current_count}幕"
-                    f"（上限{rec_acts_per_volume}），继续在本卷创建新幕"
+                    "[%s] 父卷选择：%s 已有%s幕（上限%s），继续在本卷创建新幕",
+                    novel_id, _describe(anchor), anchor_count, rec_acts_per_volume,
+                )
+                return anchor
+            candidates = ordered[ordered.index(anchor) + 1:]
+        else:
+            candidates = ordered
+
+        for v in candidates:
+            if _act_count(v) < rec_acts_per_volume:
+                logger.info(
+                    "[%s] 父卷选择：%s 已满，向后换卷到 %s（已有%s幕）",
+                    novel_id,
+                    _describe(anchor) if anchor is not None else "首卷",
+                    _describe(v), _act_count(v),
                 )
                 return v
 
-        # 所有卷都已达到建议幕数，挂在最后一个卷上（允许超发）
-        last_volume = volume_nodes[-1]
+        last_volume = ordered[-1]
         logger.info(
-            f"[{novel_id}] 父卷选择：所有卷已达{rec_acts_per_volume}幕上限"
-            f"，新幕挂到最后一个卷（第{last_volume.number}卷）"
+            "[%s] 父卷选择：所有卷已达%s幕上限，新幕挂到最后一卷（%s，允许超发）",
+            novel_id, rec_acts_per_volume, _describe(last_volume),
         )
         return last_volume
 

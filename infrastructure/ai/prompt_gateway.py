@@ -15,6 +15,7 @@ from application.ai.trace_context import (
     preview_value,
     prompt_preview,
     prompt_to_hash_payload,
+    trace_full_prompt,
 )
 from domain.ai.value_objects.prompt import Prompt
 from infrastructure.ai.prompt_contract import PromptContract
@@ -228,7 +229,7 @@ class PromptGateway:
             variable_sources=self._build_variable_sources(result.node_key, result.variables),
             prompt_hash=content_hash(prompt_to_hash_payload(result.prompt)),
             prompt_preview=prompt_preview(result.prompt),
-            prompt_full=prompt_to_hash_payload(result.prompt),
+            prompt_full=trace_full_prompt(result.prompt),
             metadata={
                 "prompt_source": result.source,
                 "registry_error": str(registry_error) if registry_error else "",

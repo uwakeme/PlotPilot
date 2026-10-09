@@ -14,6 +14,12 @@ variables:
 - name: novel_title
   desc: 小说名称
   type: string
+- name: fields_desc
+  desc: 五维世界观字段的动态 JSON 骨架（worldbuilding_schema.build_fields_desc_for_prompt 注入）
+  type: string
+- name: genre_opening_profile
+  desc: 类型开篇画像（prompt_runtime 提供，预留 genre 契约注入）
+  type: string
 - name: genre_major
   desc: 小说大类
   type: string

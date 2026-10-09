@@ -319,19 +319,34 @@ class TestBuildPrompt:
         assert "HIGH" in prompt.system
         assert "CTX" in prompt.system
 
-    def test_build_prompt_includes_genre_profile_contract(self, workflow):
-        """类型画像应进入正文生成 system，避免分类只停留在前置向导。"""
-        prompt = workflow._build_prompt(
-            context="CTX",
-            outline="OL",
-            genre_opening_profile={"genre_major": "都市", "source_level": "secondary"},
-            genre_reader_contract={"reader_promise": ["现实压迫快速建立"]},
-            genre_rhythm_constraints={"payoff_interval": "短"},
-        )
+    def test_build_prompt_rejects_removed_genre_kwargs(self, workflow):
+        """genre 画像已改走变量中心（runtime prompt 值），不再经 _build_prompt 参数注入。
 
-        assert "类型开篇画像" in prompt.system
-        assert "现实压迫快速建立" in prompt.system
-        assert "payoff_interval" in prompt.system
+        回归锚点：8027b16f 重构删除了 genre_opening_profile 等 kwargs；
+        genre 契约的注入由 bible-worldbuilding 节点的 runtime provider 承载
+        （见 prompt_runtime._bible_worldbuilding_runtime_values）。
+        """
+        import pytest as _pytest
+
+        with _pytest.raises(TypeError):
+            workflow._build_prompt(
+                context="CTX",
+                outline="OL",
+                genre_opening_profile={"genre_major": "都市"},
+            )
+
+    def test_genre_profile_runtime_values_available_for_worldbuilding(self):
+        """genre 契约三键经 runtime prompt 提供方进入 prompt 链路。"""
+        from application.ai_invocation.prompt_runtime import runtime_prompt_values_for_spec
+
+        class _Spec:
+            operation = "bible.setup.worldbuilding"
+            node_key = "bible-worldbuilding"
+
+        values = runtime_prompt_values_for_spec(_Spec())
+        assert "genre_opening_profile" in values
+        assert "genre_reader_contract" in values
+        assert "genre_rhythm_constraints" in values
 
     def test_build_prompt_blocks_when_cpms_template_missing(self, workflow, monkeypatch):
         """章节生成 CPMS 缺失时必须阻塞，不能降级到硬编码提示词。"""
@@ -739,3 +754,79 @@ class TestStyleIntegration:
         assert len(done_event["style_warnings"]) == 1
         assert done_event["style_warnings"][0]["pattern"] == "熊熊系列"
         assert done_event["style_warnings"][0]["text"] == "熊熊烈火"
+
+
+class TestCheckConsistencyRealData:
+    """一致性检查上下文必须接真实数据，且检查失败不得静默通过。"""
+
+    def _workflow_with_bible(self, workflow, mock_plot_arc_repository, characters):
+        from domain.bible.entities.bible import Bible
+        from domain.novel.value_objects.novel_id import NovelId
+        from types import SimpleNamespace
+
+        bible = Bible(id="b1", novel_id=NovelId("novel-1"))
+        for c in characters:
+            bible.add_character(c)
+        bible_repo = Mock()
+        bible_repo.get_by_novel_id = Mock(return_value=bible)
+        workflow.bible_repository = bible_repo
+        mock_plot_arc_repository.get_by_novel_id = Mock(
+            return_value=SimpleNamespace(id="arc-1")
+        )
+        return workflow
+
+    def test_character_registry_loaded_from_bible(self, workflow, mock_plot_arc_repository):
+        from domain.bible.entities.character import Character
+        from domain.bible.value_objects.character_id import CharacterId
+
+        workflow = self._workflow_with_bible(
+            workflow, mock_plot_arc_repository,
+            [Character(CharacterId("char-1"), name="林澈", description="主角")],
+        )
+
+        report = workflow._check_consistency(
+            chapter_state=Mock(
+                character_actions=[], relationship_changes=[],
+                events=[], foreshadowing_resolved=[],
+            ),
+            novel_id="novel-1",
+        )
+
+        ctx = workflow.consistency_checker.check_all.call_args[0][1]
+        registered = sum(
+            len(v) for v in ctx.character_registry.characters_by_importance.values()
+        )
+        assert registered == 1  # Bible 中的真实角色已注入注册表
+        mock_plot_arc_repository.get_by_novel_id.assert_called_once()
+
+    def test_plot_arc_uses_repository_result(self, workflow, mock_plot_arc_repository):
+        from types import SimpleNamespace
+
+        arc = SimpleNamespace(id="arc-real")
+        mock_plot_arc_repository.get_by_novel_id = Mock(return_value=arc)
+        workflow.bible_repository = None
+
+        workflow._check_consistency(
+            chapter_state=Mock(
+                character_actions=[], relationship_changes=[],
+                events=[], foreshadowing_resolved=[],
+            ),
+            novel_id="novel-1",
+        )
+
+        ctx = workflow.consistency_checker.check_all.call_args[0][1]
+        assert ctx.plot_arc is arc
+
+    def test_checker_crash_produces_warning_not_silent_pass(self, workflow, mock_consistency_checker):
+        mock_consistency_checker.check_all = Mock(side_effect=RuntimeError("boom"))
+
+        report = workflow._check_consistency(
+            chapter_state=Mock(
+                character_actions=[], relationship_changes=[],
+                events=[], foreshadowing_resolved=[],
+            ),
+            novel_id="novel-1",
+        )
+
+        assert report.issues == []
+        assert any("一致性检查执行失败" in w for w in report.warnings)

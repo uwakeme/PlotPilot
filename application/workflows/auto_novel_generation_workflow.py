@@ -1747,17 +1747,54 @@ class AutoNovelGenerationWorkflow:
 
             context = ConsistencyContext(
                 bible=bible or Bible(id="temp", novel_id=novel_id_obj),
-                character_registry=CharacterRegistry(id="temp", novel_id=novel_id),
+                character_registry=self._load_character_registry(bible, novel_id),
                 foreshadowing_registry=foreshadowing_registry or ForeshadowingRegistry(id="temp", novel_id=novel_id_obj),
-                plot_arc=PlotArc(id="temp", novel_id=novel_id_obj),
+                plot_arc=self._load_plot_arc(novel_id_obj),
+                # EventTimeline / RelationshipGraph 尚无可靠数据源
+                # （workflow 未注入 narrative_event 仓储；Bible 的 relationships
+                # 元素结构不定型），保持空对象；接入后 checker 扩展即可消费。
                 event_timeline=EventTimeline(),
                 relationship_graph=RelationshipGraph()
             )
 
             return self.consistency_checker.check_all(chapter_state, context)
         except Exception as e:
-            logger.warning(f"Consistency check failed: {e}")
-            return ConsistencyReport(issues=[], warnings=[], suggestions=[])
+            # 检查崩溃不能静默通过：至少产出 warning，让上层/前端知道检查未生效
+            logger.warning(f"Consistency check failed: {e}", exc_info=True)
+            return ConsistencyReport(
+                issues=[],
+                warnings=[
+                    f"一致性检查执行失败（{type(e).__name__}），本章节未做完整一致性校验"
+                ],
+                suggestions=[],
+            )
+
+    def _load_character_registry(self, bible, novel_id: str) -> "CharacterRegistry":
+        """从 Bible 聚合构建一致性检查用的角色注册表；Bible 缺失时返回空表。
+
+        注册表是 ConsistencyContext 的消费视图：注入真实角色后，
+        后续 checker 的角色类检查不再运行在空数据上。
+        """
+        from domain.bible.entities.character_registry import CharacterRegistry
+        from domain.bible.value_objects.character_importance import CharacterImportance
+
+        registry = CharacterRegistry(id=f"consistency-{novel_id}", novel_id=novel_id)
+        for character in (bible.characters if bible is not None else []):
+            try:
+                registry.register_character(character, CharacterImportance.IMPORTANT_SUPPORTING)
+            except Exception:
+                continue
+        return registry
+
+    def _load_plot_arc(self, novel_id_obj: NovelId) -> "PlotArc":
+        """从情节弧仓储加载本书的 PlotArc；加载失败返回空弧而非阻断检查。"""
+        try:
+            arc = self.plot_arc_repository.get_by_novel_id(novel_id_obj)
+            if arc is not None:
+                return arc
+        except Exception as e:
+            logger.debug(f"PlotArc load failed for consistency check: {e}")
+        return PlotArc(id="temp", novel_id=novel_id_obj)
 
     def _detect_conflicts(
         self,

@@ -99,7 +99,13 @@ class InvocationSpec:
 
 @dataclass(frozen=True)
 class VariableBinding:
-    """CPMS 节点变量 alias 与 Variable Hub 变量定义的绑定。"""
+    """CPMS 节点变量 alias 与 Variable Hub 变量定义的绑定。
+
+    scope/stage 默认空串：留空时由 VariableResolver 按变量键前缀推断
+    （story 级键 → novel，worldbuilding.* → worldbuilding 等）。
+    默认值不能是 "runtime"——非空默认会短路推断回退，让所有
+    未显式声明的 binding 都落到 runtime。
+    """
 
     alias: str
     variable_key: str = ""
@@ -108,8 +114,8 @@ class VariableBinding:
     source: str = ""
     enabled: bool = True
     value_type: str = "string"
-    scope: str = "runtime"
-    stage: str = "runtime"
+    scope: str = ""
+    stage: str = ""
     display_name: str = ""
     source_path: str = ""
     projection_key: str = ""

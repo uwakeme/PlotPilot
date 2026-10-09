@@ -539,6 +539,7 @@ class DatabaseConnection:
             _EnqueuedStmtCursor,
             allow_direct_sqlite_writes,
             enqueue_execute_sql,
+            estimate_mutating_rowcount,
             is_sqlite_writer_thread,
             sql_is_mutating,
         )
@@ -549,9 +550,18 @@ class DatabaseConnection:
             and not is_sqlite_writer_thread()
         ):
             plist = list(params) if params else []
+            # rowcount 语义修复：入队前估算 DELETE/UPDATE 的影响行数，
+            # 否则游标 rowcount 恒为 1，删除/更新判定对不存在的目标也返回成功
+            head = sql.lstrip()[:6].upper()
+            if head.startswith(("DELETE", "UPDATE")):
+                estimated = estimate_mutating_rowcount(self, sql, params)
+            else:
+                estimated = None
             if not enqueue_execute_sql(sql, plist):
                 raise RuntimeError("持久化队列未就绪，写 SQL 未能入队")
-            return _EnqueuedStmtCursor()  # type: ignore[return-value]
+            return _EnqueuedStmtCursor(
+                rowcount=estimated if estimated is not None else 1
+            )  # type: ignore[return-value]
 
         conn = self.get_connection()
         return conn.execute(sql, params)
