@@ -28,18 +28,44 @@ class CircuitBreaker:
         self._failure_count = 0
         self._success_count = 0
         self._last_failure_time = 0.0
+        # HALF_OPEN 在途探测：旧实现转 HALF_OPEN 后对所有人放行——
+        # API 刚恢复就被 N 本小说同时打爆、再次熔断震荡。half_open_max_calls
+        # 现在真正限制「在途探测数」，其余调用方继续等待
+        self._half_open_in_flight = 0
+        self._half_open_granted_at = 0.0
         self._lock = Lock()
 
     def is_open(self) -> bool:
+        """是否应拦截。
+
+        CLOSED → False；OPEN 未到期 → True；到期 → 转 HALF_OPEN 并按
+        half_open_max_calls 放行在途探测（占满则 True）。探测滞留超过
+        reset_timeout（调用方既不 success 也不 failure）自动释放名额，
+        避免 HALF_OPEN 卡死。
+        """
         with self._lock:
+            if self._state == BreakerState.CLOSED:
+                return False
+            now = time.time()
             if self._state == BreakerState.OPEN:
-                if time.time() - self._last_failure_time > self.reset_timeout:
-                    logger.info("[CircuitBreaker] → HALF_OPEN，开始试探")
-                    self._state = BreakerState.HALF_OPEN
-                    self._success_count = 0
-                    return False  # 放行试探
-                return True  # 仍在断开期
+                if now - self._last_failure_time <= self.reset_timeout:
+                    return True
+                logger.info("[CircuitBreaker] → HALF_OPEN，开始试探")
+                self._state = BreakerState.HALF_OPEN
+                self._success_count = 0
+                self._half_open_in_flight = 0
+            # HALF_OPEN 分支
+            if now - self._half_open_granted_at > self.reset_timeout:
+                self._half_open_in_flight = 0  # 探测滞留超时：释放名额重试
+            if self._half_open_in_flight >= self.half_open_max_calls:
+                return True
+            self._half_open_in_flight += 1
+            self._half_open_granted_at = now
             return False
+
+    def _release_probe_locked(self) -> None:
+        if self._half_open_in_flight > 0:
+            self._half_open_in_flight -= 1
 
     def wait_seconds(self) -> float:
         """还需等待多少秒"""
@@ -48,12 +74,14 @@ class CircuitBreaker:
 
     def record_success(self):
         with self._lock:
+            self._release_probe_locked()
             if self._state == BreakerState.HALF_OPEN:
                 self._success_count += 1
                 if self._success_count >= self.half_open_max_calls:
                     logger.info("[CircuitBreaker] → CLOSED，恢复正常")
                     self._state = BreakerState.CLOSED
                     self._failure_count = 0
+                    self._half_open_in_flight = 0
             elif self._state == BreakerState.CLOSED:
                 self._failure_count = 0  # 成功重置计数
 
@@ -64,6 +92,7 @@ class CircuitBreaker:
             if self._state == BreakerState.HALF_OPEN:
                 logger.warning("[CircuitBreaker] 试探失败 → OPEN")
                 self._state = BreakerState.OPEN
+                self._half_open_in_flight = 0
             elif self._failure_count >= self.failure_threshold:
                 logger.warning(
                     f"[CircuitBreaker] 连续失败 {self._failure_count} 次 → OPEN，"

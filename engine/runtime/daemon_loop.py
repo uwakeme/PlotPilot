@@ -68,6 +68,46 @@ def _interruptible_sleep(loop: asyncio.AbstractEventLoop, seconds: float, stop: 
             return
 
 
+def _novel_concurrency() -> int:
+    """每轮并发处理的上限（默认 1 保持既有串行行为）。
+
+    多本小说的 delegate 各自持有独立 novel 对象、写路径走单写者队列，
+    并发安全性成立；默认关闭是因为 LLM 并发成本与速率限制由用户权衡——
+    设 PLOTPILOT_DAEMON_NOVEL_CONCURRENCY=2..4 开启。
+    """
+    import os as _os
+
+    raw = (_os.environ.get("PLOTPILOT_DAEMON_NOVEL_CONCURRENCY") or "").strip()
+    if not raw:
+        return 1
+    try:
+        return max(1, min(8, int(raw)))
+    except ValueError:
+        return 1
+
+
+def _process_novels_concurrently(loop: asyncio.AbstractEventLoop, host, novels: list, stop: dict) -> None:
+    """按并发上限处理本轮活跃小说；收到停止信号尽快返回。"""
+    limit = _novel_concurrency()
+    if limit <= 1 or len(novels) <= 1:
+        for novel in novels:
+            if stop["flag"]:
+                return
+            loop.run_until_complete(host._process_novel(novel))
+        return
+
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _one(novel):
+        async with semaphore:
+            if stop["flag"]:
+                return
+            await host._process_novel(novel)
+
+    tasks = [asyncio.ensure_future(_one(n), loop=loop) for n in novels]
+    loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+
+
 def run_daemon_loop(host: DaemonLoopHost, *, banner: str | None = None) -> None:
     """守护进程主循环（事务最小化原则）
 
@@ -117,20 +157,13 @@ def run_daemon_loop(host: DaemonLoopHost, *, banner: str | None = None) -> None:
                     logger.info("Loop #%s: 发现 %s 本活跃小说", loop_count, len(active_novels))
 
                 if active_novels:
-                    for novel in active_novels:
-                        if stop["flag"]:
-                            break
-                        novel_start = time.time()
-                        loop.run_until_complete(host._process_novel(novel))
-                        novel_elapsed = time.time() - novel_start
-                        logger.debug(
-                            "   [%s] 处理耗时: %.2fs",
-                            getattr(getattr(novel, "novel_id", None), "value", novel),
-                            novel_elapsed,
-                        )
-                        # 长章节生成（单本可达数分钟）期间保持心跳，
-                        # 避免前端 60s 判定后端忙碌/失联
-                        host._write_daemon_heartbeat()
+                    # HALF_OPEN 试探轮：只处理一本，闭合后下一轮恢复全量——
+                    # 旧实现对所有小说放行，API 刚恢复就被打爆再次熔断震荡
+                    if host.circuit_breaker and host.circuit_breaker.state == "half_open":
+                        active_novels = active_novels[:1]
+                        logger.info("熔断器 HALF_OPEN 试探轮：仅处理第一本活跃小说")
+                    _process_novels_concurrently(loop, host, active_novels, stop)
+                    host._write_daemon_heartbeat()
 
             except Exception as e:
                 logger.error("Daemon 顶层异常: %s", e, exc_info=True)

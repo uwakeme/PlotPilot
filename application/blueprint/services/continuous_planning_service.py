@@ -1604,6 +1604,15 @@ class ContinuousPlanningService:
         novel_id_str = act_node.novel_id
         novel_id_vo = NovelId(novel_id_str)
 
+        # B4-3 防御：章节 ID 是 f"chapter-{novel_id}-chapter-{number}" 拼串，
+        # novel_id 自带 "chapter-" 前缀会让 id 解析产生歧义（历史数据如此
+        # 时不阻断，只告警提醒治理）
+        if "chapter-" in novel_id_str:
+            logger.warning(
+                "[ActPlanning] novel_id=%r 含 'chapter-' 子串，章节 ID 拼串存在解析歧义风险",
+                novel_id_str,
+            )
+
         # ---- 读阶段（纯读，无写副作用）----
         old_children = self.story_node_repo.get_children_sync(act_id)
         old_chapter_nodes = [n for n in old_children if n.node_type == NodeType.CHAPTER]
