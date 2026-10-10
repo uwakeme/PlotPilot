@@ -32,7 +32,17 @@ DIMENSION_META = [
 ]
 
 
-def _character_masks_for_novel(novel_id: str) -> Dict[str, Any]:
+def _character_masks_for_novel(novel_id: str) -> Optional[Dict[str, Any]]:
+    """取本书的角色面具。
+
+    返回值语义（调用方必须区分）：
+    - ``None``：取数失败（cast service 未配置 / 仓储异常等），已记 warning；
+    - ``{}``：取数成功，但本书 cast 确实为空；
+    - 非空 dict：正常结果。
+
+    区分前两者是因为护栏对 ``{}`` 与 ``None`` 都会退回常量分——若不记日志，
+    取数失败会静默伪装成「这本书没有角色」。
+    """
     masks: Dict[str, Any] = {}
     try:
         from engine.core.value_objects.character_mask import CharacterMask
@@ -46,13 +56,20 @@ def _character_masks_for_novel(novel_id: str) -> Dict[str, Any]:
                 core_belief="",
             )
             masks[ch.name] = mask
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "[%s] cast 取数失败，相关质量维度将退回常量分: %s", novel_id, e
+        )
+        return None
     return masks
 
 
 def _character_names_fallback_from_text(novel_id: str, text: str) -> Optional[List[str]]:
-    """本章实际出现的登场角色（来自 Cast）；None 表示无法推断。"""
+    """本章实际出现的登场角色（来自 Cast）；None 表示无法推断。
+
+    None 有两种来源：取数失败（上游已 warning）与「无 cast / 正文无角色登场」。
+    本函数不区分后两者，调用方若需区分应直接用 ``_character_masks_for_novel``。
+    """
     masks = _character_masks_for_novel(novel_id)
     if not masks:
         return None
@@ -68,7 +85,10 @@ def _character_names_fallback_from_text(novel_id: str, text: str) -> Optional[Li
 
 
 def _minimal_scene_context(novel_id: str, text: str) -> Optional[Dict[str, Any]]:
-    """从 Cast + 正文出现角色推断最小视点语境；不足两人同框时不返回（仍以保守分兜底）。"""
+    """从 Cast + 正文出现角色推断最小视点语境；不足两人同框时不返回（仍以保守分兜底）。
+
+    取数失败与 cast 为空都返回 None（同 ``_character_names_fallback_from_text``）。
+    """
     masks = _character_masks_for_novel(novel_id)
     if not masks:
         return None

@@ -1169,11 +1169,9 @@ class BaseStoryPipeline(ABC):
         复用 guardrail_execution._character_masks_for_novel（API 路径已在用的实现），
         让角色一致性维度不再恒短路为常量。
 
-        已知限制：上游 adapter 自身 `except Exception: pass`，因此下面这个
-        except 基本只能拦住模块级 ImportError，真实的取数故障（cast service 未配置、
-        SQLite 线程亲和错误等）在 adapter 内部就被吞掉了。此时返回空字典，
-        **与「这本书确实没有 cast」不可区分**，护栏会退回常量分。
-        区分这两种状态需要 adapter 返回 None（后续任务）。
+        适配器区分两种空态：None = 取数失败（适配器已记 warning），{} = 本书 cast
+        确实为空。本方法把两者都压成 {}，因为护栏对二者的处理完全一致（退回常量分）；
+        可观测性由适配器那条 warning 承担。
         """
         if not ctx.novel_id:
             return {}
@@ -1182,7 +1180,8 @@ class BaseStoryPipeline(ABC):
                 _character_masks_for_novel,
             )
 
-            return _character_masks_for_novel(ctx.novel_id) or {}
+            masks = _character_masks_for_novel(ctx.novel_id)
+            return masks if masks is not None else {}
         except Exception as e:
             logger.warning("[%s] 角色面具取数失败，质量分将退回常量: %s", ctx.novel_id, e)
             return {}
@@ -1193,9 +1192,9 @@ class BaseStoryPipeline(ABC):
         复用 guardrail_execution._character_names_fallback_from_text，只统计正文里
         出现的角色，避免把未登场角色送进命名校验。
 
-        已知限制：该 adapter 在「无 cast」与「正文无角色登场」两种情况下都返回
-        None，本方法一并降级为空列表——两者不可区分，命名维度会退回常量分。
-        区分这两种状态需要 adapter 返回 None（后续任务）。
+        已知限制：该适配器对三种情况都返回 None——取数失败、本书无 cast、正文无角色
+        登场——本方法一律压成 []，三者不可区分，命名维度会退回常量分。
+        其中取数失败已由适配器记 warning，可观测。
         """
         if not ctx.novel_id:
             return []
