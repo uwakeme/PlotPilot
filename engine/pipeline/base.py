@@ -1163,12 +1163,44 @@ class BaseStoryPipeline(ABC):
         return "".join(content_parts)
 
     def _get_character_masks(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """获取当前章节的角色面具（供策略验证使用）"""
-        return {}
+        """获取当前章节的角色面具（供策略验证使用）。
+
+        复用 guardrail_execution._character_masks_for_novel —— 那是 API 路径
+        已在用的实现，此前生产管线未调用，导致角色一致性维度恒短路为常量。
+        现有实现只填 id/name，护栏会据此显式报 thin_profile（未审评），
+        这比静默的假高分更诚实。取数失败降级为空字典。
+        """
+        if not ctx.novel_id:
+            return {}
+        try:
+            from application.engine.services.guardrail_execution import (
+                _character_masks_for_novel,
+            )
+
+            return _character_masks_for_novel(ctx.novel_id) or {}
+        except Exception as e:
+            logger.debug("[%s] 角色面具取数失败: %s", ctx.novel_id, e)
+            return {}
 
     def _get_character_names(self, ctx: PipelineContext) -> List[str]:
-        """获取角色名列表（供策略验证使用）"""
-        return []
+        """获取本章实际登场的角色名（供命名/视角校验使用）。
+
+        只统计正文里出现的角色，避免把未登场角色送进命名校验。
+        """
+        if not ctx.novel_id:
+            return []
+        try:
+            from application.engine.services.guardrail_execution import (
+                _character_names_fallback_from_text,
+            )
+
+            names = _character_names_fallback_from_text(
+                ctx.novel_id, ctx.chapter_content or ""
+            )
+            return list(names) if names else []
+        except Exception as e:
+            logger.debug("[%s] 角色名取数失败: %s", ctx.novel_id, e)
+            return []
 
     def _push_persistence_command(self, ctx: PipelineContext) -> bool:
         """推送持久化命令到 CQRS 队列"""
