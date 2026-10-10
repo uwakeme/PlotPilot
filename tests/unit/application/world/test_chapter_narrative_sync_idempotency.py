@@ -53,7 +53,10 @@ class _CausalRepo:
         return [edge for edge in self.edges.values() if edge.novel_id == novel_id]
 
     def resolve(self, edge_id, chapter):
+        if edge_id not in self.edges:
+            return False
         self.edges[edge_id] = self.edges[edge_id].resolve(chapter)
+        return True
 
 
 class _CharacterStateRepo:

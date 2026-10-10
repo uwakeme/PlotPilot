@@ -43,8 +43,14 @@ class CausalEdgeRepository(ABC):
         pass
 
     @abstractmethod
-    def resolve(self, edge_id: str, chapter: int) -> None:
-        """标记因果边已闭环"""
+    def resolve(self, edge_id: str, chapter: int) -> bool:
+        """标记因果边已闭环。
+
+        Returns:
+            True 表示该因果边存在并已被标记闭环；False 表示 edge_id 不存在。
+            调用方依赖这个返回值区分"真的闭环了"与"传入了一个不存在的 id"，
+            实现不得对未知 id 静默成功。
+        """
         pass
 
     @abstractmethod

@@ -301,6 +301,8 @@ async def llm_chapter_extract_bundle(
         chapter_content: 章节正文
         chapter_number: 章节号
         pending_foreshadows: 待回收伏笔描述列表（用于消费检测）
+        pending_causal_edges: 待闭环因果边列表，每项含 id / target_event_summary / causal_type
+            （用于让 LLM 判断本章是否兑现了某条边；LLM 回传 id，回程按 id 精确定位）
     """
     body = chapter_content.strip()
     if len(body) > 24000:
@@ -2254,10 +2256,14 @@ async def sync_chapter_narrative_after_save(
             logger.warning("获取待回收伏笔失败: %s", e)
 
     # 获取待闭环因果边（用于 LLM 判定本章是否兑现了某条边）
+    # 截断放在取数这一侧：未闭环边可能上千条，prompt 里最多用 MAX_PENDING_CAUSAL_EDGES_FOR_LLM 条，
+    # 没有必要先把整池子都构造一遍 dict 再丢掉。
     pending_causal_edges: List[Dict[str, str]] = []
     if causal_edge_repository is not None:
         try:
-            for e in causal_edge_repository.get_unresolved(novel_id):
+            for e in causal_edge_repository.get_unresolved(novel_id)[
+                :MAX_PENDING_CAUSAL_EDGES_FOR_LLM
+            ]:
                 pending_causal_edges.append({
                     "id": str(getattr(e, "id", "") or ""),
                     "target_event_summary": str(
