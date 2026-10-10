@@ -52,12 +52,34 @@ class SqliteCausalEdgeRepository(CausalEdgeRepository):
         )
         return [self._row_to_edge(row) for row in rows]
 
-    def get_unresolved(self, novel_id: str) -> List[CausalEdge]:
-        """获取未闭环的因果边"""
-        rows = self.db.fetch_all(
-            "SELECT * FROM causal_edges WHERE novel_id = ? AND is_resolved = 0 ORDER BY source_chapter ASC",
-            (novel_id,),
+    def get_unresolved(
+        self, novel_id: str, limit: Optional[int] = None
+    ) -> List[CausalEdge]:
+        """获取未闭环的因果边，默认按 source_chapter DESC（近因优先）。
+
+        排序理由：调用方每章只把固定的少数条（MAX_PENDING_CAUSAL_EDGES_FOR_LLM）
+        交给 LLM 判定"本章正文是否兑现了这条边"。边离当前写作位置越近，与本章
+        语境重合的概率越高，闭环机会越大——所以窗口应该落在最近的边上。
+        反过来按 ASC（最旧优先）时，最老的一批边会永久霸占前 N 条名额，
+        第 N 名之后的边再也得不到评估，等于给闭环判定设了功能天花板。
+
+        代价（已知且有意接受）：长期挂着的旧边会滑出窗口。这正是我们要的——
+        它们要么早已闭环（is_resolved=1 已不在集合里），要么本来就不会被兑现，
+        继续占用名额只会挤掉真正有机会闭环的边。若将来需要"老边兜底翻牌"，
+        应另开轮转策略（游标/分段窗口），而不是把排序改回 ASC。
+
+        limit 在 SQL 层生效：未闭环边可达上千条，每章物化全部再在 Python 侧截断
+        是纯浪费。None 表示不限制（保留完整集合语义，供不关心窗口的调用方使用）。
+        """
+        sql = (
+            "SELECT * FROM causal_edges WHERE novel_id = ? AND is_resolved = 0 "
+            "ORDER BY source_chapter DESC, id DESC"
         )
+        params: List[object] = [novel_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = self.db.fetch_all(sql, tuple(params))
         return [self._row_to_edge(row) for row in rows]
 
     def get_by_character(self, novel_id: str, character_id: str) -> List[CausalEdge]:

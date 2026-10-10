@@ -43,6 +43,21 @@ from engine.runtime.quality_guardrails.macro_pacing_guardrail import (
 
 logger = logging.getLogger(__name__)
 
+# 打分语义版本边界。
+#
+# v1（旧）：角色一致性 / 命名 / 视角三个维度在"取不到数据"时直接返回常量
+#     （0.73 / 0.82 / 0.77），无论本章内容如何。
+# v2（本分支之后）：取得到数据就真判、判得到违规就扣分；只有"确实无法评估"
+#     （缺 cast、同框不足两人）才保留 0.77 这个保守基准。
+#
+# 跨版本的分不可比：同一章在 v2 下的分数普遍**升高**（实测接线后 overall
+# +0.0616，单角色章节 +0.0230）。升高不是 bug——v1 的常量分是"从未审评"，
+# v2 才是真判；综合分原本落在 [0.506, 0.600) 的章节会零内容变化地从 fail 翻成
+# pass（MIN_PASS_SCORE=0.6），门禁行为因此发生一次性的、可见的迁移。
+#
+# 历史数据的处理办法是重新基线化，不是把常量往回调。
+QUALITY_SCORE_SEMANTICS_VERSION = 2
+
 
 def _chapter_goal_is_weak_signal(goal: str) -> bool:
     """章节意图是否过于笼统（自动保存管线常见），情节密度对齐不可信时需折价。"""

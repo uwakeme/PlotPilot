@@ -46,8 +46,9 @@ class _CausalRepo:
     def save(self, edge):
         self.edges[edge.id] = edge
 
-    def get_unresolved(self, novel_id):
-        return [edge for edge in self.edges.values() if edge.novel_id == novel_id and not edge.is_resolved]
+    def get_unresolved(self, novel_id, limit=None):
+        edges = [edge for edge in self.edges.values() if edge.novel_id == novel_id and not edge.is_resolved]
+        return edges if limit is None else edges[:limit]
 
     def get_by_novel(self, novel_id):
         return [edge for edge in self.edges.values() if edge.novel_id == novel_id]

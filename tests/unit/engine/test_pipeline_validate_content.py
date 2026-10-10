@@ -9,6 +9,8 @@
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from domain.novel.entities.foreshadowing_registry import ForeshadowingRegistry
 from domain.novel.value_objects.foreshadowing import (
     Foreshadowing,
@@ -18,6 +20,7 @@ from domain.novel.value_objects.foreshadowing import (
 from domain.novel.value_objects.novel_id import NovelId
 from engine.pipeline.base import BaseStoryPipeline
 from engine.pipeline.context import PipelineContext
+from engine.runtime.quality_guardrails.quality_guardrail import QualityGuardrail
 
 OUTLINE = "林渊在断魂崖遭遇陈长老伏击"
 TEXT = "正文内容，长度需超过节奏检查的最小阈值。" * 5
@@ -25,8 +28,15 @@ TWO_CHARACTER_TEXT = "林渊握紧了剑，陈长老看着他。剑锋在雨里�
 MODULE = "application.engine.services.guardrail_execution"
 
 
+ONE_CHARACTER_TEXT = "林渊独自走在雨里，剑锋在积水里闪了一下，他退了半步。"
+
+
 def _two_character_cast(_novel_id):
     return {"林渊": object(), "陈长老": object()}
+
+
+def _one_character_cast(_novel_id):
+    return {"林渊": object()}
 
 
 class RecordingValidator:
@@ -133,6 +143,63 @@ class TestValidateContentFeedsGuardrails:
         assert set(scene["characters_present"]) == {"林渊", "陈长老"}
         assert scene["viewpoint_character"] in {"林渊", "陈长老"}
         assert scene["key_event"], "key_event 恒空会让视角校验的关键事件判据失效"
+
+    async def test_scene_info_none_when_only_one_character_appears(self, monkeypatch):
+        """同框只有 1 人时必须返回 None，而不是组装出可评估的空壳。
+
+        _minimal_scene_context 因 <2 人返回 None，但角色名回退能捞回恰好 1 人 →
+        真值 dict → viewpoint_character 为空 → 两条视角判据双双早退 →
+        无违规 → quality_guardrail 报满分 1.0（比"没有数据"的 0.77 更高）。
+        """
+        monkeypatch.setattr(
+            f"{MODULE}._character_masks_for_novel", _one_character_cast
+        )
+        pipeline = _pipeline()
+        validator = RecordingValidator()
+        ctx = _ctx(content=ONE_CHARACTER_TEXT)
+        ctx.policy_validator = validator
+
+        await pipeline._step_validate_content(ctx)
+
+        assert validator.calls[0]["scene_info"] is None
+        # 绑定校验与视角语境无关，仍必须照常送
+        assert validator.calls[0]["foreshadows"], "绑定校验不得依赖 scene_info"
+
+    async def test_single_character_chapter_keeps_conservative_viewpoint_score(
+        self, monkeypatch
+    ):
+        """端到端钉住分数：单角色章节的视角分与"完全无法评估"同分，且低于满分。
+
+        这条不经过 RecordingValidator，直接用真实 QualityGuardrail 复算，
+        避免"只断言传参为 None"却漏掉下游真的报了 1.0 的情况。
+        实测值 0.665 = 保守基准 0.77 − 伏笔绑定违规 0.105（伏笔仍照常送）。
+        """
+        monkeypatch.setattr(
+            f"{MODULE}._character_masks_for_novel", _one_character_cast
+        )
+        pipeline = _pipeline()
+        ctx = _ctx(content=ONE_CHARACTER_TEXT)
+        scene_info = pipeline._build_scene_info(ctx)
+        foreshadows = pipeline._build_foreshadows(ctx)
+
+        report = QualityGuardrail().advise(
+            text=ONE_CHARACTER_TEXT,
+            scene_info=scene_info,
+            foreshadows=foreshadows,
+            chapter_goal=OUTLINE,
+        )
+        unevaluable = QualityGuardrail().advise(
+            text=ONE_CHARACTER_TEXT,
+            scene_info=None,
+            foreshadows=foreshadows,
+            chapter_goal=OUTLINE,
+        )
+
+        assert scene_info is None
+        assert report.viewpoint_score == pytest.approx(unevaluable.viewpoint_score)
+        assert report.viewpoint_score < 1.0, (
+            "无法评估视角时应保持保守分，报 1.0 比没数据更不可信"
+        )
 
     async def test_degrades_when_repo_absent(self):
         pipeline = _pipeline()

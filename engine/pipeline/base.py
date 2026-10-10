@@ -1216,8 +1216,13 @@ class BaseStoryPipeline(ABC):
         """获取最小视点语境（供视角校验使用）。
 
         复用 guardrail_execution._minimal_scene_context（API 路径已在用的实现）。
-        它要求同框登场角色 ≥ 2 人，否则返回 None——此时视角维度仍退回常量分，
-        这是该 adapter 的既定设计，不是取数失败。
+        它要求同框登场角色 ≥ 2 人，否则返回 None（取数失败或 cast 为空同样返回 None）。
+
+        注意：本管线里"返回 None"的真实后果不是"退回常量分"。_build_scene_info 还有一个
+        角色名回退，能在 cast 推断失败时捞回正文里出现过的角色并组装出真值 dict，
+        quality_guardrail 见到真值 dict 就认为视角可评估，无违规时报满分 1.0。
+        真正的保守分只发生在 scene_info is None 时，因此"同框 < 2 人"必须由
+        _build_scene_info 一起兜住（本方法单独返回 None 并不足够）。
         """
         if not ctx.novel_id:
             return None
@@ -1279,12 +1284,16 @@ class BaseStoryPipeline(ABC):
         dict 会让 quality_guardrail 认为视角可评估，在无违规时报出满分 1.0。
         伏笔绑定层级校验不依赖 scene_info，已在 quality_guardrail 侧独立门控。
 
+        同框不足 2 人同样返回 None：视角两条判据都以 viewpoint_character 为前置，
+        只剩 1 人时 viewpoint_character 必为空，判据双双早退 → 无违规 → 报 1.0，
+        比"没有数据"更不可信。这与 guardrail_execution._minimal_scene_context 的契约一致。
+
         契约要求 viewpoint_guardrail.check 的
         {viewpoint_character, characters_present, key_event, information_asymmetry}。
         """
         scene = self._get_scene_context(ctx) or {}
         characters_present = scene.get("characters_present") or self._get_character_names(ctx)
-        if not characters_present:
+        if not characters_present or len(characters_present) < 2:
             return None
         return {
             "viewpoint_character": scene.get("viewpoint_character", ""),

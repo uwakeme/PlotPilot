@@ -2273,14 +2273,14 @@ async def sync_chapter_narrative_after_save(
             logger.warning("获取待回收伏笔失败: %s", e)
 
     # 获取待闭环因果边（用于 LLM 判定本章是否兑现了某条边）
-    # 截断放在取数这一侧：未闭环边可能上千条，prompt 里最多用 MAX_PENDING_CAUSAL_EDGES_FOR_LLM 条，
-    # 没有必要先把整池子都构造一遍 dict 再丢掉。
+    # 截断下推到仓储的 SQL 层：未闭环边可能上千条，没有必要先把整池子都构造一遍
+    # dict 再丢掉。排序（近因优先）由仓储决定，见 SqliteCausalEdgeRepository.get_unresolved。
     pending_causal_edges: List[Dict[str, str]] = []
     if causal_edge_repository is not None:
         try:
-            for e in causal_edge_repository.get_unresolved(novel_id)[
-                :MAX_PENDING_CAUSAL_EDGES_FOR_LLM
-            ]:
+            for e in causal_edge_repository.get_unresolved(
+                novel_id, limit=MAX_PENDING_CAUSAL_EDGES_FOR_LLM
+            ):
                 pending_causal_edges.append({
                     "id": str(getattr(e, "id", "") or ""),
                     "target_event_summary": str(
@@ -2289,7 +2289,10 @@ async def sync_chapter_narrative_after_save(
                     "causal_type": str(getattr(e, "causal_type", "") or ""),
                 })
         except Exception as e:
-            logger.debug("取待闭环因果边失败: %s", e)
+            # 这里曾经只 log.debug：仓储接口一改（例如不接受 limit 关键字），
+            # pending_causal_edges 静默变 []，因果闭环判定无声停摆。与 base.py
+            # 同类取数一致用 warning——降级可以，静默不行。
+            logger.warning("取待闭环因果边失败，本章不做闭环判定: %s", e)
 
     try:
         bundle = await llm_chapter_extract_bundle(

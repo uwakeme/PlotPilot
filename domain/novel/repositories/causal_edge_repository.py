@@ -23,8 +23,20 @@ class CausalEdgeRepository(ABC):
         pass
 
     @abstractmethod
-    def get_unresolved(self, novel_id: str) -> List[CausalEdge]:
-        """获取未闭环的因果边"""
+    def get_unresolved(
+        self, novel_id: str, limit: Optional[int] = None
+    ) -> List[CausalEdge]:
+        """获取未闭环的因果边
+
+        Args:
+            novel_id: 小说 ID
+            limit: 最多返回多少条；None 表示不限制。调用方若只消费前 N 条，
+                应把 N 交给实现下推到 SQL，而不是取回全集再切片。
+
+        实现约定：返回顺序必须稳定（同一 novel_id 重复调用得到同样顺序），
+        顺序本身是选择策略的一部分——未闭环边可能上千条，排序决定哪些边
+        能进入每章的评估窗口。
+        """
         pass
 
     @abstractmethod

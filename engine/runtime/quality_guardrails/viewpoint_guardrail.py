@@ -182,7 +182,9 @@ class ViewpointGuardrail:
         for other in other_chars:
             # 检查是否有 "XX心里想"、"XX心想"、"XX暗想" 等内心描写
             for keyword in self._OTHER_MIND_KEYWORDS:
-                pattern = rf'{other}.{{0,4}}{keyword}'
+                # 角色名来自 LLM 抽取的 cast，可能含正则元字符；未转义会抛
+                # re.error 到调用方，被 base.py 吞掉 → 该章静默落到 0 分
+                pattern = rf'{re.escape(other)}.{{0,4}}{keyword}'
                 if re.search(pattern, text):
                     violations.append(ViewpointViolation(
                         violation_type="viewpoint_leak",

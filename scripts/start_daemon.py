@@ -205,6 +205,10 @@ def build_daemon():
         chapter_workflow=chapter_workflow,
         aftermath_pipeline=aftermath_pipeline,
         knowledge_service=get_knowledge_service(),
+        # 漏掉这一行时 daemon.foreshadowing_repository 恒为 None：
+        # runner → PipelineContext 一路传下去也是 None，base._build_foreshadows 直接短路，
+        # 伏笔绑定校验每章都静默跳过。
+        foreshadowing_repository=foreshadow_repo,
     )
 
     use_pipeline_writing = pipeline_mode in ("writing", "full")
