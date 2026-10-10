@@ -668,6 +668,7 @@ class BaseStoryPipeline(ABC):
                     character_masks=self._get_character_masks(ctx),
                     chapter_goal=ctx.outline,
                     character_names=self._get_character_names(ctx),
+                    scene_info=self._get_scene_context(ctx),
                     era=ctx.era,
                 )
                 ctx.validation_passed = report.passed
@@ -1165,10 +1166,14 @@ class BaseStoryPipeline(ABC):
     def _get_character_masks(self, ctx: PipelineContext) -> Dict[str, Any]:
         """获取当前章节的角色面具（供策略验证使用）。
 
-        复用 guardrail_execution._character_masks_for_novel —— 那是 API 路径
-        已在用的实现，此前生产管线未调用，导致角色一致性维度恒短路为常量。
-        现有实现只填 id/name，护栏会据此显式报 thin_profile（未审评），
-        这比静默的假高分更诚实。取数失败降级为空字典。
+        复用 guardrail_execution._character_masks_for_novel（API 路径已在用的实现），
+        让角色一致性维度不再恒短路为常量。
+
+        已知限制：上游 adapter 自身 `except Exception: pass`，因此下面这个
+        except 基本只能拦住模块级 ImportError，真实的取数故障（cast service 未配置、
+        SQLite 线程亲和错误等）在 adapter 内部就被吞掉了。此时返回空字典，
+        **与「这本书确实没有 cast」不可区分**，护栏会退回常量分。
+        区分这两种状态需要 adapter 返回 None（后续任务）。
         """
         if not ctx.novel_id:
             return {}
@@ -1179,13 +1184,18 @@ class BaseStoryPipeline(ABC):
 
             return _character_masks_for_novel(ctx.novel_id) or {}
         except Exception as e:
-            logger.debug("[%s] 角色面具取数失败: %s", ctx.novel_id, e)
+            logger.warning("[%s] 角色面具取数失败，质量分将退回常量: %s", ctx.novel_id, e)
             return {}
 
     def _get_character_names(self, ctx: PipelineContext) -> List[str]:
-        """获取本章实际登场的角色名（供命名/视角校验使用）。
+        """获取本章实际登场的角色名（供命名校验使用）。
 
-        只统计正文里出现的角色，避免把未登场角色送进命名校验。
+        复用 guardrail_execution._character_names_fallback_from_text，只统计正文里
+        出现的角色，避免把未登场角色送进命名校验。
+
+        已知限制：该 adapter 在「无 cast」与「正文无角色登场」两种情况下都返回
+        None，本方法一并降级为空列表——两者不可区分，命名维度会退回常量分。
+        区分这两种状态需要 adapter 返回 None（后续任务）。
         """
         if not ctx.novel_id:
             return []
@@ -1199,8 +1209,27 @@ class BaseStoryPipeline(ABC):
             )
             return list(names) if names else []
         except Exception as e:
-            logger.debug("[%s] 角色名取数失败: %s", ctx.novel_id, e)
+            logger.warning("[%s] 角色名取数失败，命名分将退回常量: %s", ctx.novel_id, e)
             return []
+
+    def _get_scene_context(self, ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """获取最小视点语境（供视角校验使用）。
+
+        复用 guardrail_execution._minimal_scene_context（API 路径已在用的实现）。
+        它要求同框登场角色 ≥ 2 人，否则返回 None——此时视角维度仍退回常量分，
+        这是该 adapter 的既定设计，不是取数失败。
+        """
+        if not ctx.novel_id:
+            return None
+        try:
+            from application.engine.services.guardrail_execution import (
+                _minimal_scene_context,
+            )
+
+            return _minimal_scene_context(ctx.novel_id, ctx.chapter_content or "")
+        except Exception as e:
+            logger.warning("[%s] 视点语境取数失败，视角分将退回常量: %s", ctx.novel_id, e)
+            return None
 
     def _push_persistence_command(self, ctx: PipelineContext) -> bool:
         """推送持久化命令到 CQRS 队列"""
