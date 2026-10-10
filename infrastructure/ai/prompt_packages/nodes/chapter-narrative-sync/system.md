@@ -8,7 +8,9 @@
     "description": "伏笔或悬念描述",
     "suggested_resolve_offset": 5,
     "importance": "medium",
-    "resolve_hint": "预期回收场景提示"
+    "resolve_hint": "预期回收场景提示",
+    "emotional_weight": 0.5,
+    "binding_level": 1
   }} ],
   "consumed_foreshadows": [ "被回收的伏笔描述1", "被回收的伏笔描述2" ],
   "closed_causal_edge_ids": [ "把本章已兑现的因果边 id 原样列在这里，没有就写 []" ],
@@ -42,6 +44,8 @@
   - suggested_resolve_offset：建议在多少章后回收（整数，通常 3-15 章），快节奏短篇用 2-5，长篇用 5-15
   - importance：伏笔重要性，可选 "low"（次要）、"medium"（一般）、"high"（重要）、"critical"（关键）
   - resolve_hint：简短描述预期回收的场景或剧情点（可选，如"下一幕高潮"）
+  - emotional_weight：0.0-1.0 的浮点数，这条伏笔的情感权重；核心伏笔（决定全书走向的关键线索）应大于 0.8
+  - binding_level：1-4 的整数，绑定层级：1=角色 2=势力 3=事件 4=世界；emotional_weight > 0.8 的核心伏笔应绑定到 3（事件）或 4（世界）层级
 - consumed_foreshadows：本章回收/呼应的伏笔，从待回收清单中匹配，输出原描述；最多 5 条；无则 []。
 - closed_causal_edge_ids：本章已兑现的因果边 id，从待闭环清单中原样照抄；只有本章明确写出该事件结果才算闭环，延续前因或只埋伏笔不算；无则 []。
 - storyline_progress：本章推进的故事线，最多 5 条；无则 []。

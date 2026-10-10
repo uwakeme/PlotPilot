@@ -668,7 +668,8 @@ class BaseStoryPipeline(ABC):
                     character_masks=self._get_character_masks(ctx),
                     chapter_goal=ctx.outline,
                     character_names=self._get_character_names(ctx),
-                    scene_info=self._get_scene_context(ctx),
+                    scene_info=self._build_scene_info(ctx),
+                    foreshadows=self._build_foreshadows(ctx),
                     era=ctx.era,
                 )
                 ctx.validation_passed = report.passed
@@ -1229,6 +1230,59 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             logger.warning("[%s] 视点语境取数失败，视角分将退回常量: %s", ctx.novel_id, e)
             return None
+
+    def _build_foreshadows(self, ctx: PipelineContext) -> List[Dict[str, Any]]:
+        """取当前伏笔，供 viewpoint_guardrail 的绑定层级校验。
+
+        只取未回收的伏笔——已回收的不再需要校验绑定。
+        取数失败一律降级为空列表：校验是观测性的，不能因此让整章失败。
+        """
+        repo = getattr(ctx, "foreshadowing_repository", None)
+        if repo is None or not ctx.novel_id:
+            return []
+        try:
+            from domain.novel.value_objects.novel_id import NovelId
+
+            registry = repo.get_by_novel_id(NovelId(ctx.novel_id))
+            if registry is None:
+                return []
+            entries = registry.get_unresolved()
+        except Exception as e:
+            logger.debug("[%s] 伏笔注册表取数失败: %s", ctx.novel_id, e)
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for entry in entries or []:
+            try:
+                weight = getattr(entry, "emotional_weight", None)
+                level = getattr(entry, "binding_level", None)
+                out.append({
+                    "description": getattr(entry, "description", "") or "",
+                    # None 才回落默认值：0.0 是合法权重，不能被 `or` 吞掉
+                    "emotional_weight": 0.5 if weight is None else float(weight),
+                    "binding_level": 1 if level is None else int(level),
+                })
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _build_scene_info(self, ctx: PipelineContext) -> Dict[str, Any]:
+        """组装视角/伏笔校验所需的场景信息。
+
+        以 _get_scene_context 的 cast 推断结果为底（viewpoint_character /
+        characters_present），并补上它恒为空的 key_event——用本章大纲填充，
+        否则视角校验的关键事件判据拿不到东西。取不到 cast 时退回正文角色名。
+
+        契约要求 viewpoint_guardrail.check 的
+        {viewpoint_character, characters_present, key_event, information_asymmetry}。
+        """
+        scene = self._get_scene_context(ctx) or {}
+        return {
+            "viewpoint_character": scene.get("viewpoint_character", ""),
+            "characters_present": scene.get("characters_present") or self._get_character_names(ctx),
+            "key_event": scene.get("key_event") or ctx.outline or "",
+            "information_asymmetry": scene.get("information_asymmetry", {}),
+        }
 
     def _push_persistence_command(self, ctx: PipelineContext) -> bool:
         """推送持久化命令到 CQRS 队列"""

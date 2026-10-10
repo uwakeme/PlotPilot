@@ -18,6 +18,17 @@ class ImportanceLevel(int, Enum):
     CRITICAL = 4   # 关键
 
 
+# 绑定层级：与 viewpoint_guardrail._check_foreshadow_binding 的判据一致。
+# 1=角色 2=势力 3=事件 4=世界；核心伏笔（emotional_weight > 0.8）不应低于 3。
+FORESHADOW_BINDING_CHARACTER = 1
+FORESHADOW_BINDING_FACTION = 2
+FORESHADOW_BINDING_EVENT = 3
+FORESHADOW_BINDING_WORLD = 4
+
+DEFAULT_EMOTIONAL_WEIGHT = 0.5
+DEFAULT_BINDING_LEVEL = FORESHADOW_BINDING_CHARACTER
+
+
 @dataclass(frozen=True)
 class Foreshadowing:
     """伏笔值对象"""
@@ -28,6 +39,10 @@ class Foreshadowing:
     status: ForeshadowingStatus
     suggested_resolve_chapter: Optional[int] = None
     resolved_in_chapter: Optional[int] = None
+    # viewpoint_guardrail._check_foreshadow_binding 的判据字段。
+    # 带默认值以兼容既有构造调用与旧 JSON 载荷。
+    emotional_weight: float = DEFAULT_EMOTIONAL_WEIGHT
+    binding_level: int = DEFAULT_BINDING_LEVEL
 
     def __post_init__(self):
         if self.planted_in_chapter < 1:
@@ -48,3 +63,13 @@ class Foreshadowing:
             raise ValueError("resolved_in_chapter must be >= planted_in_chapter")
         if self.suggested_resolve_chapter is not None and self.suggested_resolve_chapter < self.planted_in_chapter:
             raise ValueError("suggested_resolve_chapter must be >= planted_in_chapter")
+
+        # Validate binding fields consumed by viewpoint_guardrail
+        if not 0.0 <= self.emotional_weight <= 1.0:
+            raise ValueError("emotional_weight must be between 0.0 and 1.0")
+        if not (
+            FORESHADOW_BINDING_CHARACTER
+            <= self.binding_level
+            <= FORESHADOW_BINDING_WORLD
+        ):
+            raise ValueError("binding_level must be between 1 and 4")

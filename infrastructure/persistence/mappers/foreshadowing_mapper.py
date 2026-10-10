@@ -5,6 +5,10 @@ from domain.novel.entities.foreshadowing_registry import ForeshadowingRegistry
 from domain.novel.entities.subtext_ledger_entry import SubtextLedgerEntry
 from domain.novel.value_objects.novel_id import NovelId
 from domain.novel.value_objects.foreshadowing import (
+    DEFAULT_BINDING_LEVEL,
+    DEFAULT_EMOTIONAL_WEIGHT,
+    FORESHADOW_BINDING_CHARACTER,
+    FORESHADOW_BINDING_WORLD,
     Foreshadowing,
     ForeshadowingStatus,
     ImportanceLevel,
@@ -30,6 +34,31 @@ class ForeshadowingMapper:
         return ForeshadowingMapper._to_int(value, field_name)
 
     @staticmethod
+    def _to_float(value: Any, field_name: str, default: float) -> float:
+        """旧载荷可能缺该字段；缺失或非法一律回落默认值，不让读库失败。"""
+        if value is None or value == "":
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not 0.0 <= parsed <= 1.0:
+            return default
+        return parsed
+
+    @staticmethod
+    def _to_binding_level(value: Any, default: int) -> int:
+        if value is None or value == "":
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        if not FORESHADOW_BINDING_CHARACTER <= parsed <= FORESHADOW_BINDING_WORLD:
+            return default
+        return parsed
+
+    @staticmethod
     def to_dict(registry: ForeshadowingRegistry) -> Dict[str, Any]:
         return {
             "id": registry.id,
@@ -43,6 +72,8 @@ class ForeshadowingMapper:
                     "status": f.status.value,
                     "suggested_resolve_chapter": f.suggested_resolve_chapter,
                     "resolved_in_chapter": f.resolved_in_chapter,
+                    "emotional_weight": f.emotional_weight,
+                    "binding_level": f.binding_level,
                 }
                 for f in registry.foreshadowings
             ],
@@ -102,6 +133,14 @@ class ForeshadowingMapper:
                     ),
                     resolved_in_chapter=ForeshadowingMapper._to_optional_int(
                         f_data.get("resolved_in_chapter"), "resolved_in_chapter"
+                    ),
+                    emotional_weight=ForeshadowingMapper._to_float(
+                        f_data.get("emotional_weight"),
+                        "emotional_weight",
+                        DEFAULT_EMOTIONAL_WEIGHT,
+                    ),
+                    binding_level=ForeshadowingMapper._to_binding_level(
+                        f_data.get("binding_level"), DEFAULT_BINDING_LEVEL
                     ),
                 )
                 registry.register(foreshadowing)

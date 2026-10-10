@@ -531,6 +531,8 @@ def persist_bundle_triples_and_foreshadows(
                     resolve_offset = 5  # 默认 5 章后回收
                     importance_val = "medium"
                     resolve_hint = None
+                    emotional_weight = 0.5
+                    binding_level = 1
                 else:
                     desc = str(h.get("description", "")).strip()
                     # 获取预期回收章节偏移量
@@ -544,6 +546,19 @@ def persist_bundle_triples_and_foreshadows(
                     importance_val = str(h.get("importance", "medium")).strip().lower()
                     if importance_val not in ("low", "medium", "high", "critical"):
                         importance_val = "medium"
+                    # 视角/伏笔绑定校验需要的判据字段
+                    try:
+                        emotional_weight = float(h.get("emotional_weight", 0.5))
+                    except (TypeError, ValueError):
+                        emotional_weight = 0.5
+                    if not 0.0 <= emotional_weight <= 1.0:
+                        emotional_weight = 0.5
+                    try:
+                        binding_level = int(h.get("binding_level", 1))
+                    except (TypeError, ValueError):
+                        binding_level = 1
+                    if not 1 <= binding_level <= 4:
+                        binding_level = 1
                     # 获取回收提示
                     resolve_hint = h.get("resolve_hint")
                     if resolve_hint:
@@ -583,6 +598,8 @@ def persist_bundle_triples_and_foreshadows(
                             importance=_importance_str_to_level(importance_val),
                             status=ForeshadowingStatus.PLANTED,
                             suggested_resolve_chapter=suggested_resolve,
+                            emotional_weight=emotional_weight,
+                            binding_level=binding_level,
                         )
                     )
                     logger.debug(
