@@ -83,14 +83,21 @@ class SqliteCausalEdgeRepository(CausalEdgeRepository):
         )
         return [self._row_to_edge(row) for row in rows]
 
-    def resolve(self, edge_id: str, chapter: int) -> None:
-        """标记因果边已闭环"""
+    def resolve(self, edge_id: str, chapter: int) -> bool:
+        """标记因果边已闭环。
+
+        Returns:
+            True 表示确实更新了一行；False 表示 edge_id 不存在。
+        """
         self.db.execute(
             """UPDATE causal_edges SET is_resolved = 1, resolved_chapter = ?, updated_at = datetime('now')
                WHERE id = ?""",
             (chapter, edge_id),
         )
         self.db.get_connection().commit()
+        return self.db.execute(
+            "SELECT 1 FROM causal_edges WHERE id = ?", (edge_id,)
+        ).fetchone() is not None
 
     def get_high_strength_unresolved(self, novel_id: str, min_strength: float = 0.7) -> List[CausalEdge]:
         """获取高强度的未闭环因果边"""

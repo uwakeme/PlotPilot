@@ -292,6 +292,7 @@ async def llm_chapter_extract_bundle(
     chapter_content: str,
     chapter_number: int,
     pending_foreshadows: Optional[List[str]] = None,
+    pending_causal_edges: Optional[List[Dict[str, str]]] = None,
 ) -> dict:
     """一次 LLM 调用：叙事摘要 + 关键事件/埋线 + 人物关系三元组 + 伏笔线索 + 伏笔消费检测 + 故事线进展 + 张力值 + 对话提取（避免多次调用）。
     
@@ -315,12 +316,16 @@ async def llm_chapter_extract_bundle(
 
 请判断本章是否呼应/回收了上述伏笔。如果章节内容明确揭示或回应了某个伏笔的悬念，则在 consumed_foreshadows 中列出该伏笔的原描述（需与清单中的描述高度匹配）。"""
 
+    # 构建待闭环因果边提示（与 foreshadow_context 同一模式）
+    causal_edge_context = _build_causal_edge_context(pending_causal_edges or [])
+
     from infrastructure.ai.prompt_keys import CHAPTER_NARRATIVE_SYNC
     from infrastructure.ai.prompt_utils import render_required_prompt
 
     variables = {
         "content": body,
         "foreshadow_context": foreshadow_context,
+        "causal_edge_context": causal_edge_context,
     }
     prompt = render_required_prompt(CHAPTER_NARRATIVE_SYNC, variables)
     config = GenerationConfig(max_tokens=4096, temperature=0.45)
@@ -328,6 +333,11 @@ async def llm_chapter_extract_bundle(
     result = await llm.generate(prompt, config)
     raw = result.content if hasattr(result, "content") else str(result)
     data = _extract_json_object(raw)
+
+    closed_edge_ids = data.get("closed_causal_edge_ids") or []
+    if not isinstance(closed_edge_ids, list):
+        closed_edge_ids = []
+    closed_edge_ids = [str(x).strip() for x in closed_edge_ids if str(x or "").strip()]
 
     triples_raw = data.get("relation_triples") or data.get("triples") or []
     if not isinstance(triples_raw, list):
@@ -367,6 +377,7 @@ async def llm_chapter_extract_bundle(
         "relation_triples": [{"data": t, "status": "pending"} for t in triples_raw[:8]],
         "foreshadow_hints": [{"data": h, "status": "pending"} for h in hints_raw[:4]],
         "consumed_foreshadows": [str(c).strip() for c in consumed_raw[:5] if str(c).strip()],
+        "closed_causal_edge_ids": closed_edge_ids,
         "storyline_progress": storyline_raw[:5],
         "dialogues": dialogues_raw[:10],
         "timeline_events": timeline_raw[:5],
@@ -743,12 +754,13 @@ def persist_causal_edges(
         except Exception as e:
             logger.debug("因果边入库跳过: %s", e)
 
-    # ★ 检测因果边闭环：如果本章的事件匹配了某个未闭环因果边的 target_event
-    if saved > 0 or bundle.get("summary") or bundle.get("key_events"):
-        try:
-            _try_resolve_causal_edges(novel_id, chapter_number, bundle, causal_edge_repository)
-        except Exception as e:
-            logger.debug("因果边闭环检测失败: %s", e)
+    # ★ 因果边闭环：由本章 LLM 抽取调用返回的 edge id 判定（字符串匹配已证实不可行）
+    try:
+        _resolve_causal_edges_from_ids(
+            novel_id, chapter_number, bundle, causal_edge_repository
+        )
+    except Exception as e:
+        logger.debug("因果边闭环处理失败: %s", e)
 
     if saved > 0:
         logger.info("因果边落库完成 novel=%s ch=%s saved=%d", novel_id, chapter_number, saved)
@@ -756,50 +768,72 @@ def persist_causal_edges(
     return saved
 
 
-def _try_resolve_causal_edges(
+# 章后抽取一次调用里可处理的待判定因果边上限。控制 prompt 长度，
+# 也避免把整本 1500 条边的池子塞进上下文。
+MAX_PENDING_CAUSAL_EDGES_FOR_LLM = 15
+
+
+def _build_causal_edge_context(pending_causal_edges: List[Dict[str, str]]) -> str:
+    """构造注入 prompt 的待闭环因果边清单。
+
+    必须带 id：回程靠 id 精确定位，避免在 LLM 返回值上再做字符串匹配。
+    """
+    if not pending_causal_edges:
+        return ""
+
+    lines = "\n".join(
+        f"  - id={e.get('id', '')} | type={e.get('causal_type', '')} | "
+        f"待发生={str(e.get('target_event_summary', ''))[:80]}"
+        for e in pending_causal_edges[:MAX_PENDING_CAUSAL_EDGES_FOR_LLM]
+    )
+    return f"""
+【待闭环因果边清单】
+{lines}
+
+请判断本章正文是否已经让上述某条因果边的"待发生"事件落地或兑现。
+只有当本章明确写出了该事件的结果时才算闭环；如果本章只是延续了前因、
+铺垫了伏笔但事件尚未发生，则不算。
+把已闭环的边的 id 原样放进输出 JSON 的 closed_causal_edge_ids 数组；
+没有闭环就输出空数组。只允许使用上面清单里出现过的 id。"""
+
+
+def _resolve_causal_edges_from_ids(
     novel_id: str,
     chapter_number: int,
     bundle: dict,
     causal_edge_repository: Any,
 ) -> int:
-    """检测本章事件是否闭环了已有的因果边。
+    """按 LLM 返回的 edge id 标记因果边闭环。
 
-    策略：检查 summary + key_events 中是否包含未闭环因果边的 target_event_summary 的关键词。
+    只统计 resolve() 真正命中的边：仓储的 resolve 对不存在的 id 是
+    UPDATE 匹配 0 行、不抛异常的静默 no-op，返回值必须参与计数判断，
+    否则 LLM 幻觉出的 id 会被当成闭环，虚高闭环数并打假日志。
     """
-    unresolved = causal_edge_repository.get_unresolved(novel_id)
-    if not unresolved:
+    if not causal_edge_repository:
         return 0
 
-    # 合并章节事件文本
-    chapter_text = " ".join([
-        str(bundle.get("summary", "")),
-        str(bundle.get("key_events", "")),
-        str(bundle.get("open_threads", "")),
-    ]).lower()
+    closed_ids = (bundle or {}).get("closed_causal_edge_ids") or []
+    if not isinstance(closed_ids, list) or not closed_ids:
+        return 0
 
     resolved_count = 0
-    for edge in unresolved:
-        # 简单关键词匹配：target_event 中的核心词出现在章节事件中
-        target_lower = edge.target_event_summary.lower()
-        # 提取关键片段（去掉常见连接词）
-        keywords = [w for w in target_lower.split() if len(w) >= 2]
-        if not keywords:
-            # 对中文，使用整体匹配
-            keywords = [target_lower]
-
-        match_count = sum(1 for kw in keywords if kw in chapter_text)
-        if keywords and match_count / len(keywords) >= 0.5:
-            try:
-                causal_edge_repository.resolve(edge.id, chapter_number)
-                resolved_count += 1
-                logger.info(
-                    "因果边闭环 novel=%s ch=%s edge=%s %s→%s",
-                    novel_id, chapter_number, edge.id[:8],
-                    edge.source_event_summary[:20], edge.target_event_summary[:20],
+    for edge_id in closed_ids:
+        edge_id = str(edge_id or "").strip()
+        if not edge_id:
+            continue
+        try:
+            if not causal_edge_repository.resolve(edge_id, chapter_number):
+                logger.debug(
+                    "LLM 返回的因果边 id 不存在，忽略: %s", edge_id[:8]
                 )
-            except Exception as e:
-                logger.debug("因果边闭环失败: %s", e)
-
+                continue
+            resolved_count += 1
+            logger.info(
+                "因果边闭环(LLM) novel=%s ch=%s edge=%s",
+                novel_id, chapter_number, edge_id[:8],
+            )
+        except Exception as e:
+            logger.debug("因果边闭环失败 edge=%s: %s", edge_id, e)
     return resolved_count
 
 
@@ -2219,10 +2253,26 @@ async def sync_chapter_narrative_after_save(
         except Exception as e:
             logger.warning("获取待回收伏笔失败: %s", e)
 
+    # 获取待闭环因果边（用于 LLM 判定本章是否兑现了某条边）
+    pending_causal_edges: List[Dict[str, str]] = []
+    if causal_edge_repository is not None:
+        try:
+            for e in causal_edge_repository.get_unresolved(novel_id):
+                pending_causal_edges.append({
+                    "id": str(getattr(e, "id", "") or ""),
+                    "target_event_summary": str(
+                        getattr(e, "target_event_summary", "") or ""
+                    )[:200],
+                    "causal_type": str(getattr(e, "causal_type", "") or ""),
+                })
+        except Exception as e:
+            logger.debug("取待闭环因果边失败: %s", e)
+
     try:
         bundle = await llm_chapter_extract_bundle(
             llm_service, content, chapter_number,
-            pending_foreshadows=pending_foreshadow_descs if pending_foreshadow_descs else None
+            pending_foreshadows=pending_foreshadow_descs if pending_foreshadow_descs else None,
+            pending_causal_edges=pending_causal_edges,
         )
         summary = bundle.get("summary") or ""
         key_events = bundle.get("key_events") or ""

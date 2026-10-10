@@ -11,6 +11,7 @@
     "resolve_hint": "预期回收场景提示"
   }} ],
   "consumed_foreshadows": [ "被回收的伏笔描述1", "被回收的伏笔描述2" ],
+  "closed_causal_edge_ids": [ "把本章已兑现的因果边 id 原样列在这里，没有就写 []" ],
   "storyline_progress": [ {{"type": "主线|支线|感情线", "arc_label": "本条线的短标签（≤16字，如婚约阴谋 / 印记之谜）", "description": "本章该线进展"}} ],
   "dialogues": [ {{"speaker": "角色名", "content": "对话内容", "context": "对话场景"}} ],
   "timeline_events": [ {{"time_point": "时间描述", "event": "事件摘要", "description": "详细说明"}} ],
@@ -42,6 +43,7 @@
   - importance：伏笔重要性，可选 "low"（次要）、"medium"（一般）、"high"（重要）、"critical"（关键）
   - resolve_hint：简短描述预期回收的场景或剧情点（可选，如"下一幕高潮"）
 - consumed_foreshadows：本章回收/呼应的伏笔，从待回收清单中匹配，输出原描述；最多 5 条；无则 []。
+- closed_causal_edge_ids：本章已兑现的因果边 id，从待闭环清单中原样照抄；只有本章明确写出该事件结果才算闭环，延续前因或只埋伏笔不算；无则 []。
 - storyline_progress：本章推进的故事线，最多 5 条；无则 []。
   - arc_label：必填（≤16字）。多条同为「主线」时必须用不同 arc_label 区分主题，禁止几条共用同一标签。
 - dialogues：重要对话（推动剧情/展现性格），最多 10 条；无则 []。
@@ -56,4 +58,4 @@
   - intensity：强度 1-10，10 为极端
 - character_states：本章末每个出场角色的心理状态快照，最多 5 个主要角色；无则 []。
   - mental_state：1句话描述章末情绪/决心/认知（不超过40字），如"因遭背叛而愤怒，决心亲手复仇"
-- 不要编造 beat 列表；summary/key_events/open_threads 用中文；严格合法 JSON。{foreshadow_context}
+- 不要编造 beat 列表；summary/key_events/open_threads 用中文；严格合法 JSON。{foreshadow_context}{causal_edge_context}

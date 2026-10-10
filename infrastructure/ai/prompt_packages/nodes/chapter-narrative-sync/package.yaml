@@ -17,5 +17,9 @@ variables:
   desc: 待回收伏笔上下文
   type: string
   default: ''
+- name: causal_edge_context
+  desc: 待闭环因果边清单（含 edge id），用于让 LLM 判断本章是否兑现了某条边
+  type: string
+  default: ''
 id: chapter-narrative-sync
 sort_order: 7
