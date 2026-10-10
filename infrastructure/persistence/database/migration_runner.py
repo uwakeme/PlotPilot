@@ -15,6 +15,36 @@ from infrastructure.persistence.database.sqlite_retry import (
 logger = logging.getLogger(__name__)
 
 
+# executescript() 会先隐式 COMMIT 已执行的前半段，随后一条语句抛错就导致
+# 整个文件被 _mark_applied —— 其后的 ALTER TABLE 永久丢失且每次启动跳过。
+# 改为逐语句执行：良性错误跳过该条继续，真错误记入 failed 且不标记已应用。
+_BENIGN_ERROR_MARKERS = ("already exists", "duplicate column")
+
+
+def _split_sql_statements(script: str) -> list[str]:
+    """把 SQL 脚本拆成单条语句。
+
+    用 sqlite3.complete_statement 判断语句边界，它能正确识别字符串字面量里的
+    分号，避免 "INSERT ... VALUES ('a;b')" 被误拆。
+    """
+    statements: list[str] = []
+    buffer = ""
+    for line in (script or "").splitlines(keepends=True):
+        stripped = line.strip()
+        if not buffer and (not stripped or stripped.startswith("--")):
+            continue
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            stmt = buffer.strip()
+            if stmt and stmt != ";":
+                statements.append(stmt)
+            buffer = ""
+    tail = buffer.strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 def apply_migration_files(conn: sqlite3.Connection, migrations_dir: Path) -> None:
     """Apply SQL migrations idempotently using the existing tracking table."""
     retry_settings = get_sqlite_retry_settings()
@@ -72,32 +102,48 @@ def apply_migration_files(conn: sqlite3.Connection, migrations_dir: Path) -> Non
 
         try:
             migration_sql = migration_path.read_text(encoding="utf-8")
-            conn.executescript(migration_sql)
-            conn.execute(
-                "INSERT OR IGNORE INTO migrations_applied (migration_file) VALUES (?)",
-                (migration_file,),
-            )
-            conn.commit()
-            logger.info("Applied migration: %s", migration_file)
-            new_migrations += 1
-        except sqlite3.OperationalError as exc:
-            err = str(exc)
-            if "already exists" in err or "duplicate column" in err:
-                _mark_applied(conn, migration_file)
-                logger.debug("Migration %s already applied: %s", migration_file, exc)
-            elif "no such function" in err:
-                _mark_applied(conn, migration_file)
-                logger.warning(
-                    "Migration %s uses unsupported SQLite function, marking as applied: %s",
-                    migration_file,
-                    exc,
-                )
-            else:
-                failed.append((migration_file, err))
-                logger.warning("Migration %s failed: %s", migration_file, exc)
         except Exception as exc:
-            failed.append((migration_file, str(exc)))
-            logger.warning("Failed to apply migration %s: %s", migration_file, exc)
+            failed.append((migration_file, f"读取失败: {exc}"))
+            continue
+
+        file_failed = False
+        for statement in _split_sql_statements(migration_sql):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                err = str(exc)
+                if any(m in err for m in _BENIGN_ERROR_MARKERS):
+                    logger.debug(
+                        "Migration %s 语句已存在，跳过: %s", migration_file, err
+                    )
+                    continue
+                file_failed = True
+                logger.warning(
+                    "Migration %s 语句失败: %s | SQL: %s",
+                    migration_file, err,
+                    statement[:120].replace("\n", " "),
+                )
+            except Exception as exc:
+                file_failed = True
+                logger.warning(
+                    "Migration %s 语句异常: %s | SQL: %s",
+                    migration_file, exc,
+                    statement[:120].replace("\n", " "),
+                )
+
+        conn.commit()
+
+        if file_failed:
+            failed.append((migration_file, "存在失败语句，未标记为已应用"))
+            continue
+
+        conn.execute(
+            "INSERT OR IGNORE INTO migrations_applied (migration_file) VALUES (?)",
+            (migration_file,),
+        )
+        conn.commit()
+        logger.info("Applied migration: %s", migration_file)
+        new_migrations += 1
 
     if new_migrations == 0 and applied:
         logger.debug("All %d migrations already applied, skipped", len(applied))
