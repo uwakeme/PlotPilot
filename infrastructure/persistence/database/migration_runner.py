@@ -21,11 +21,31 @@ logger = logging.getLogger(__name__)
 _BENIGN_ERROR_MARKERS = ("already exists", "duplicate column")
 
 
+def _first_statement_end(buffer: str) -> int | None:
+    """返回 buffer 中第一条完整语句的结束偏移（含分号）；尚不完整时返回 None。
+
+    对每个分号候选试一次 sqlite3.complete_statement——把词法判断交给 SQLite 自己：
+    它会跳过字符串字面量与注释里的分号，也认得出触发器 BEGIN...END 尚未闭合
+    （此时内部的 ';' 不会被误判成语句边界）。
+    """
+    for index, char in enumerate(buffer):
+        if char != ";":
+            continue
+        if sqlite3.complete_statement(buffer[: index + 1]):
+            return index + 1
+    return None
+
+
 def _split_sql_statements(script: str) -> list[str]:
     """把 SQL 脚本拆成单条语句。
 
     用 sqlite3.complete_statement 判断语句边界，它能正确识别字符串字面量里的
-    分号，避免 "INSERT ... VALUES ('a;b')" 被误拆。
+    分号，避免 "INSERT ... VALUES ('a;b')" 被误拆，也能把触发器的
+    BEGIN...END 整块保留。
+
+    一行多条语句同样逐条剥离：conn.execute 只接受单条语句，整块丢给它抛的是
+    ProgrammingError（并非 OperationalError 的子类），会被当成真失败而让整个
+    文件永不标记。
     """
     statements: list[str] = []
     buffer = ""
@@ -34,11 +54,13 @@ def _split_sql_statements(script: str) -> list[str]:
         if not buffer and (not stripped or stripped.startswith("--")):
             continue
         buffer += line
-        if sqlite3.complete_statement(buffer):
-            stmt = buffer.strip()
+        end = _first_statement_end(buffer)
+        while end is not None:
+            stmt = buffer[:end].strip()
             if stmt and stmt != ";":
                 statements.append(stmt)
-            buffer = ""
+            buffer = buffer[end:].lstrip()
+            end = _first_statement_end(buffer)
     tail = buffer.strip()
     if tail:
         statements.append(tail)
