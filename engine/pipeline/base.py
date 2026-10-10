@@ -1267,20 +1267,28 @@ class BaseStoryPipeline(ABC):
                 continue
         return out
 
-    def _build_scene_info(self, ctx: PipelineContext) -> Dict[str, Any]:
-        """组装视角/伏笔校验所需的场景信息。
+    def _build_scene_info(self, ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """组装视角校验所需的场景信息。
 
         以 _get_scene_context 的 cast 推断结果为底（viewpoint_character /
         characters_present），并补上它恒为空的 key_event——用本章大纲填充，
-        否则视角校验的关键事件判据拿不到东西。取不到 cast 时退回正文角色名。
+        否则视角校验的关键事件判据拿不到东西。
+
+        cast 与正文角色名都取不到时返回 None：None 是"视角无法评估、保持保守分"的
+        既定契约（见 quality_guardrail.check 的 vp_score 默认 0.77）。返回一个空壳
+        dict 会让 quality_guardrail 认为视角可评估，在无违规时报出满分 1.0。
+        伏笔绑定层级校验不依赖 scene_info，已在 quality_guardrail 侧独立门控。
 
         契约要求 viewpoint_guardrail.check 的
         {viewpoint_character, characters_present, key_event, information_asymmetry}。
         """
         scene = self._get_scene_context(ctx) or {}
+        characters_present = scene.get("characters_present") or self._get_character_names(ctx)
+        if not characters_present:
+            return None
         return {
             "viewpoint_character": scene.get("viewpoint_character", ""),
-            "characters_present": scene.get("characters_present") or self._get_character_names(ctx),
+            "characters_present": characters_present,
             "key_event": scene.get("key_event") or ctx.outline or "",
             "information_asymmetry": scene.get("information_asymmetry", {}),
         }

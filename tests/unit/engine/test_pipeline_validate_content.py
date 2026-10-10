@@ -21,6 +21,12 @@ from engine.pipeline.context import PipelineContext
 
 OUTLINE = "林渊在断魂崖遭遇陈长老伏击"
 TEXT = "正文内容，长度需超过节奏检查的最小阈值。" * 5
+TWO_CHARACTER_TEXT = "林渊握紧了剑，陈长老看着他。剑锋在雨里闪了一下，林渊退了半步。"
+MODULE = "application.engine.services.guardrail_execution"
+
+
+def _two_character_cast(_novel_id):
+    return {"林渊": object(), "陈长老": object()}
 
 
 class RecordingValidator:
@@ -66,10 +72,10 @@ def _registry() -> ForeshadowingRegistry:
     return registry
 
 
-def _ctx() -> PipelineContext:
+def _ctx(content: str = TEXT) -> PipelineContext:
     ctx = PipelineContext(novel_id="novel-1", chapter_number=7)
     ctx.outline = OUTLINE
-    ctx.chapter_content = TEXT
+    ctx.chapter_content = content
     ctx.era = "ancient"
     registry = _registry()
     ctx.foreshadowing_repository = SimpleNamespace(
@@ -94,8 +100,39 @@ class TestValidateContentFeedsGuardrails:
         assert call["foreshadows"][0]["description"] == "断魂崖下的残剑"
         assert call["foreshadows"][0]["emotional_weight"] == 0.92
         assert call["foreshadows"][0]["binding_level"] == 1
-        assert call["scene_info"], "scene_info 不得为空"
-        assert call["scene_info"]["key_event"]
+
+    async def test_scene_info_none_when_cast_absent(self):
+        """取不到 cast 时必须返回 None，让视角分退回保守分，而不是报满分。
+
+        返回空壳 dict 会让 quality_guardrail 认为视角可评估 → vp_score=1.0。
+        """
+        pipeline = _pipeline()
+        validator = RecordingValidator()
+        ctx = _ctx()
+        ctx.policy_validator = validator
+
+        await pipeline._step_validate_content(ctx)
+
+        assert validator.calls[0]["scene_info"] is None
+        # 关键：伏笔仍照送，绑定校验不因 scene_info 缺失而失效
+        assert validator.calls[0]["foreshadows"], "绑定校验不得依赖 scene_info"
+
+    async def test_scene_info_present_when_cast_available(self, monkeypatch):
+        monkeypatch.setattr(
+            f"{MODULE}._character_masks_for_novel", _two_character_cast
+        )
+        pipeline = _pipeline()
+        validator = RecordingValidator()
+        ctx = _ctx(content=TWO_CHARACTER_TEXT)
+        ctx.policy_validator = validator
+
+        await pipeline._step_validate_content(ctx)
+
+        scene = validator.calls[0]["scene_info"]
+        assert scene is not None
+        assert set(scene["characters_present"]) == {"林渊", "陈长老"}
+        assert scene["viewpoint_character"] in {"林渊", "陈长老"}
+        assert scene["key_event"], "key_event 恒空会让视角校验的关键事件判据失效"
 
     async def test_degrades_when_repo_absent(self):
         pipeline = _pipeline()

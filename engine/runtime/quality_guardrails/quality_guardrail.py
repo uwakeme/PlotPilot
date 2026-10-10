@@ -209,17 +209,31 @@ class QualityGuardrail:
                 })
 
         # 5. 视角
+        #    两类判据的前置条件不同，必须分开门控：
+        #    - 视角选择/泄露依赖 scene_info（cast 推断），拿不到就保持保守分 0.77
+        #    - 伏笔绑定层级只依赖 foreshadows，与视角语境无关
+        #    历史上两者被同一个 `if scene_info:` 门控连带，导致没有 cast 的书
+        #    会连带跳过伏笔绑定校验——那条校验就此静默失效。
         vp_score = 0.77
+        vp_violations: List[Any] = []
         if scene_info:
-            vp_score, vp_violations = self._viewpoint.check(text, scene_info, foreshadows)
-            for v in vp_violations:
-                violations.append({
-                    "dimension": "viewpoint",
-                    "type": v.type_name,
-                    "severity": v.severity,
-                    "description": v.description,
-                    "suggestion": v.suggestion,
-                })
+            _, vp_violations = self._viewpoint.check(text, scene_info)
+        if foreshadows:
+            _, binding_violations = self._viewpoint.check(text, None, foreshadows)
+            vp_violations = vp_violations + binding_violations
+        if scene_info or foreshadows:
+            # 有 scene_info 才能真正评估视角，基准 1.0；否则维持保守基准 0.77，
+            # 只让已查出的违规扣分——避免"没数据"反而比"有数据且干净"更高分。
+            base = 1.0 if scene_info else 0.77
+            vp_score = max(0.0, base - self._viewpoint.severity_penalty(vp_violations))
+        for v in vp_violations:
+            violations.append({
+                "dimension": "viewpoint",
+                "type": v.type_name,
+                "severity": v.severity,
+                "description": v.description,
+                "suggestion": v.suggestion,
+            })
 
         # 6. 节奏
         r_score, r_violations = self._rhythm.check(text, scene_type)

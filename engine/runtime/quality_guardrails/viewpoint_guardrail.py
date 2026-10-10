@@ -25,6 +25,11 @@ from typing import List, Tuple, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# 违规严重度累计扣分系数：score = 1.0 - sum(severity) * PENALTY_PER_SEVERITY
+# 提取为模块常量，供 quality_guardrail 在合并多个子判据时复用同一系数，
+# 避免扣分规则出现第二份实现。
+PENALTY_PER_SEVERITY = 0.15
+
 
 @dataclass
 class ViewpointViolation:
@@ -72,10 +77,14 @@ class ViewpointGuardrail:
     def check(
         self,
         text: str,
-        scene_info: Dict[str, Any],
+        scene_info: Dict[str, Any] = None,
         foreshadows: List[Dict[str, Any]] = None,
     ) -> Tuple[float, List[ViewpointViolation]]:
         """检查视角和伏笔绑定
+
+        两类判据的前置条件不同，这里按各自的前置条件分别执行：
+        - 视角选择 / 视角泄露需要 scene_info（cast 推断），没有就跳过
+        - 伏笔绑定层级只需要 foreshadows，与视角语境无关
 
         Args:
             text: 待检查文本
@@ -84,7 +93,7 @@ class ViewpointGuardrail:
                 characters_present: List[str],
                 key_event: str,
                 information_asymmetry: Dict[str, Any],
-            }
+            }；为 None 时跳过视角类判据
             foreshadows: 活跃伏笔列表
 
         Returns:
@@ -93,22 +102,27 @@ class ViewpointGuardrail:
         violations: List[ViewpointViolation] = []
 
         # 1. 视角选择器
-        violations.extend(self._check_viewpoint_selection(text, scene_info))
+        if scene_info:
+            violations.extend(self._check_viewpoint_selection(text, scene_info))
 
-        # 2. 视角泄露检测
-        violations.extend(self._check_viewpoint_leak(text, scene_info))
+            # 2. 视角泄露检测
+            violations.extend(self._check_viewpoint_leak(text, scene_info))
 
-        # 3. 伏笔绑定层级验证
+        # 3. 伏笔绑定层级验证（不依赖 scene_info）
         if foreshadows:
             violations.extend(self._check_foreshadow_binding(foreshadows))
 
-        if not violations:
-            return 1.0, []
+        return self.score_of(violations), violations
 
-        total_penalty = sum(v.severity for v in violations)
-        score = max(0.0, 1.0 - total_penalty * 0.15)
+    @classmethod
+    def severity_penalty(cls, violations: List[ViewpointViolation]) -> float:
+        """违规累计扣分，供调用方把多个子判据合并进同一维度分。"""
+        return sum(v.severity for v in violations) * PENALTY_PER_SEVERITY
 
-        return score, violations
+    @classmethod
+    def score_of(cls, violations: List[ViewpointViolation]) -> float:
+        """由违规列表算分：无违规记 1.0。"""
+        return max(0.0, 1.0 - cls.severity_penalty(violations))
 
     def _check_viewpoint_selection(
         self,
