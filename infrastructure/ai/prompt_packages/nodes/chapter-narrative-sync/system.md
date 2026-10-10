@@ -9,8 +9,8 @@
     "suggested_resolve_offset": 5,
     "importance": "medium",
     "resolve_hint": "预期回收场景提示",
-    "emotional_weight": 0.5,
-    "binding_level": 1
+    "emotional_weight": 0.9,
+    "binding_level": 3
   }} ],
   "consumed_foreshadows": [ "被回收的伏笔描述1", "被回收的伏笔描述2" ],
   "closed_causal_edge_ids": [ "把本章已兑现的因果边 id 原样列在这里，没有就写 []" ],

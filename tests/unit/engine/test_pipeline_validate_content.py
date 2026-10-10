@@ -6,6 +6,7 @@
 本测试用真实的 ForeshadowingRegistry / Foreshadowing（而非 SimpleNamespace 桩），
 以便同时覆盖「只取未回收伏笔」这条过滤规则。
 """
+import logging
 from types import SimpleNamespace
 
 from domain.novel.entities.foreshadowing_registry import ForeshadowingRegistry
@@ -107,3 +108,27 @@ class TestValidateContentFeedsGuardrails:
 
         assert result.passed is True
         assert validator.calls[0]["foreshadows"] == []
+
+    async def test_repo_failure_degrades_and_warns(self, caplog):
+        """取数失败不能无声无息——否则护栏静默失效且无人察觉。
+
+        这条覆盖的是吞掉"桩/实现不匹配"的那条 except 分支：仓储接口一变
+        （例如 get_by_novel_id 被改名），若只降级不告警，绑定校验会静默消失。
+        """
+        pipeline = _pipeline()
+        validator = RecordingValidator()
+        ctx = _ctx()
+
+        def _boom(_nid):
+            raise RuntimeError("仓储炸了")
+
+        ctx.foreshadowing_repository = SimpleNamespace(get_by_novel_id=_boom)
+        ctx.policy_validator = validator
+
+        with caplog.at_level(logging.WARNING):
+            result = await pipeline._step_validate_content(ctx)
+
+        assert result.passed is True, "取数失败不应让整章失败"
+        assert validator.calls[0]["foreshadows"] == []
+        assert any(r.levelno >= logging.WARNING for r in caplog.records), "取数失败必须告警"
+        assert "novel-1" in caplog.text

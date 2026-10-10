@@ -8,6 +8,10 @@ from domain.novel.value_objects.novel_id import NovelId
 from domain.bible.entities.character import Character
 from domain.bible.value_objects.character_id import CharacterId
 from domain.novel.value_objects.foreshadowing import (
+    DEFAULT_BINDING_LEVEL,
+    DEFAULT_EMOTIONAL_WEIGHT,
+    FORESHADOW_BINDING_CHARACTER,
+    FORESHADOW_BINDING_WORLD,
     Foreshadowing,
     ForeshadowingStatus,
     ImportanceLevel
@@ -92,6 +96,32 @@ def _parse_importance(value: Any) -> "ImportanceLevel":
         if v_lower in critical_map:
             return ImportanceLevel.CRITICAL
     return ImportanceLevel.MEDIUM
+
+
+def _parse_emotional_weight(value: Any) -> float:
+    """解析 LLM 返回的 emotional_weight，非法/缺失一律回落默认 0.5。
+
+    与 chapter_narrative_sync 的同名解析保持一致：这里是第二条活的伏笔种植路径，
+    不解析就意味着种下的伏笔永远停在惰性默认值，绑定层级校验对它永远不生效。
+    """
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_EMOTIONAL_WEIGHT
+    if not 0.0 <= parsed <= 1.0:
+        return DEFAULT_EMOTIONAL_WEIGHT
+    return parsed
+
+
+def _parse_binding_level(value: Any) -> int:
+    """解析 LLM 返回的 binding_level（1=角色 2=势力 3=事件 4=世界）。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_BINDING_LEVEL
+    if not FORESHADOW_BINDING_CHARACTER <= parsed <= FORESHADOW_BINDING_WORLD:
+        return DEFAULT_BINDING_LEVEL
+    return parsed
 
 
 class StateUpdater:
@@ -208,6 +238,12 @@ class StateUpdater:
                     importance=importance,
                     status=ForeshadowingStatus.PLANTED,
                     suggested_resolve_chapter=suggested_resolve,
+                    emotional_weight=_parse_emotional_weight(
+                        foreshadow_data.get("emotional_weight")
+                    ),
+                    binding_level=_parse_binding_level(
+                        foreshadow_data.get("binding_level")
+                    ),
                 )
                 foreshadowing_registry.register(foreshadowing)
                 logger.debug(

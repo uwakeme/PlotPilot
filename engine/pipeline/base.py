@@ -1236,6 +1236,7 @@ class BaseStoryPipeline(ABC):
 
         只取未回收的伏笔——已回收的不再需要校验绑定。
         取数失败一律降级为空列表：校验是观测性的，不能因此让整章失败。
+        但取数失败必须可见——否则护栏静默失效，与 _get_character_masks 等同类取数一致用 warning。
         """
         repo = getattr(ctx, "foreshadowing_repository", None)
         if repo is None or not ctx.novel_id:
@@ -1248,7 +1249,7 @@ class BaseStoryPipeline(ABC):
                 return []
             entries = registry.get_unresolved()
         except Exception as e:
-            logger.debug("[%s] 伏笔注册表取数失败: %s", ctx.novel_id, e)
+            logger.warning("[%s] 伏笔注册表取数失败，伏笔绑定校验将静默跳过: %s", ctx.novel_id, e)
             return []
 
         out: List[Dict[str, Any]] = []

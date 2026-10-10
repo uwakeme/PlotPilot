@@ -6,7 +6,7 @@
 1. new_characters: 新入场角色（name, description 需提炼核心特质, first_appearance为章节号）
 2. character_actions: 导致不可逆后果的关键行为（character_id, action 需简练, chapter），忽略喝水吃饭等无意义动作
 3. relationship_changes: 关系实质性破裂/升温/结盟（char1, char2, old_type, new_type, chapter）
-4. foreshadowing_planted: 抛出的"契诃夫的枪"或信息黑盒（description 需明确悬念点, chapter）
+4. foreshadowing_planted: 抛出的"契诃夫的枪"或信息黑盒（description 需明确悬念点, chapter, emotional_weight 0.0-1.0 的情感权重, binding_level 1-4 的绑定层级：1=角色 2=势力 3=事件 4=世界；emotional_weight > 0.8 的核心伏笔应绑定到 3 或 4 层级）
 5. foreshadowing_resolved: 得到解答的前置悬念（foreshadowing_id, chapter）
 6. events: 改变场景价值极性的核心事件（type, description, involved_characters 数组, chapter）
 
