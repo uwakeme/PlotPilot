@@ -656,6 +656,67 @@
                   </div>
                 </n-space>
               </n-card>
+
+              <n-card size="small" :bordered="true" class="plot-option-card title-picker-card">
+                <template #header>
+                  <n-space align="center" :size="8">
+                    <n-tag size="small" type="success" round>书名</n-tag>
+                    <span class="plot-option-title">为这本书起个名字</span>
+                    <span v-if="currentTitle" class="title-picker-current">当前：{{ currentTitle }}</span>
+                  </n-space>
+                </template>
+                <n-space vertical :size="10">
+                  <n-space :size="8" :wrap="true" align="center">
+                    <template v-if="titleOptionsLoading">
+                      <span class="title-picker-hint">AI 正在根据世界观、人物与总纲起名…</span>
+                    </template>
+                    <template v-else-if="titleOptions.length">
+                      <n-button
+                        v-for="t in titleOptions"
+                        :key="t"
+                        size="small"
+                        :type="t === currentTitle ? 'primary' : 'default'"
+                        :ghost="t === currentTitle"
+                        :loading="applyingTitle === t"
+                        :disabled="applyingTitle !== '' && applyingTitle !== t"
+                        @click="applyTitle(t)"
+                      >
+                        {{ t }}
+                      </n-button>
+                    </template>
+                    <span v-else class="title-picker-hint">候选生成失败，可直接输入书名</span>
+                    <n-button
+                      size="small"
+                      quaternary
+                      :loading="titleOptionsLoading"
+                      :disabled="applyingTitle !== ''"
+                      @click="loadTitleOptions(true)"
+                    >
+                      换一批
+                    </n-button>
+                  </n-space>
+                  <n-space :size="8" align="center">
+                    <n-input
+                      v-model:value="customTitle"
+                      size="small"
+                      placeholder="不满意候选？自己输入一个书名"
+                      style="max-width: 280px"
+                      :disabled="applyingTitle !== ''"
+                      @keyup.enter="applyTitle(customTitle)"
+                    />
+                    <n-button
+                      size="small"
+                      type="primary"
+                      secondary
+                      :disabled="!customTitle.trim() || (applyingTitle !== '' && applyingTitle !== customTitle.trim())"
+                      :loading="applyingTitle === customTitle.trim()"
+                      @click="applyTitle(customTitle)"
+                    >
+                      使用
+                    </n-button>
+                  </n-space>
+                </n-space>
+              </n-card>
             </n-space>
 
             <n-space style="margin-top: 16px; width: 100%" justify="center" :size="12">
@@ -733,6 +794,7 @@ import { bibleApi, type BibleDTO, consumeBibleGenerateStream, type Worldbuilding
 // timeout constants removed - SSE runs until complete or error
 import { worldbuildingApi } from '@/api/worldbuilding'
 import { consumePlotOutlineStream, workflowApi, type PlotOutlineDTO } from '@/api/workflow'
+import { novelApi } from '@/api/novel'
 import type { InvocationResponseDTO, InvocationVariableBinding } from '@/api/aiInvocation'
 import { characterPsycheApi } from '@/api/engineCore'
 import { featureFlags } from '@/config/features'
@@ -1130,6 +1192,63 @@ const plotOutlineProgressItems = computed<PlotOutlineProgressItem[]>(() => {
     state: current > index + 1 ? 'done' : current === index + 1 ? 'active' : 'pending',
   }))
 })
+
+// ── Step 4：AI 起名（总纲生成后基于全部设定提供书名候选）──
+const titleOptions = ref<string[]>([])
+const titleOptionsLoading = ref(false)
+const titleOptionsLoadedOnce = ref(false)
+const currentTitle = ref('')
+const applyingTitle = ref('')
+const customTitle = ref('')
+
+async function loadCurrentTitle(): Promise<void> {
+  if (currentTitle.value) return
+  try {
+    const novel = await novelApi.getNovel(props.novelId)
+    currentTitle.value = novel.title || ''
+  } catch {
+    // 拿不到当前书名不阻塞起名卡片
+  }
+}
+
+async function loadTitleOptions(force = false): Promise<void> {
+  if (titleOptionsLoading.value) return
+  if (!force && titleOptionsLoadedOnce.value) return
+  titleOptionsLoading.value = true
+  titleOptionsLoadedOnce.value = true
+  try {
+    const res = await novelApi.suggestTitleOptions(props.novelId)
+    titleOptions.value = res.titles || []
+  } catch (e) {
+    titleOptions.value = []
+    // 静默失败：用户仍可手输名字
+  } finally {
+    titleOptionsLoading.value = false
+  }
+}
+
+async function applyTitle(title: string): Promise<void> {
+  const trimmed = title.trim()
+  if (!trimmed || applyingTitle.value) return
+  applyingTitle.value = trimmed
+  try {
+    await novelApi.updateNovel(props.novelId, { title: trimmed })
+    currentTitle.value = trimmed
+    message.success(`书名已更新：${trimmed}`)
+  } catch (e) {
+    message.error(formatApiError(e) || '书名更新失败')
+  } finally {
+    applyingTitle.value = ''
+  }
+}
+
+function syncTitleOptionsFromOutline(outline: PlotOutlineDTO | null | undefined) {
+  // 总纲就绪（生成完成或缓存恢复）后自动拉一次候选
+  if (outline && currentStep.value === 4 && props.show) {
+    void loadCurrentTitle()
+    void loadTitleOptions()
+  }
+}
 
 function syncEditablePlotOutline(outline: PlotOutlineDTO | null | undefined) {
   syncingPlotOutlineDraft.value = true
@@ -1882,11 +2001,18 @@ watch(currentStep, (step, prevStep) => {
   if (step === 4 && props.show && !plotOutlineCommitted.value && !plotOutline.value && !plotOutlineGenerating.value) {
     void loadPlotOutline()
   }
+  if (step === 4 && props.show) {
+    void loadCurrentTitle()
+    void loadTitleOptions()
+  }
 })
 
 watch(plotOutline, () => {
   if (currentStep.value === 4 && props.show) persistStepFourUiToCache()
 }, { deep: true })
+
+// 总纲在第 4 步内生成完成（或缓存恢复）时，自动拉取书名候选
+watch(plotOutline, (outline) => syncTitleOptionsFromOutline(outline))
 
 watch(editablePlotOutline, () => {
   if (currentStep.value === 4 && props.show) touchPlotOutlineDraft()
@@ -2708,6 +2834,16 @@ const handleComplete = () => {
 .plot-option-title {
   font-weight: 600;
   font-size: 15px;
+}
+
+.title-picker-current {
+  font-size: 12px;
+  color: #35567e;
+}
+
+.title-picker-hint {
+  font-size: 12px;
+  color: #8a94a6;
 }
 
 .plot-line {

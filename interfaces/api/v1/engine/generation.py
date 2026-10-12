@@ -31,6 +31,7 @@ from application.blueprint.services.setup_plot_outline_continuation import (
     normalize_setup_plot_outline_payload,
 )
 from application.blueprint.services.continuous_planning_service import ContinuousPlanningService
+from application.core.services.title_suggestion_service import fallback_title_from_premise
 from application.engine.dtos.scene_director_dto import SceneDirectorAnalysis
 from application.engine.services.hosted_write_service import HostedWriteService
 from application.paths import get_db_path
@@ -62,6 +63,7 @@ from interfaces.api.dependencies import (
     get_setup_main_plot_suggestion_service,
     get_setup_plot_outline_service,
     get_storyline_manager,
+    get_title_suggestion_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -340,6 +342,11 @@ class SuggestMainPlotOptionsResponse(BaseModel):
     plot_options: List[MainPlotOptionItem]
     invocation_session_id: str = ""
     invocation_next_action: str = ""
+
+
+class SuggestTitleOptionsResponse(BaseModel):
+    titles: List[str] = Field(default_factory=list)
+    source: str = "ai"
 
 
 class PlotOutlineStageItem(BaseModel):
@@ -651,6 +658,83 @@ async def suggest_main_plot_options_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post(
+    "/{novel_id}/setup/suggest-title-options",
+    response_model=SuggestTitleOptionsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def suggest_title_options(
+    novel_id: str,
+    novel_service=Depends(get_novel_service),
+    setup_svc=Depends(get_setup_main_plot_suggestion_service),
+    title_service=Depends(get_title_suggestion_service),
+):
+    """向导 Step 4：基于梗概、世界观、人物与已保存的剧情总纲，由 LLM 生成书名候选。
+
+    生成失败不阻塞向导：返回 fallback（梗概截取）并标记 source=fallback。
+    """
+    novel = novel_service.get_novel(novel_id)
+    if novel is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Novel not found")
+    try:
+        ctx = setup_svc.build_context(novel_id)
+    except Exception:
+        logger.warning("suggest_title_options: build_context failed", exc_info=True)
+        ctx = {}
+
+    premise = str(ctx.get("premise") or getattr(novel, "premise", "") or "").strip()
+    theme_metadata = ctx.get("theme_metadata") or {}
+    characters_hint: List[str] = []
+    for item in ctx.get("characters") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        role = str(item.get("role") or "").strip()
+        characters_hint.append(f"{name}（{role}）" if role else name)
+
+    # 总纲摘要在向导确认后才写入 Variable Hub；未确认时留空，起名退化为梗概+世界观上下文
+    outline_parts: List[str] = []
+    try:
+        from infrastructure.persistence.database.sqlite_ai_invocation_repository import SqliteVariableHubRepository
+
+        repo = SqliteVariableHubRepository(get_database())
+        context_key = f"novel_id:{novel_id}"
+        for key, label in (
+            ("plot.main_story_overview", "主线概述"),
+            ("plot.core_conflict", "核心冲突"),
+            ("plot.expected_ending", "预期结局"),
+        ):
+            value = repo.get_value(key, context_key)
+            text = str(getattr(value, "value", "") or "").strip()
+            if text:
+                outline_parts.append(f"{label}：{text}")
+    except Exception:
+        logger.warning("suggest_title_options: read plot outline failed", exc_info=True)
+
+    try:
+        titles = await title_service.suggest_title_options(
+            premise=premise,
+            outline_summary="\n".join(outline_parts),
+            characters_hint=characters_hint,
+            worldview_summary="；".join(ctx.get("worldview_summary") or []),
+            style_hint=str(ctx.get("style_hint") or ""),
+            genre=str(theme_metadata.get("genre_label") or ""),
+            world_preset=str(theme_metadata.get("world_preset") or ""),
+            story_structure=str(theme_metadata.get("story_structure") or ""),
+            count=5,
+        )
+    except Exception:
+        logger.warning("suggest_title_options: LLM 调用失败，使用梗概截取兜底", exc_info=True)
+        titles = []
+
+    if titles:
+        return SuggestTitleOptionsResponse(titles=titles, source="ai")
+    fallback = fallback_title_from_premise(premise)
+    return SuggestTitleOptionsResponse(titles=[fallback] if fallback else [], source="fallback")
 
 
 @router.get(

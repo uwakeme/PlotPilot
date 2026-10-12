@@ -293,7 +293,7 @@
       :novel-id="setupWizard.novelId"
       :target-chapters="setupWizard.targetChapters"
       :show="true"
-      @update:show="(open) => { if (!open) setupWizard = null }"
+      @update:show="(open) => { if (!open) { setupWizard = null; void fetchBooks() } }"
       @complete="handleSetupComplete"
       @skip="handleSetupSkip"
     />

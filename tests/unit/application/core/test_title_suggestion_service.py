@@ -86,6 +86,78 @@ class TestSuggestTitle:
         assert "三幕式" in user_prompt
 
 
+class TestSuggestTitleOptions:
+    """向导第 4 步的多候选书名生成"""
+
+    @pytest.mark.asyncio
+    async def test_parses_json_array_output(self):
+        service = TitleSuggestionService(llm_service=_make_llm(
+            '["《潮生算账》", "无根之算", "《潮生算账》", "灵根账"]'
+        ))
+        options = await service.suggest_title_options(premise="凡人算账逆天")
+        assert options == ["潮生算账", "无根之算", "灵根账"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_line_parsing_without_json(self):
+        service = TitleSuggestionService(llm_service=_make_llm(
+            "1. 潮生算账\n2. 无根之算\n3. 灵根账"
+        ))
+        options = await service.suggest_title_options(premise="凡人算账逆天")
+        assert options == ["潮生算账", "无根之算", "灵根账"]
+
+    @pytest.mark.asyncio
+    async def test_caps_count(self):
+        service = TitleSuggestionService(llm_service=_make_llm(
+            '["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]'
+        ))
+        options = await service.suggest_title_options(premise="少年踏上星路", count=5)
+        assert len(options) == 5
+
+    @pytest.mark.asyncio
+    async def test_dedupes_case_insensitive(self):
+        service = TitleSuggestionService(llm_service=_make_llm('["Star Fall", "star fall"]'))
+        options = await service.suggest_title_options(premise="少年踏上星路")
+        assert options == ["Star Fall"]
+
+    @pytest.mark.asyncio
+    async def test_rich_context_passed_in_prompt(self):
+        llm = _make_llm('["书名"]')
+        service = TitleSuggestionService(llm_service=llm)
+        await service.suggest_title_options(
+            premise="凡人算账逆天",
+            outline_summary="主线概述：市井斗法",
+            characters_hint=["沈潮生（主角）"],
+            worldview_summary="灵根论贵贱",
+            style_hint="市井烟火",
+            genre="玄幻",
+            count=3,
+        )
+        user_prompt = llm.generate.call_args[0][0].user
+        assert "凡人算账逆天" in user_prompt
+        assert "市井斗法" in user_prompt
+        assert "沈潮生（主角）" in user_prompt
+        assert "灵根论贵贱" in user_prompt
+        assert "玄幻" in user_prompt
+
+    @pytest.mark.asyncio
+    async def test_empty_premise_returns_empty(self):
+        service = TitleSuggestionService(llm_service=_make_llm('["甲"]'))
+        assert await service.suggest_title_options(premise="  ") == []
+
+    @pytest.mark.asyncio
+    async def test_llm_error_propagates(self):
+        llm = Mock(spec=LLMService)
+        llm.generate = AsyncMock(side_effect=RuntimeError("provider down"))
+        service = TitleSuggestionService(llm_service=llm)
+        with pytest.raises(RuntimeError):
+            await service.suggest_title_options(premise="少年踏上星路")
+
+    @pytest.mark.asyncio
+    async def test_unusable_output_returns_empty(self):
+        service = TitleSuggestionService(llm_service=_make_llm("我不能输出书名。抱歉，这是说明文字"))
+        assert await service.suggest_title_options(premise="少年踏上星路") == []
+
+
 class TestFallbackTitle:
     """梗概截取兜底"""
 

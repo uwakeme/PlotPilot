@@ -51,6 +51,8 @@ export const apiRoutes = {
     chapters: (novelId: string, params?: QueryParams) =>
       withQuery(apiRootPath('novels', novelId, 'chapters'), params),
     chaptersClient: (novelId: string) => apiClientPath('novels', novelId, 'chapters'),
+    setupSuggestTitleOptions: (novelId: string) =>
+      apiClientPath('novels', novelId, 'setup', 'suggest-title-options'),
     chapterStream: (novelId: string) => apiRootPath('autopilot', novelId, 'chapter-stream'),
     exportNovel: (novelId: string) => apiClientPath('export', 'novel', novelId),
     exportChapter: (chapterId: string) => apiClientPath('export', 'chapter', chapterId),

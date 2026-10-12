@@ -180,6 +180,15 @@ export const novelApi = {
     ) as Promise<{ title: string; source: 'ai' | 'fallback' }>,
 
   /**
+   * 向导第 4 步：基于梗概/世界观/人物/总纲生成书名候选
+   * POST /api/v1/novels/{novelId}/setup/suggest-title-options
+   */
+  suggestTitleOptions: (novelId: string) =>
+    apiClient.post<{ titles: string[]; source: 'ai' | 'fallback' }>(
+      apiRoutes.novels.setupSuggestTitleOptions(novelId)
+    ) as Promise<{ titles: string[]; source: 'ai' | 'fallback' }>,
+
+  /**
    * Delete a novel
    * DELETE /api/v1/novels/{novelId}
    */
