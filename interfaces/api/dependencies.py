@@ -1363,6 +1363,7 @@ def get_continuous_planning_service():
     进程级单例安全（lru_cache）。
     """
     from application.blueprint.services.continuous_planning_service import ContinuousPlanningService
+    from application.paths import get_db_path
     from application.world.services.bible_service import BibleService
     from infrastructure.persistence.database.chapter_element_repository import ChapterElementRepository
 
