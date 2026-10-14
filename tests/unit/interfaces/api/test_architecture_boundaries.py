@@ -228,4 +228,5 @@ def test_app_factory_registers_legacy_and_api_routes(tmp_path):
     assert "/health" in routes
     assert "/internal/shutdown" in routes
     assert "/api/v1/novels/" in routes
+    assert "/api/v1/library/books" in routes
     assert "/api/stats/global" in routes
