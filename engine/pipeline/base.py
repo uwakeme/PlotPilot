@@ -125,9 +125,12 @@ class BaseStoryPipeline(ABC):
         """
         self._step_log = []
         step_status: Dict[str, str] = {}
-        trace_token = _enter_chapter_trace(ctx)
+        trace_token = None
 
         try:
+            # 观测旁路的 trace：装在 try 内部，这样它自己万一抛异常也会走下面的
+            # except 变成 PipelineResult(success=False)，而不是逃出 run_chapter。
+            trace_token = _enter_chapter_trace(ctx)
             # 1. 定位下一个待写章节
             self._mark_pipeline_step(ctx, "find_next_chapter")
             r = await self._step_find_next_chapter(ctx)
@@ -240,7 +243,8 @@ class BaseStoryPipeline(ABC):
             return self._make_result(ctx, success=False, error=str(e), step_status=step_status)
 
         finally:
-            _exit_chapter_trace(trace_token)
+            if trace_token is not None:
+                _exit_chapter_trace(trace_token)
 
     # ═══════════════════════════════════════════════════════════════
     # 十大步骤 — 每个都有默认实现，子类可覆写

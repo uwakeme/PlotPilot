@@ -4,8 +4,9 @@ run_chapter 期间 ambient trace 必须带 novel_id，退出后必须还原成�
 还原不是可有可无的：守护进程的任务上下文是长生命周期的，残留的 trace 会把上一本书的
 novel_id 泄漏给下一本。
 """
-import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 from application.ai.trace_context import (
     TraceContext,
@@ -50,8 +51,18 @@ def test_enter_does_not_mutate_a_pre_existing_trace():
         reset_current_trace(outer)
 
 
-def test_run_chapter_scopes_trace_for_the_duration_of_the_pipeline():
-    """集成点：run_chapter 确实进入了作用域，并在返回后还原。"""
+@pytest.mark.asyncio
+async def test_run_chapter_scopes_trace_for_the_duration_of_the_pipeline():
+    """集成点：run_chapter 确实进入了作用域，并在返回后还原。
+
+    **必须写成 async def + await，不能用 asyncio.run()。**
+    `asyncio.run` 会把协程包进 Task，而 `Task.__init__` 做 `contextvars.copy_context()`，
+    run_chapter 内部对 contextvar 的写入（含「不还原」）**永远不会**传播回调用方上下文。
+    那样 `assert get_current_trace() is stale` 恒成立——把 `finally` 整段删掉，1863 条测试
+    依然全绿，这个任务最核心的不变量就没人守了。
+    直接 `await pipeline.run_chapter(ctx)` 让测试体与管线共享同一个 Task 上下文，
+    断言才真正生效。
+    """
     from engine.pipeline.context import PipelineContext
 
     observed = {}
@@ -72,7 +83,7 @@ def test_run_chapter_scopes_trace_for_the_duration_of_the_pipeline():
     outer = set_current_trace(stale)
     try:
         ctx = PipelineContext(novel_id="n1", chapter_number=1)
-        result = asyncio.run(pipeline.run_chapter(ctx))
+        result = await pipeline.run_chapter(ctx)
 
         assert result.success is False
         assert observed["inside"] is not stale
