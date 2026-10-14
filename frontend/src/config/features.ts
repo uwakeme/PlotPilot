@@ -7,10 +7,12 @@ function envFlag(value: EnvValue): boolean {
 }
 
 const aiInvocationDebug = envFlag(import.meta.env.VITE_ENABLE_AI_INVOCATION_DEBUG)
+const aiStreamPopup = envFlag(import.meta.env.VITE_ENABLE_AI_STREAM_POPUP)
 
 export const featureFlags = Object.freeze({
   aiInvocationDebug,
   variableCenterDebugPanels: aiInvocationDebug,
+  aiStreamPopup,
 })
 
 export type FeatureFlags = typeof featureFlags

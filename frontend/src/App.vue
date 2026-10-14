@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN, darkTheme } from 'naive-ui'
 import AppSettingsModal from './components/settings/AppSettingsModal.vue'
 import AIInvocationReviewPanel from './components/ai-invocation/AIInvocationReviewPanel.vue'
+import AiStreamPopup from './components/autopilot/AiStreamPopup.vue'
 import { featureFlags } from './config/features'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import { useThemeStore } from './stores/themeStore'
@@ -196,6 +197,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
           </transition>
         </router-view>
         <AIInvocationReviewPanel v-if="featureFlags.aiInvocationDebug" />
+        <AiStreamPopup v-if="featureFlags.aiStreamPopup" />
         <AppSettingsModal />
       </n-dialog-provider>
     </n-message-provider>
