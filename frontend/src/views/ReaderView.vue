@@ -36,10 +36,25 @@ let lastReported = 0
 /** 字号三档、主题三档；持久化到 localStorage。 */
 const FONT_KEY = 'library.reader.fontSize'
 const THEME_KEY = 'library.reader.theme'
-const fontSize = ref(Number(localStorage.getItem(FONT_KEY)) || 17)
-const theme = ref(localStorage.getItem(THEME_KEY) || 'paper')
 const FONT_STEPS = [15, 17, 20]
 const THEMES = ['paper', 'plain', 'night']
+
+/**
+ * localStorage 里的值一律当**不可信输入**：老版本遗留或手改过的脏值
+ * （theme='sepia'、fontSize=-5）会让主题类名全部落空、正文字号炸掉。
+ * 原来的 `Number(...) || 17` 只挡得住 0/空/NaN，挡不住负数与离谱大值。
+ */
+const savedFont = Number(localStorage.getItem(FONT_KEY))
+const fontSize = ref(FONT_STEPS.includes(savedFont) ? savedFont : 17)
+const savedTheme = localStorage.getItem(THEME_KEY)
+const theme = ref(THEMES.includes(savedTheme ?? '') ? (savedTheme as string) : 'paper')
+
+/** 目录里的章节状态：不给读者甩 draft/reviewed/approved 原始英文。 */
+const STATUS_LABEL: Record<string, string> = {
+  draft: '草稿',
+  reviewed: '待审定',
+  approved: '已定稿',
+}
 
 watch(fontSize, (v) => localStorage.setItem(FONT_KEY, String(v)))
 watch(theme, (v) => localStorage.setItem(THEME_KEY, v))
@@ -110,15 +125,45 @@ const goTo = (number: number | null) => {
 
 const backToLibrary = () => router.push({ name: 'Library' })
 
+/**
+ * 路由不带章号（`/read/:novelId`）时的入口。
+ *
+ * 先拉目录：有章就 goTo 过去（路由变更会触发下面的 watch 去加载），
+ * 没章则借 loadChapter 走 notFound 分支显示「这本书还没有正文」——
+ * 否则这条路由只会留下一条光秃秃的页头。
+ */
+const bootstrapToFirstChapter = async () => {
+  let first: LibraryTocEntry | undefined
+  loading.value = true
+  error.value = null
+  try {
+    first = (await libraryApi.getToc(novelId.value)).chapters[0]
+  } catch (e) {
+    loading.value = false
+    error.value = formatApiError(e, '章节加载失败')
+    return
+  }
+  if (first) {
+    // 加载态交给随后由 watch 触发的 loadChapter，这里先撤掉避免卡住
+    loading.value = false
+    goTo(first.number)
+    return
+  }
+  // 空目录：toc 为空 ⇒ notFound=true、missingChapter=null，正好是「整本书没正文」那一态
+  await loadChapter(1)
+}
+
 watch(routeChapter, (n) => {
-  if (n != null) void loadChapter(n)
+  if (n != null) {
+    void loadChapter(n)
+    return
+  }
+  void bootstrapToFirstChapter()
 })
 
 onMounted(() => {
-  // 路由没带章号（或非法）时没有可加载的目标，与上面的 watch 同样跳过：
-  // 简报里的 loadChapter(routeChapter.value) 传不进 number|null（vue-tsc 拒绝）。
-  const n = routeChapter.value
-  if (n != null) void loadChapter(n)
+  if (routeChapter.value != null) void loadChapter(routeChapter.value)
+  else void bootstrapToFirstChapter()
 })
 </script>
 <template>
@@ -156,10 +201,20 @@ onMounted(() => {
         </template>
       </NEmpty>
 
-      <article v-else-if="chapter" class="rd-body" :style="{ fontSize: `${fontSize}px` }">
+      <article v-else-if="chapter" class="rd-body">
         <h1 class="rd-chapter-title">{{ chapter.title }}</h1>
         <p v-if="!hasContent" class="rd-blank">本章尚无正文</p>
-        <div v-else class="rd-prose markdown-body md-body" v-html="rendered" />
+        <!--
+          字号内联必须挂在带 v-html 的这个元素上：.md-body（main.css）自己声明了
+          font-size: var(--font-size-base)，类选择器设在子元素上永远压过父元素继承的值。
+          内联样式与类选择器在同一元素上时内联胜出，级联无歧义。
+        -->
+        <div
+          v-else
+          class="rd-prose markdown-body md-body"
+          :style="{ fontSize: `${fontSize}px` }"
+          v-html="rendered"
+        />
 
         <footer class="rd-foot">
           <NButton :disabled="chapter.prevNumber == null" @click="goTo(chapter.prevNumber)">
@@ -183,7 +238,7 @@ onMounted(() => {
             @click="goTo(entry.number)"
           >
             <span class="rd-toc-title">{{ entry.title }}</span>
-            <span class="rd-toc-meta">{{ entry.wordCount }}字</span>
+            <span class="rd-toc-meta">{{ entry.wordCount }}字 · {{ STATUS_LABEL[entry.status] ?? entry.status }}</span>
           </li>
         </ol>
       </NDrawerContent>
