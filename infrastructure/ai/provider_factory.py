@@ -131,7 +131,15 @@ def _publish_ai_stream(kind: str, **fields: Any) -> None:
     「publish 失败仍返回正常结果」用例钉死。
 
     所有埋点都是这个 helper 的一次调用；**不要在调用点再套 try/except**。
+
+    没有 `novel_id` 的调用（非小说上下文，比如世界观/大纲生成）一律跳过：
+    弹窗按书过滤，`drain()` 只取 `message["novel_id"] == novel_id` 的消息，
+    别的书的消息会被放回队尾并消耗每轮 200 条的取用预算。空 novel_id 的事件
+    永远匹配不上任何一本书，会无限回流、挤掉真实事件。
+    `ai_traces` 的持久化记录不受影响——那是 TraceRecorder 的职责，与本旁路无关。
     """
+    if not fields.get("novel_id"):
+        return
     try:
         getattr(_ai_stream_bus(), kind)(**fields)
     except Exception as exc:
