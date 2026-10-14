@@ -85,6 +85,7 @@ def register_api_routes(app: FastAPI) -> None:
         workbench_context_routes,
         worldline_routes,
     )
+    from interfaces.api.v1.engine.ai_stream_routes import router as ai_stream_router
     from interfaces.api.v1.engine.dag.dag_routes import router as dag_router
     from interfaces.api.v1.engine.trace_routes import router as trace_router
     from interfaces.api.v1.meta import taxonomy_routes
@@ -135,6 +136,7 @@ def register_api_routes(app: FastAPI) -> None:
             RouterRegistration(ai_invocation_routes.router, API_V1_PREFIX),
             RouterRegistration(prop_routes.router, API_V1_PREFIX),
             RouterRegistration(trace_router, API_V1_PREFIX),
+            RouterRegistration(ai_stream_router, API_V1_PREFIX),
             RouterRegistration(dag_router, API_V1_PREFIX),
             RouterRegistration(chapter_review_routes.router, API_V1_PREFIX),
             RouterRegistration(macro_refactor.router, API_V1_PREFIX),

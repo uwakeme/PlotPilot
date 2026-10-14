@@ -407,6 +407,49 @@ class SqliteTraceStore(TracePort):
             logger.error("AI Trace span 按 stage 查询失败: %s", exc)
             return []
 
+    def list_ai_spans_since(
+        self,
+        novel_id: str,
+        after_created_at: str = "",
+        after_id: int = 0,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """按 (created_at, id) 复合游标取该书新增的 span。
+
+        供 AI 事件流在「跨进程队列不可用」时降级轮询使用。
+        排序与 `get_ai_timeline` 口径一致（created_at ASC, id ASC）。
+
+        ⚠️ 必须走 `_row_to_ai_span`：`prompt_full` / `response_full` 是
+        `_json_dump` 写进去的 JSON **字符串**（见 `record_ai_span`），
+        直接返回原始行会让下游把 `'{"system": ...}'` 当 prompt 对象、
+        把 `'"正文"'`（带字面引号）当正文。`get_ai_timeline` 与
+        `list_ai_spans_by_stage` 都经过该反序列化，本方法必须一致。
+        """
+        if not novel_id:
+            return []
+        try:
+            with self._db_pool.get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT * FROM ai_trace_spans
+                    WHERE novel_id = ?
+                      AND (
+                        ? = ''
+                        OR created_at > ?
+                        OR (created_at = ? AND id > ?)
+                      )
+                      AND phase IN ('llm_request', 'llm_response', 'error')
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (novel_id, after_created_at, after_created_at, after_created_at, int(after_id), int(limit)),
+                ).fetchall()
+            return [self._row_to_ai_span(dict(row)) for row in rows]
+        except Exception as exc:
+            logger.debug("AI Trace 增量查询失败: %s", exc)
+            return []
+
     def list_ai_stages(self, novel_id: str) -> list[dict[str, Any]]:
         """返回该 novel 出现过的所有 stage 及计数。"""
         try:
