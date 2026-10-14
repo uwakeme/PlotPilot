@@ -8,29 +8,47 @@ if TYPE_CHECKING:
     from domain.novel.entities.chapter import Chapter
 
 
-def _public_stage(novel: 'Novel') -> str:
-    """内部 current_stage -> 前端/旧接口粗粒度 stage。"""
-    current_stage = getattr(novel, 'current_stage', None)
-    current_value = current_stage.value if hasattr(current_stage, 'value') else str(current_stage or '')
+_STAGE_VALUE_MAP = {
+    "planning": "planning",
+    "macro_planning": "planning",
+    "act_planning": "planning",
+    "writing": "writing",
+    "auditing": "reviewing",
+    "reviewing": "reviewing",
+    "paused_for_review": "reviewing",
+    "completed": "completed",
+}
 
-    explicit_stage = getattr(novel, 'stage', None)
-    explicit_value = explicit_stage.value if hasattr(explicit_stage, 'value') else str(explicit_stage or '')
+
+def _stage_value(stage: Any) -> str:
+    """枚举取 .value，其余转字符串；空值归一为 ''。"""
+    if stage is None:
+        return ""
+    value = stage.value if hasattr(stage, "value") else str(stage)
+    return str(value or "")
+
+
+def public_stage_name(current_stage: Any = None, stage: Any = None) -> str:
+    """内部 stage 值 → 前端/旧接口粗粒度 stage。
+
+    只吃标量，不依赖领域实体：书库读模型从裸 SQL 行拿到的是字符串。
+    """
+    current_value = _stage_value(current_stage)
+    explicit_value = _stage_value(stage)
 
     # 兼容旧 update_novel_stage：仅显式 stage 被改动时优先保留。
-    if explicit_value and explicit_value != 'planning' and current_value in ('', 'planning'):
+    if explicit_value and explicit_value != "planning" and current_value in ("", "planning"):
         return explicit_value
 
-    stage_map = {
-        'planning': 'planning',
-        'macro_planning': 'planning',
-        'act_planning': 'planning',
-        'writing': 'writing',
-        'auditing': 'reviewing',
-        'reviewing': 'reviewing',
-        'paused_for_review': 'reviewing',
-        'completed': 'completed',
-    }
-    return stage_map.get(current_value, explicit_value or 'planning')
+    return _STAGE_VALUE_MAP.get(current_value, explicit_value or "planning")
+
+
+def _public_stage(novel: 'Novel') -> str:
+    """内部 current_stage -> 前端/旧接口粗粒度 stage。"""
+    return public_stage_name(
+        getattr(novel, "current_stage", None),
+        getattr(novel, "stage", None),
+    )
 
 
 @dataclass
