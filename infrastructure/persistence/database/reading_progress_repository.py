@@ -37,6 +37,9 @@ class ReadingProgressRepository:
             "  last_read_at = CURRENT_TIMESTAMP",
             (novel_id, chapter_number),
         )
+        # 入队写是最终一致语义：execute() 返回时消费者线程可能还没执行，
+        # 直接回读会拿到旧值或 None。先等队列排空再 get。
+        self.db.flush_pending_writes()
         return self.get(novel_id) or {}
 
     def delete_by_novel(self, novel_id: str) -> None:

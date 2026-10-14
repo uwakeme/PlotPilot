@@ -12,13 +12,14 @@ from infrastructure.persistence.database.reading_progress_repository import (
 )
 
 
-class _Db:
+class _DbBase:
     """内存 sqlite，带 novels + reading_progress。"""
 
     def __init__(self):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.flush_calls = 0
         self.conn.executescript(
             """
             CREATE TABLE novels (
@@ -39,6 +40,10 @@ class _Db:
         self.conn.execute(sql, params)
         self.conn.commit()
 
+    def flush_pending_writes(self, timeout: float = 2.0):
+        self.flush_calls += 1
+        return True
+
     def fetch_one(self, sql, params=()):
         row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
@@ -49,7 +54,7 @@ class _Db:
 
 @pytest.fixture
 def repo():
-    db = _Db()
+    db = _DbBase()
     db.execute("INSERT INTO novels (id, slug, title) VALUES ('n1', 'n1', '测试书')", ())
     yield ReadingProgressRepository(db)
     db.conn.close()
@@ -88,3 +93,31 @@ def test_deleting_novel_cascades_progress_row(repo):
     repo.db.execute("DELETE FROM novels WHERE id = 'n1'", ())
 
     assert repo.get("n1") is None
+
+
+def test_record_flushes_pending_writes_before_reading_back(repo):
+    """入队写是最终一致语义；不回读前必须等队列排空，否则拿到旧值。"""
+    repo.record("n1", 4)
+
+    assert repo.db.flush_calls == 1
+
+
+def test_record_reads_back_only_after_flush():
+    """顺序才是关键：flush 必须早于回读，不能只在别处调过就算。"""
+    order = []
+
+    class _Db(_DbBase):
+        def flush_pending_writes(self, timeout: float = 2.0):
+            order.append("flush")
+            return True
+
+        def fetch_one(self, sql, params=()):
+            order.append("read")
+            return super().fetch_one(sql, params)
+
+    db = _Db()
+    db.execute("INSERT INTO novels (id, slug, title) VALUES ('n1', 'n1', '测试书')", ())
+    ReadingProgressRepository(db).record("n1", 2)
+
+    assert order.index("flush") < order.index("read")
+    db.conn.close()
