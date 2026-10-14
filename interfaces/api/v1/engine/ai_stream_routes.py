@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -35,11 +35,14 @@ AI_STREAM_MAX_LIFETIME_SECONDS = 1800
 AI_STREAM_DB_BATCH = 200
 """单轮降级轮询最多取多少条 span。"""
 
+AI_STREAM_DRAIN_BATCH = 200
+"""单轮从队列里最多取多少条消息。"""
+
 AI_STREAM_TICK_TIMEOUT_SECONDS = 2.0
 """单轮 DB 读取上限。DB 被写锁住时放弃本轮，而不是让整条 SSE 挂死。
 
-与 `autopilot_runtime_settings.sse_tick_timeout_seconds` 同值口径，但本模块
-不 import 它：那是 autopilot 的运行时配置，本端点与其无配置关系。
+与 `autopilot_runtime_settings.sse_tick_timeout_seconds` 同为 2.0，但本模块不
+import 它：那是 autopilot 的运行时配置，本端点与其无配置关系。
 """
 
 DB_PHASE_TO_EVENT = {
@@ -49,20 +52,27 @@ DB_PHASE_TO_EVENT = {
 }
 
 
-async def _fetch_spans(executor, fn, *args):
-    """跑一次同步 DB 读取，超时返回 None。
+async def _fetch_spans(fn):
+    """在默认 executor 线程里跑无参 `fn`，超时返回 None。
 
-    与 autopilot_routes 的 SSE tick 同一套超时保护，但**不共用它的
-    `_SSE_THREAD_POOL`**：那是 autopilot 路由模块的私有对象，跨路由 import
-    私有名是耦合；`get_resource_manager().get_thread_pool("sse-executor")`
-    又依赖 autopilot 先被 import 才有注册，注册顺序一换就静默拿不到池子。
-    为一次只读查询再建一个受管线程池同样不划算。这里用默认 executor +
-    硬超时兜底：超时只是不再等待那个线程，线程仍归默认池所有，
-    而本端点的读最坏情况就是 sqlite 的 5s busy timeout。
+    `fn` 是闭包而不是 `(fn, *args)` 形式——这是刻意的。store 的构造
+    （`SqliteTraceStore.__init__` → `_ensure_tables()`，3 个 CREATE TABLE +
+    4 个 CREATE INDEX + PRAGMA + commit）如果写成 `fn=store().list_xxx`，
+    `store()` 是**实参**，会在事件循环线程上先求值，超时保护罩不住它，
+    而这恰恰是 store 唯一被构造的地方——也就是守护进程正在写同一份
+    SQLite、用户打开弹窗的那一刻。
+
+    关于线程池：autopilot_routes 用的是它私有的 `_SSE_THREAD_POOL`，这里
+    **不**复用。跨路由 import 私有名是耦合；`get_resource_manager()
+    .get_thread_pool("sse-executor")` 又依赖 autopilot_routes 先被 import
+    才有注册，换个导入顺序就静默拿不到池子。为一次只读查询再建一个受管
+    线程池同样不划算。默认 executor + 硬超时兜底；超时不回收已启动的线程，
+    但 sqlite 的 `busy_timeout_ms` 默认 30000ms（`sqlite_pragmas.py:14`），
+    最坏 30s 而非无限——对一个 30 分钟就会自己断开的可选浮窗来说可以接受。
     """
     try:
         return await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(executor, fn, *args),
+            asyncio.get_running_loop().run_in_executor(None, fn),
             timeout=AI_STREAM_TICK_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
@@ -137,12 +147,6 @@ def _db_span_to_event(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return event
 
 
-def _snapshot_events(spans: Iterable[Dict[str, Any]], limit: int = AI_STREAM_SNAPSHOT_LIMIT) -> List[Dict[str, Any]]:
-    """回填历史：只保留最新的 limit 条（输入按时间正序）。"""
-    events = [e for e in (_db_span_to_event(s) for s in spans) if e is not None]
-    events.sort(key=lambda e: str(e.get("ts") or ""))
-    return events[-limit:] if limit > 0 else events
-
 
 def _trace_store():
     from engine.infrastructure.persistence.trace_store import SqliteTraceStore
@@ -174,12 +178,11 @@ async def ai_stream(novel_id: str):
         except Exception as exc:  # pragma: no cover - 防御性
             logger.debug("AI 流队列探测失败: %s", exc)
 
-        # TraceStore 只建一次。`SqliteTraceStore.__init__` 会跑整套
-        # CREATE TABLE IF NOT EXISTS + PRAGMA + commit，降级模式每 0.4s
-        # 重建一次纯属浪费——而每开一个弹窗就是一条这样的连接。
-        store_holder: List[SqliteTraceStore] = []
+        # TraceStore 每条连接建一次，且**只在 executor 线程里**构造——
+        # 构造要走整套 CREATE TABLE IF NOT EXISTS。
+        store_holder: List[Any] = []
 
-        def store() -> SqliteTraceStore:
+        def store():
             if not store_holder:
                 store_holder.append(_trace_store())
             return store_holder[0]
@@ -200,12 +203,17 @@ async def ai_stream(novel_id: str):
         cursor_created_at = ""
         cursor_id = 0
 
-        # 队列模式回填最近若干条已完成调用；降级模式由首轮轮询回填
-        if queue_available:
-            spans = await _fetch_spans(
-                None, store().list_ai_spans_since, novel_id, "", 0, 200
-            )
-            for event in _snapshot_events(spans or []):
+        # 快照回填，两种模式共用：队列里只有「本次连接之后」的事件，历史在库里。
+        # 游标一并钉到快照里最新的一条，之后每轮只拿真正新增的 span——
+        # 否则攒了上千 span 的书会在连接后把整段历史重放一遍。
+        spans = await _fetch_spans(
+            lambda: store().list_recent_ai_spans(novel_id, AI_STREAM_SNAPSHOT_LIMIT)
+        )
+        for span in spans or []:
+            cursor_created_at = str(span.get("created_at") or "")
+            cursor_id = int(span.get("id") or 0)
+            event = _db_span_to_event(span)
+            if event is not None:
                 yield _sse(event)
 
         # `loop.time()` 是 time.monotonic()（开机以来的秒数），不是相对本次连接的
@@ -214,15 +222,11 @@ async def ai_stream(novel_id: str):
         while True:
             if (loop.time() - started) > AI_STREAM_MAX_LIFETIME_SECONDS:
                 break
-            try:
-                await asyncio.sleep(0)
-            except asyncio.CancelledError:
-                break
 
             emitted = 0
             if queue_available:
                 try:
-                    messages = bus.drain(novel_id, limit=200)
+                    messages = bus.drain(novel_id, limit=AI_STREAM_DRAIN_BATCH)
                 except Exception as exc:
                     logger.debug("AI 流 drain 失败: %s", exc)
                     messages = []
@@ -230,34 +234,23 @@ async def ai_stream(novel_id: str):
                     yield _sse(_build_event(message))
                     emitted += 1
             else:
-                first_batch = not cursor_created_at
                 rows = await _fetch_spans(
-                    None,
-                    store().list_ai_spans_since,
-                    novel_id,
-                    cursor_created_at,
-                    cursor_id,
-                    AI_STREAM_DB_BATCH,
+                    lambda: store().list_ai_spans_since(
+                        novel_id,
+                        cursor_created_at,
+                        cursor_id,
+                        AI_STREAM_DB_BATCH,
+                    )
                 )
-                # 游标无论是否产出事件都要推进，否则非 LLM phase 会卡住轮询。
-                batch: List[Dict[str, Any]] = []
+                # 游标每行都推进：SQL 已按 phase 过滤，`_db_span_to_event`
+                # 在这里不会返回 None，推进游标是为了下一轮从正确位置继续。
                 for row in rows or []:
                     cursor_created_at = str(row.get("created_at") or cursor_created_at)
                     cursor_id = int(row.get("id") or 0)
                     event = _db_span_to_event(row)
                     if event is not None:
-                        batch.append(event)
-                # 首轮是升序取的历史，游标要从最老开始走。不裁剪的话，
-                # 一本攒了上千 span 的书会先把几周前的调用倒给用户看，
-                # 实时事件还得等游标爬完才出现。只在首轮裁，游标照样走到底。
-                #
-                # ⚠️ 这里**不能**复用 `_snapshot_events`：它内部还要再跑一遍
-                # `_db_span_to_event`，而 `batch` 里已经是事件（没有 `phase` 键），
-                # 会被整批过滤成空 —— 首轮回填静默丢光，弹窗开出来一片空白。
-                # `batch` 本身就是升序，切末尾 N 条即「保留最新、仍按时间正序」。
-                for event in batch[-AI_STREAM_SNAPSHOT_LIMIT:] if first_batch else batch:
-                    yield _sse(event)
-                    emitted += 1
+                        yield _sse(event)
+                        emitted += 1
 
             now = loop.time()
             if emitted == 0 and (now - last_ping) >= 15:

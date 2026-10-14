@@ -111,16 +111,7 @@ def test_db_span_to_event_ignores_unknown_phase():
     assert routes._db_span_to_event({"phase": "prompt_rendered", "span_id": "s"}) is None
 
 
-def test_snapshot_events_keeps_newest_and_returns_oldest_first():
-    spans = [
-        {"span_id": f"s{i}", "trace_id": "t", "novel_id": "n1", "phase": "llm_response",
-         "response_full": "x", "created_at": f"2026-10-14T00:00:{i:02d}.000+00:00"}
-        for i in range(30)
-    ]
-    events = routes._snapshot_events(spans, limit=5)
-    assert len(events) == 5
-    # 保留最新的 5 条，按时间正序返回（前端 store 自己按 ts 倒序排）
-    assert [e["span_id"] for e in events] == ["s25", "s26", "s27", "s28", "s29"]
+
 
 
 def test_route_module_declares_novels_prefix():
@@ -195,19 +186,75 @@ async def test_degraded_generator_opens_with_connected_then_polls_db(monkeypatch
     assert payloads[2]["response"] == "完整输出全文"
 
 
+class _StubBus:
+    """按批次吐消息的假队列，吐空后返回 []。"""
+
+    def __init__(self, batches):
+        self._batches = list(batches)
+        self.calls = 0
+        self.seen_novel_ids = []
+
+    def drain(self, novel_id, limit=0):
+        self.calls += 1
+        self.seen_novel_ids.append(novel_id)
+        return self._batches.pop(0) if self._batches else []
+
+
+def _queue_message(kind, **over):
+    base = {
+        "kind": kind,
+        "novel_id": "n1",
+        "trace_id": "t2",
+        "span_id": "s2",
+        "stage": "pipeline.chapter",
+        "stage_label": "章节生成",
+        "model": "m1",
+        "profile": "default",
+        "ts": 2.0,
+    }
+    base.update(over)
+    return base
+
+
 @pytest.mark.asyncio
-async def test_queue_generator_opens_with_connected_then_snapshot(monkeypatch, tmp_path):
-    """队列模式：首帧 connected 且自报 mp_queue，随后是快照回填。"""
+async def test_queue_generator_streams_snapshot_then_drained_delta(monkeypatch, tmp_path):
+    """队列模式必须真的进循环：快照之后把 `drain` 出来的 start/delta/end 推出去。
+
+    这是本任务的主路径。上一版只取 2 帧，第 2 帧在 `while True` 之前就 yield 了，
+    于是 `bus.drain` 与 `delta` 帧从头到尾没有任何测试碰过。
+    """
     import application.engine.services.ai_stream_bus as bus_mod
 
+    drained = [
+        _queue_message("start", prompt={"system": "s", "user": "u"}),
+        _queue_message("delta", delta="他抬", ts=2.1),
+        _queue_message(
+            "end",
+            response="他抬头。",
+            token_in=12,
+            token_out=7,
+            latency_ms=900,
+            error="",
+            ts=2.2,
+        ),
+    ]
+    bus = _StubBus([drained])
     monkeypatch.setattr(bus_mod, "get_ai_stream_queue", lambda: object())
+    monkeypatch.setattr(routes, "_ai_stream_bus", lambda: bus)
     store = SqliteTraceStore(_Pool(tmp_path / "q.db"))
     _seed(store, "n1")
     monkeypatch.setattr(routes, "_trace_store", lambda: store)
 
-    payloads = await _drive((await routes.ai_stream("n1")).body_iterator, 2)
-    assert [p["type"] for p in payloads] == ["connected", "start"]
+    payloads = await _drive((await routes.ai_stream("n1")).body_iterator, 6)
+
+    assert [p["type"] for p in payloads] == [
+        "connected", "start", "end", "start", "delta", "end",
+    ]
     assert payloads[0]["queue"] == "mp_queue"
+    assert payloads[4]["delta"] == "他抬"
+    assert payloads[5]["token_in"] == 12
+    assert bus.calls >= 1
+    assert bus.seen_novel_ids == ["n1"]
 
 
 class _SlowOnceStore:
@@ -234,13 +281,14 @@ class _SlowOnceStore:
 async def test_db_read_timeout_is_contained(monkeypatch, tmp_path):
     """DB 读取超时只丢这一轮，连接不挂死。
 
-    首读阻塞 1.2s（模拟写锁），超时保护必须立刻放弃它；下一轮恢复正常并
-    立刻产出 `start`。整条驱动有 1.0s 上限：**去掉**超时保护后，生成器会卡在
-    首读上，帧要等 1.2s 之后才出得来，这条用例就会转红。
+    首读阻塞 1.2s（模拟写锁），超时保护必须立刻放弃它；下一轮恢复正常并立刻
+    产出 `start`。整条驱动有 1.0s 上限：**去掉**超时保护后生成器会卡在首读上，
+    帧要等 1.2s 之后才出得来，这条用例转红。1.2s ≫ 1.0s 是结构性差距，
+    不是刀尖上的竞态。
 
-    注：这里不能用「把 `_trace_store` 换成会 fail 的替身」来验证——生成器写的是
-    `_fetch_spans(None, store().list_ai_spans_since, ...)`，`store()` 作为**实参**
-    先于 `_fetch_spans` 求值，超时保护罩不住它，替身必然先炸。
+    注：不能用「把 `_trace_store` 换成会 fail 的替身」验证——`_fetch_spans` 收的是
+    无参闭包，`store()` 在闭包**体内**求值，替身也会在 executor 线程里才被调用，
+    且异常只会被 `_fetch_spans` 的 `except Exception` 吞掉。必须阻塞真正的读。
     """
     import application.engine.services.ai_stream_bus as bus_mod
 
@@ -249,7 +297,9 @@ async def test_db_read_timeout_is_contained(monkeypatch, tmp_path):
     store = SqliteTraceStore(_Pool(tmp_path / "slow.db"))
     _seed(store, "n1")
     monkeypatch.setattr(
-        routes, "_trace_store", lambda: _SlowOnceStore(1.2, store.list_ai_spans_since("n1"))
+        routes,
+        "_trace_store",
+        lambda: _SlowOnceStore(1.2, store.list_ai_spans_since("n1")),
     )
 
     agen = (await routes.ai_stream("n1")).body_iterator
@@ -343,3 +393,40 @@ def test_list_ai_spans_since_scopes_to_novel_and_skips_other_phases(tmp_path):
     rows = store.list_ai_spans_since("n1")
     assert {r["novel_id"] for r in rows} == {"n1"}
     assert {r["phase"] for r in rows} == {"llm_request", "llm_response"}
+
+
+def test_list_recent_ai_spans_returns_newest_window_in_ascending_order(tmp_path):
+    """快照必须取**最近**的 limit 条，且按时间正序返回。
+
+    这条钉的是降级/队列共用的回填窗口。早先的实现是拿升序的
+    `list_ai_spans_since` 当快照用：`LIMIT` 落在最老的那批上，于是一本攒了
+    250 条 span 的书，回填出来的是 s180..s199，而表里最新的是 s249。
+    """
+    store = SqliteTraceStore(_Pool(tmp_path / "recent.db"))
+    for i in range(25):
+        store.record_ai_span(
+            {
+                "trace_id": "t", "span_id": f"s{i:02d}", "novel_id": "n1",
+                "phase": "llm_response", "response_full": f"r{i}",
+                "created_at": f"2026-05-28T00:00:{i:02d}.000+00:00",
+            }
+        )
+
+    rows = store.list_recent_ai_spans("n1", limit=3)
+    assert [r["span_id"] for r in rows] == ["s22", "s23", "s24"]
+
+
+def test_list_recent_ai_spans_excludes_other_phases_and_novels(tmp_path):
+    store = SqliteTraceStore(_Pool(tmp_path / "recent_scope.db"))
+    _seed(store, "n1")
+    _seed(store, "n2")
+    store.record_ai_span(
+        {
+            "trace_id": "t9", "span_id": "s9", "novel_id": "n1",
+            "phase": "prompt_rendered", "created_at": "2026-05-28T00:00:09.000+00:00",
+        }
+    )
+
+    rows = store.list_recent_ai_spans("n1", limit=10)
+    assert {r["novel_id"] for r in rows} == {"n1"}
+    assert "s9" not in {r["span_id"] for r in rows}

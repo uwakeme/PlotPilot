@@ -450,6 +450,39 @@ class SqliteTraceStore(TracePort):
             logger.debug("AI Trace 增量查询失败: %s", exc)
             return []
 
+    def list_recent_ai_spans(self, novel_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """取该书**最近** limit 条 LLM span，按时间**正序**返回（旧的在前）。
+
+        供 SSE 连接建立时回填历史用。与 `list_ai_spans_since` 的分工：
+
+        - `list_ai_spans_since` 是「从某游标之后新发生了什么」，按 `(created_at, id)`
+          **升序**取，`LIMIT` 落在最老的那批上。拿它做快照，在一本攒了上千 span
+          的书上只会回填到最老的那些——而游标已经被推到第 200 行，后面每一轮
+          再把剩下的历史按 200 条重放一遍。
+        - 这里要的是「最近发生了什么」，所以 `ORDER BY created_at DESC, id DESC`
+          取窗口，再反转让调用方按时间正序消费。命中
+          `idx_ai_trace_spans_novel(novel_id, created_at DESC)`。
+        """
+        if not novel_id or limit <= 0:
+            return []
+        try:
+            with self._db_pool.get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT * FROM ai_trace_spans
+                    WHERE novel_id = ?
+                      AND phase IN ('llm_request', 'llm_response', 'error')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (novel_id, int(limit)),
+                ).fetchall()
+            return [self._row_to_ai_span(dict(row)) for row in reversed(rows)]
+        except Exception as exc:
+            logger.debug("AI Trace 最近查询失败: %s", exc)
+            return []
+
     def list_ai_stages(self, novel_id: str) -> list[dict[str, Any]]:
         """返回该 novel 出现过的所有 stage 及计数。"""
         try:
