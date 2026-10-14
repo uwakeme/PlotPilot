@@ -3,11 +3,13 @@
 _FakeQueue 沿用 tests/unit/application/engine/test_streaming_bus.py 的写法。
 """
 import time
+from multiprocessing.queues import Queue as MPQueue
 from queue import Empty, Full
 
 from application.engine.services import ai_stream_bus as module_under_test
 from application.engine.services.ai_stream_bus import (
     AI_DELTA_FLUSH_CHARS,
+    AI_STREAM_QUEUE_MAX_SIZE,
     AiStreamBus,
 )
 
@@ -198,3 +200,46 @@ def test_drain_respects_limit():
         bus.publish_start(novel_id="n1", trace_id="t", span_id=f"s{i}")
     got = bus.drain("n1", limit=2)
     assert len(got) == 2
+
+
+# ── 队列单例：init / inject / get ──────────────────────────
+# 这三个函数是 daemon_manager 接线（Task 2）的唯一依赖，此前无任何测试覆盖。
+
+
+def test_init_ai_stream_bus_is_idempotent_and_returns_usable_queue(monkeypatch):
+    """连调两次必须拿到同一条真实 mp.Queue，且它真的能投递消息。
+
+    这里不替换 mp.Queue：daemon_manager 把返回值原样传给子进程，假队列测不出
+    「返回的对象确实是一条可用的跨进程队列」这件事。真实队列只创建一个，
+    finally 里 close + join_thread 收尾，不泄漏。
+
+    投递用带超时的 get 而非 get_nowait：put_nowait 只是交给 feeder 线程，
+    紧接着 get_nowait 存在竞态（Windows 上必现 Empty）。
+    """
+    monkeypatch.setattr(module_under_test, "_ai_stream_queue", None)
+
+    first = module_under_test.init_ai_stream_bus()
+    second = module_under_test.init_ai_stream_bus()
+
+    try:
+        assert first is second
+        assert isinstance(first, MPQueue)
+        # mp.Queue 没有公开的 maxsize，_maxsize 在 3.14 上是 int（更早版本是 Semaphore）
+        assert first._maxsize == AI_STREAM_QUEUE_MAX_SIZE
+
+        first.put_nowait({"kind": "start", "span_id": "s1"})
+        assert first.get(timeout=5) == {"kind": "start", "span_id": "s1"}
+    finally:
+        first.close()
+        first.join_thread()
+
+
+def test_inject_ai_stream_queue_makes_queue_readable():
+    """注入后 get_ai_stream_queue 必须返回同一个对象。"""
+    q = _FakeQueue()
+    module_under_test.inject_ai_stream_queue(q)
+    assert module_under_test.get_ai_stream_queue() is q
+
+
+def test_module_level_singleton_is_ai_stream_bus():
+    assert isinstance(module_under_test.ai_stream_bus, AiStreamBus)

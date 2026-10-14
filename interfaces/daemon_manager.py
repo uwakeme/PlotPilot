@@ -119,6 +119,7 @@ def run_autopilot_daemon_process(
     log_level: int,
     log_file: str,
     stream_queue=None,
+    ai_queue=None,
     shared_state=None,
     persistence_queue=None,
 ) -> None:
@@ -134,6 +135,15 @@ def run_autopilot_daemon_process(
 
         inject_stream_queue(stream_queue)
         process_logger.info("守护进程：流式队列已注入")
+
+    if ai_queue is not None:
+        try:
+            from application.engine.services.ai_stream_bus import inject_ai_stream_queue
+
+            inject_ai_stream_queue(ai_queue)
+            process_logger.info("守护进程：AI 事件队列已注入")
+        except Exception as exc:
+            process_logger.warning("AI 事件队列注入失败（可忽略）: %s", exc)
 
     if shared_state is not None:
         try:
@@ -396,6 +406,11 @@ class AutopilotDaemonManager:
         from application.engine.services.streaming_bus import init_streaming_bus
 
         stream_queue = init_streaming_bus()
+
+        from application.engine.services.ai_stream_bus import init_ai_stream_bus
+
+        ai_queue = init_ai_stream_bus()
+
         shared_state = self._shared_state_provider()
 
         from application.engine.services.shared_state_repository import (
@@ -439,6 +454,7 @@ class AutopilotDaemonManager:
                 self._log_level,
                 self._log_file,
                 stream_queue,
+                ai_queue,
                 shared_state,
                 persistence_queue,
             ),
@@ -446,7 +462,7 @@ class AutopilotDaemonManager:
             daemon=True,
         )
         self.process.start()
-        self._logger.info("守护进程已创建并启动（独立进程模式，流式队列 + 共享状态 + 持久化队列已传递）")
+        self._logger.info("守护进程已创建并启动（独立进程模式，流式队列 + AI 事件队列 + 共享状态 + 持久化队列已传递）")
 
     def stop(self) -> None:
         daemon_pid = self.process.pid if self.process else None
