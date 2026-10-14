@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from application.ai.llm_control_service import LLMControlService, LLMProfile
 from application.ai.trace_context import (
@@ -109,6 +109,33 @@ def _make_cache_key(profile: LLMProfile) -> str:
         ]
     )
     return "|".join(key_parts)
+
+
+def _ai_stream_bus():
+    """惰性取 ai_stream_bus 单例。
+
+    放在函数内 import，避免 provider_factory 在模块加载期就把
+    application.engine.services 拉进来（同时保证埋点永远可被 monkeypatch 替换）。
+    """
+    from application.engine.services.ai_stream_bus import ai_stream_bus
+
+    return ai_stream_bus
+
+
+def _publish_ai_stream(kind: str, **fields: Any) -> None:
+    """向 AI 事件流发布一条事件。
+
+    这是**观测旁路**：任何失败只记 debug 日志，绝不冒泡进 generate /
+    stream_generate——写作链路不能被观测拖垮。这条约束由
+    tests/unit/infrastructure/ai/test_provider_factory_ai_stream_tap.py 的两个
+    「publish 失败仍返回正常结果」用例钉死。
+
+    所有埋点都是这个 helper 的一次调用；**不要在调用点再套 try/except**。
+    """
+    try:
+        getattr(_ai_stream_bus(), kind)(**fields)
+    except Exception as exc:
+        logger.debug("AI 调用流 %s 失败（忽略）: %s", kind, exc)
 
 
 class DynamicLLMService(LLMService):
@@ -247,6 +274,17 @@ class DynamicLLMService(LLMService):
             prompt_full=trace_full_prompt(prompt),
             metadata=request_metadata,
         )
+        _publish_ai_stream(
+            "publish_start",
+            novel_id=trace.novel_id,
+            trace_id=trace.trace_id,
+            span_id=request_span_id,
+            stage=trace.stage,
+            stage_label=trace.stage_label,
+            model=model,
+            profile=generation_profile,
+            prompt=trace_full_prompt(prompt),
+        )
         started = time.perf_counter()
         try:
             result = await provider.generate(prompt, effective_config)
@@ -263,6 +301,14 @@ class DynamicLLMService(LLMService):
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 error=str(exc),
                 metadata={**request_metadata, "stage": "provider.generate"},
+            )
+            _publish_ai_stream(
+                "publish_error",
+                novel_id=trace.novel_id,
+                trace_id=trace.trace_id,
+                span_id=request_span_id,
+                error=str(exc),
+                latency_ms=int((time.perf_counter() - started) * 1000),
             )
             raise
 
@@ -284,6 +330,17 @@ class DynamicLLMService(LLMService):
             token_output=getattr(usage, "output_tokens", None),
             latency_ms=int((time.perf_counter() - started) * 1000),
             metadata={**request_metadata, "content_length": len(content)},
+        )
+        _publish_ai_stream(
+            "publish_end",
+            novel_id=trace.novel_id,
+            trace_id=trace.trace_id,
+            span_id=request_span_id,
+            response=trace_full_text(content),
+            token_in=getattr(usage, "input_tokens", None),
+            token_out=getattr(usage, "output_tokens", None),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            error="",
         )
         return result
 
@@ -316,6 +373,17 @@ class DynamicLLMService(LLMService):
             prompt_full=trace_full_prompt(prompt),
             metadata=request_metadata,
         )
+        _publish_ai_stream(
+            "publish_start",
+            novel_id=trace.novel_id,
+            trace_id=trace.trace_id,
+            span_id=request_span_id,
+            stage=trace.stage,
+            stage_label=trace.stage_label,
+            model=model,
+            profile=generation_profile,
+            prompt=trace_full_prompt(prompt),
+        )
         started = time.perf_counter()
         response_parts: list[str] = []
         preview_parts: list[str] = []
@@ -329,6 +397,13 @@ class DynamicLLMService(LLMService):
                     if preview_chars < 320:
                         preview_parts.append(chunk)
                         preview_chars += len(chunk)
+                _publish_ai_stream(
+                    "publish_delta",
+                    novel_id=trace.novel_id,
+                    trace_id=trace.trace_id,
+                    span_id=request_span_id,
+                    text=chunk,
+                )
                 yield chunk
         except Exception as exc:
             recorder.record_span(
@@ -343,6 +418,14 @@ class DynamicLLMService(LLMService):
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 error=str(exc),
                 metadata={**request_metadata, "stage": "provider.stream_generate"},
+            )
+            _publish_ai_stream(
+                "publish_error",
+                novel_id=trace.novel_id,
+                trace_id=trace.trace_id,
+                span_id=request_span_id,
+                error=str(exc),
+                latency_ms=int((time.perf_counter() - started) * 1000),
             )
             raise
         else:
@@ -361,6 +444,17 @@ class DynamicLLMService(LLMService):
                 response_full=trace_full_text(content_for_hash),
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 metadata={**request_metadata, "content_length": total_chars},
+            )
+            _publish_ai_stream(
+                "publish_end",
+                novel_id=trace.novel_id,
+                trace_id=trace.trace_id,
+                span_id=request_span_id,
+                response=trace_full_text(content_for_hash),
+                token_in=None,
+                token_out=None,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error="",
             )
 
     async def aclose(self) -> None:
