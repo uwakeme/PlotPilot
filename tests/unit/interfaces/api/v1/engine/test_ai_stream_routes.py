@@ -1,6 +1,10 @@
 """AI 事件 SSE 端点测试。"""
+import asyncio
 import json
 import sqlite3
+import time
+
+import pytest
 
 from engine.infrastructure.persistence.trace_store import SqliteTraceStore
 from interfaces.api.v1.engine import ai_stream_routes as routes
@@ -143,6 +147,117 @@ def test_sse_frames_round_trip_and_keep_chinese_unescaped():
     payloads = _sse_payloads(raw)
     assert [p["type"] for p in payloads] == ["connected", "end", "ping"]
     assert payloads[1]["response"] == "他说：「走。」"
+
+
+# ── 端点级：驱动真实的 async generator ─────────────────────────
+#
+# ⚠️ `ai_stream` 的 generator 体内部做的是
+# `from application.engine.services.ai_stream_bus import get_ai_stream_queue`
+# —— 函数内 import，绑定的是**调用那一刻**的模块属性。所以必须打
+# `bus_mod.get_ai_stream_queue`；打 `routes.get_ai_stream_queue`（该模块上根本
+# 没有这个名字）会被 monkeypatch 静默跳过，用例照样绿，实际跑的却是降级分支。
+
+
+async def _drive(agen, count):
+    """取 count 帧后主动关掉生成器。
+
+    `aclose()` 在 yield 点抛 GeneratorExit，而所有 `yield` 都刻意留在
+    `except Exception` 之外（GeneratorExit 继承 BaseException），所以关闭是干净的。
+    """
+    out = []
+    for _ in range(count):
+        try:
+            raw = await agen.__anext__()
+        except StopAsyncIteration:
+            break
+        out.append(_sse_payloads(raw)[0])
+    await agen.aclose()
+    return out
+
+
+@pytest.mark.asyncio
+async def test_degraded_generator_opens_with_connected_then_polls_db(monkeypatch, tmp_path):
+    """降级模式：首帧 connected 且自报 db_poll，随后是首轮轮询出的真实事件。"""
+    import application.engine.services.ai_stream_bus as bus_mod
+
+    monkeypatch.setattr(bus_mod, "get_ai_stream_queue", lambda: None)
+    store = SqliteTraceStore(_Pool(tmp_path / "gen.db"))
+    _seed(store, "n1")
+    monkeypatch.setattr(routes, "_trace_store", lambda: store)
+
+    response = await routes.ai_stream("n1")
+    assert response.media_type == "text/event-stream"
+
+    payloads = await _drive(response.body_iterator, 3)
+    assert [p["type"] for p in payloads] == ["connected", "start", "end"]
+    assert payloads[0]["queue"] == "db_poll"
+    assert payloads[1]["prompt"] == {"system": "系统全文", "user": "用户全文"}
+    assert payloads[2]["response"] == "完整输出全文"
+
+
+@pytest.mark.asyncio
+async def test_queue_generator_opens_with_connected_then_snapshot(monkeypatch, tmp_path):
+    """队列模式：首帧 connected 且自报 mp_queue，随后是快照回填。"""
+    import application.engine.services.ai_stream_bus as bus_mod
+
+    monkeypatch.setattr(bus_mod, "get_ai_stream_queue", lambda: object())
+    store = SqliteTraceStore(_Pool(tmp_path / "q.db"))
+    _seed(store, "n1")
+    monkeypatch.setattr(routes, "_trace_store", lambda: store)
+
+    payloads = await _drive((await routes.ai_stream("n1")).body_iterator, 2)
+    assert [p["type"] for p in payloads] == ["connected", "start"]
+    assert payloads[0]["queue"] == "mp_queue"
+
+
+class _SlowOnceStore:
+    """第一次读阻塞（模拟 DB 被写锁住），之后恢复正常。
+
+    这是超时保护真正能救回来的故障形态：DB 卡住时生成器如果傻等，
+    `AI_STREAM_MAX_LIFETIME_SECONDS` 那个检查永远到不了，弹窗就静默永久冻结。
+    """
+
+    def __init__(self, delay, rows):
+        self._delay = delay
+        self._rows = rows
+        self._calls = 0
+
+    def list_ai_spans_since(self, *args):
+        self._calls += 1
+        if self._calls == 1:
+            time.sleep(self._delay)
+            return []
+        return [dict(row) for row in self._rows]
+
+
+@pytest.mark.asyncio
+async def test_db_read_timeout_is_contained(monkeypatch, tmp_path):
+    """DB 读取超时只丢这一轮，连接不挂死。
+
+    首读阻塞 1.2s（模拟写锁），超时保护必须立刻放弃它；下一轮恢复正常并
+    立刻产出 `start`。整条驱动有 1.0s 上限：**去掉**超时保护后，生成器会卡在
+    首读上，帧要等 1.2s 之后才出得来，这条用例就会转红。
+
+    注：这里不能用「把 `_trace_store` 换成会 fail 的替身」来验证——生成器写的是
+    `_fetch_spans(None, store().list_ai_spans_since, ...)`，`store()` 作为**实参**
+    先于 `_fetch_spans` 求值，超时保护罩不住它，替身必然先炸。
+    """
+    import application.engine.services.ai_stream_bus as bus_mod
+
+    monkeypatch.setattr(bus_mod, "get_ai_stream_queue", lambda: None)
+    monkeypatch.setattr(routes, "AI_STREAM_TICK_TIMEOUT_SECONDS", 0.05)
+    store = SqliteTraceStore(_Pool(tmp_path / "slow.db"))
+    _seed(store, "n1")
+    monkeypatch.setattr(
+        routes, "_trace_store", lambda: _SlowOnceStore(1.2, store.list_ai_spans_since("n1"))
+    )
+
+    agen = (await routes.ai_stream("n1")).body_iterator
+    try:
+        payloads = await asyncio.wait_for(_drive(agen, 2), timeout=1.0)
+    finally:
+        await agen.aclose()
+    assert [p["type"] for p in payloads] == ["connected", "start"]
 
 
 def _seed(store: SqliteTraceStore, novel_id: str) -> None:

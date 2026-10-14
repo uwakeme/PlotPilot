@@ -35,11 +35,42 @@ AI_STREAM_MAX_LIFETIME_SECONDS = 1800
 AI_STREAM_DB_BATCH = 200
 """单轮降级轮询最多取多少条 span。"""
 
+AI_STREAM_TICK_TIMEOUT_SECONDS = 2.0
+"""单轮 DB 读取上限。DB 被写锁住时放弃本轮，而不是让整条 SSE 挂死。
+
+与 `autopilot_runtime_settings.sse_tick_timeout_seconds` 同值口径，但本模块
+不 import 它：那是 autopilot 的运行时配置，本端点与其无配置关系。
+"""
+
 DB_PHASE_TO_EVENT = {
     "llm_request": "start",
     "llm_response": "end",
     "error": "error",
 }
+
+
+async def _fetch_spans(executor, fn, *args):
+    """跑一次同步 DB 读取，超时返回 None。
+
+    与 autopilot_routes 的 SSE tick 同一套超时保护，但**不共用它的
+    `_SSE_THREAD_POOL`**：那是 autopilot 路由模块的私有对象，跨路由 import
+    私有名是耦合；`get_resource_manager().get_thread_pool("sse-executor")`
+    又依赖 autopilot 先被 import 才有注册，注册顺序一换就静默拿不到池子。
+    为一次只读查询再建一个受管线程池同样不划算。这里用默认 executor +
+    硬超时兜底：超时只是不再等待那个线程，线程仍归默认池所有，
+    而本端点的读最坏情况就是 sqlite 的 5s busy timeout。
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(executor, fn, *args),
+            timeout=AI_STREAM_TICK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.debug("AI 流 DB 读取超时（%.1fs），跳过本轮", AI_STREAM_TICK_TIMEOUT_SECONDS)
+        return None
+    except Exception as exc:
+        logger.debug("AI 流 DB 读取失败（忽略）: %s", exc)
+        return None
 
 
 def _sse(payload: Dict[str, Any]) -> str:
@@ -171,14 +202,11 @@ async def ai_stream(novel_id: str):
 
         # 队列模式回填最近若干条已完成调用；降级模式由首轮轮询回填
         if queue_available:
-            try:
-                spans = await loop.run_in_executor(
-                    None, store().list_ai_spans_since, novel_id, "", 0, 200
-                )
-                for event in _snapshot_events(spans):
-                    yield _sse(event)
-            except Exception as exc:
-                logger.debug("AI 流快照回填失败（忽略）: %s", exc)
+            spans = await _fetch_spans(
+                None, store().list_ai_spans_since, novel_id, "", 0, 200
+            )
+            for event in _snapshot_events(spans or []):
+                yield _sse(event)
 
         # `loop.time()` 是 time.monotonic()（开机以来的秒数），不是相对本次连接的
         # 偏移；写成 0.0 会让第一条 keepalive 在首次循环就发出去。
@@ -203,21 +231,17 @@ async def ai_stream(novel_id: str):
                     emitted += 1
             else:
                 first_batch = not cursor_created_at
-                try:
-                    rows = await loop.run_in_executor(
-                        None,
-                        store().list_ai_spans_since,
-                        novel_id,
-                        cursor_created_at,
-                        cursor_id,
-                        AI_STREAM_DB_BATCH,
-                    )
-                except Exception as exc:
-                    logger.debug("AI 流降级轮询失败（忽略）: %s", exc)
-                    rows = []
+                rows = await _fetch_spans(
+                    None,
+                    store().list_ai_spans_since,
+                    novel_id,
+                    cursor_created_at,
+                    cursor_id,
+                    AI_STREAM_DB_BATCH,
+                )
                 # 游标无论是否产出事件都要推进，否则非 LLM phase 会卡住轮询。
                 batch: List[Dict[str, Any]] = []
-                for row in rows:
+                for row in rows or []:
                     cursor_created_at = str(row.get("created_at") or cursor_created_at)
                     cursor_id = int(row.get("id") or 0)
                     event = _db_span_to_event(row)
@@ -226,7 +250,12 @@ async def ai_stream(novel_id: str):
                 # 首轮是升序取的历史，游标要从最老开始走。不裁剪的话，
                 # 一本攒了上千 span 的书会先把几周前的调用倒给用户看，
                 # 实时事件还得等游标爬完才出现。只在首轮裁，游标照样走到底。
-                for event in _snapshot_events(batch) if first_batch else batch:
+                #
+                # ⚠️ 这里**不能**复用 `_snapshot_events`：它内部还要再跑一遍
+                # `_db_span_to_event`，而 `batch` 里已经是事件（没有 `phase` 键），
+                # 会被整批过滤成空 —— 首轮回填静默丢光，弹窗开出来一片空白。
+                # `batch` 本身就是升序，切末尾 N 条即「保留最新、仍按时间正序」。
+                for event in batch[-AI_STREAM_SNAPSHOT_LIMIT:] if first_batch else batch:
                     yield _sse(event)
                     emitted += 1
 
