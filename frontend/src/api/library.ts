@@ -89,20 +89,26 @@ function toBookItem(raw: any): LibraryBookItem {
 /**
  * 章节状态标签。
  *
- * `chapters.status` 有两条写入路径，取值域是**并集**，缺任何一项都会让真实数据漏出英文原值：
- * - 流水线 / 域枚举（domain/novel/entities/chapter.py:10-14）：draft / reviewing / completed
- * - 审读保存（Chapter.vue:240-247 的 statusToNew，由 pending/ok/revise 转换）：draft / reviewed / approved
+ * `chapters.status` 的真实取值域是**三值**，即域枚举（domain/novel/entities/chapter.py:10-14）：
+ * draft / reviewing / completed。
  *
- * 措辞沿用仓库既有中文：approved 取 Chapter.vue:98 的「已定稿」(ok)，
- * reviewed 对应 Chapter.vue:99 的「需修订」(revise)。
+ * 审读路径（Chapter.vue 的 statusToNew，由 pending/ok/revise 转成 draft/reviewed/approved）
+ * **不会**把 reviewed/approved 写进 chapters：chapter_service.py:236-245 在落库前就归一化
+ * （approved→COMPLETED、reviewed→REVIEWING、draft→DRAFT），原始审定值另存进 chapter_reviews 表，
+ * 而 TOC 端点只读 chapters（library_service.py:134）。所以下面 reviewed/approved 两键
+ * 是**前瞻防御**、当前不可达，不是必需项——但仍请保留：归一化一旦放松或出现新写入路径，
+ * 它们就是唯一挡住英文原值漏出的东西。
+ *
+ * 用 Map 而非对象字面量：对象字面量会继承 Object.prototype，`M['toString']` 命中原型链，
+ * `??` 不触发，标签会变成函数。
  */
-const CHAPTER_STATUS_LABEL: Record<string, string> = {
-  draft: '草稿',
-  reviewing: '审读中',
-  reviewed: '待修订',
-  approved: '已定稿',
-  completed: '已完稿',
-}
+const CHAPTER_STATUS_LABEL = new Map<string, string>([
+  ['draft', '草稿'],
+  ['reviewing', '审读中'],
+  ['reviewed', '待修订'],
+  ['approved', '已定稿'],
+  ['completed', '已完稿'],
+])
 
 function toTocEntry(raw: any): LibraryTocEntry {
   const status = String(raw.status ?? 'draft')
@@ -111,7 +117,7 @@ function toTocEntry(raw: any): LibraryTocEntry {
     title: raw.title ?? '',
     wordCount: Number(raw.word_count ?? 0),
     status,
-    statusLabel: CHAPTER_STATUS_LABEL[status] ?? status,
+    statusLabel: CHAPTER_STATUS_LABEL.get(status) ?? status,
   }
 }
 
