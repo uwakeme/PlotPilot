@@ -142,7 +142,6 @@ class AiStreamBus:
         trace_id: str,
         span_id: str,
         text: str,
-        ts: Optional[float] = None,
     ) -> None:
         if not text:
             return
@@ -156,9 +155,7 @@ class AiStreamBus:
             # 而不是立刻 flush —— 否则首个短 delta 就把攒字清空，合并形同虚设。
             last = now
             self._last_flush[span_id] = now
-        if accumulated >= AI_DELTA_FLUSH_CHARS or (
-            now - last >= AI_DELTA_FLUSH_INTERVAL_S
-        ):
+        if accumulated >= AI_DELTA_FLUSH_CHARS or (now - last >= AI_DELTA_FLUSH_INTERVAL_S):
             self._flush_pending(span_id, novel_id, trace_id)
 
     def publish_end(

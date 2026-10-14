@@ -31,8 +31,14 @@ class _FakeQueue:
         return len(self.items)
 
 
-def _bus(maxsize: int | None = None):
-    return AiStreamBus(queue=_FakeQueue(maxsize=maxsize))
+class _FrozenClock:
+    """替换模块内的 time 引用，让合并窗口的时间断言不依赖真实时钟。"""
+
+    def __init__(self, t: float):
+        self._t = t
+
+    def time(self) -> float:
+        return self._t
 
 
 def test_publish_start_emits_full_envelope():
@@ -60,13 +66,15 @@ def test_publish_start_emits_full_envelope():
     assert isinstance(msg["ts"], float)
 
 
-def test_publish_delta_coalesces_below_threshold():
+def test_publish_delta_coalesces_below_threshold(monkeypatch):
     q = _FakeQueue()
     bus = AiStreamBus(queue=q)
+    monkeypatch.setattr(module_under_test, "time", _FrozenClock(time.time()))
     bus.publish_delta(novel_id="n1", trace_id="t1", span_id="s1", text="ab")
     bus.publish_delta(novel_id="n1", trace_id="t1", span_id="s1", text="cd")
-    # 累积 4 字 < 200 字阈值，且距上次 flush 远小于 100ms
     assert q.items == []
+    # 确认是「攒住了」而不是「根本没收到」
+    assert bus._pending["s1"] == "abcd"
 
 
 def test_publish_delta_flushes_at_char_threshold():
@@ -126,12 +134,26 @@ def test_publish_error_emits_error_kind():
 
 
 def test_publish_is_noop_when_queue_not_injected(monkeypatch):
+    """队列未注入时 publish 必须静默 no-op，不得抛异常。
+
+    这是独立启动 daemon 时的降级路径（`scripts/start_daemon.py` 不创建该队列），
+    是最值得钉住的一条。断言缓冲确实被填充、又被 publish_end 正常清理——
+    只有 publish_delta / publish_end 真的跑过才会同时成立。
+    """
     monkeypatch.setattr(module_under_test, "_ai_stream_queue", None)
     bus = AiStreamBus.__new__(AiStreamBus)  # 绕过 __init__ 的注入
     bus._pending = {}
+    bus._pending_len = {}
     bus._last_flush = {}
+
     bus.publish_start(novel_id="n1", trace_id="t1", span_id="s1")
+    bus.publish_delta(novel_id="n1", trace_id="t1", span_id="s1", text="abc")
+    assert bus._pending["s1"] == "abc"  # 缓冲确实收到了
+
+    bus.publish_end(novel_id="n1", trace_id="t1", span_id="s1", response="abc")
     assert bus._pending == {}
+    assert bus._pending_len == {}
+    assert bus._last_flush == {}
 
 
 def test_publish_drops_event_when_queue_full():
