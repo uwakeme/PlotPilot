@@ -28,6 +28,36 @@ from engine.pipeline.telemetry import story_pipeline_wave_meta
 
 logger = logging.getLogger(__name__)
 
+def _enter_chapter_trace(ctx) -> Any:
+    """为章节管线装一个带 novel_id 的 TraceContext，返回 token 供退出时还原。
+
+    必须**新建**而不是 `ensure_trace`：ensure_trace 遇到已有 trace 是就地修改，
+    且只在 novel_id 为空时才写入（application/ai/trace_context.py:112-113）。
+    守护进程的任务上下文是长生命周期的，残留的 trace 会把上一本书的 novel_id
+    泄漏给下一本。
+
+    章节管线的 LLM 调用都经由 DynamicLLMService，那里靠这个 trace 拿 novel_id
+    去过滤 AI 实时事件流；缺了它，章节写作阶段的事件会被守卫全部丢弃。
+    """
+    from application.ai.trace_context import TraceContext, set_current_trace
+
+    return set_current_trace(
+        TraceContext.create(
+            novel_id=str(getattr(ctx, "novel_id", "") or ""),
+            operation="chapter_pipeline",
+            stage="pipeline.chapter",
+            stage_label="章节生成",
+        )
+    )
+
+
+def _exit_chapter_trace(token: Any) -> None:
+    """还原 run_chapter 进入前的 trace 上下文。"""
+    from application.ai.trace_context import reset_current_trace
+
+    reset_current_trace(token)
+
+
 def _writing_progress(
     ctx: PipelineContext,
     substep: str,
@@ -95,6 +125,7 @@ class BaseStoryPipeline(ABC):
         """
         self._step_log = []
         step_status: Dict[str, str] = {}
+        trace_token = _enter_chapter_trace(ctx)
 
         try:
             # 1. 定位下一个待写章节
@@ -207,6 +238,9 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             logger.error(f"[{ctx.novel_id}] 管线异常: {e}", exc_info=True)
             return self._make_result(ctx, success=False, error=str(e), step_status=step_status)
+
+        finally:
+            _exit_chapter_trace(trace_token)
 
     # ═══════════════════════════════════════════════════════════════
     # 十大步骤 — 每个都有默认实现，子类可覆写
