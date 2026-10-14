@@ -63,16 +63,30 @@ watch(
   },
 )
 
-/** 直接带上「继续读到的那一章」进阅读器。 */
+/**
+ * 直接带上「继续读到的那一章」进阅读器。
+ *
+ * 无正文的书**也放行**：设计 §7.1 / §8 要求它进阅读器显示空态而非报错，而这条
+ * 无章号路由正是阅读器自己的入口（onMounted 里 routeChapter 为 null →
+ * bootstrapToFirstChapter → 拉目录 → 没章则 loadChapter(1) → notFound 态）。
+ * 所以这里不拦截，只把钳制收进「有正文」的分支。
+ *
+ * 无正文时**不带 chapter 参数**，而不是编一个 1 带过去：空目录下
+ * ReaderView.vue:93 的 `notFound = toc.length === 0` 两种写法都会落到同一态，
+ * 但传 1 等于断言一个并不存在的章号，语义是假的——空书就是「没有章可指」。
+ */
 const openBook = (book: LibraryBookItem) => {
-  if (book.chapterCount <= 0) return
   // 尽力钳制：章节被删后 lastRead.chapterNumber 可能越过 chapterCount。
   // 但 chapterCount 只数有正文的章、章号未必连续，所以这只是兜底——
   // 真正的权威判断在阅读器：它拿目录校验章号存在，不存在则走 notFound 态。
-  const target = Math.max(1, Math.min(book.chapterCount, book.lastRead?.chapterNumber ?? 1))
+  const target = book.chapterCount > 0
+    ? Math.max(1, Math.min(book.chapterCount, book.lastRead?.chapterNumber ?? 1))
+    : null
   router.push({
     name: 'Read',
-    params: { novelId: book.novelId, chapter: String(target) },
+    params: target === null
+      ? { novelId: book.novelId }
+      : { novelId: book.novelId, chapter: String(target) },
   })
 }
 </script>

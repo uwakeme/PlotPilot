@@ -89,15 +89,23 @@ function toBookItem(raw: any): LibraryBookItem {
 /**
  * 章节状态标签。
  *
- * `chapters.status` 的真实取值域是**三值**，即域枚举（domain/novel/entities/chapter.py:10-14）：
- * draft / reviewing / completed。
+ * `chapters.status` 的取值域**不被写入路径强制**：DDL 层是
+ * `status TEXT DEFAULT 'draft'`，无 NOT NULL、无 CHECK。
  *
- * 审读路径（Chapter.vue 的 statusToNew，由 pending/ok/revise 转成 draft/reviewed/approved）
- * **不会**把 reviewed/approved 写进 chapters：chapter_service.py:236-245 在落库前就归一化
- * （approved→COMPLETED、reviewed→REVIEWING、draft→DRAFT），原始审定值另存进 chapter_reviews 表，
- * 而 TOC 端点只读 chapters（library_service.py:134）。所以下面 reviewed/approved 两键
- * 是**前瞻防御**、当前不可达，不是必需项——但仍请保留：归一化一旦放松或出现新写入路径，
- * 它们就是唯一挡住英文原值漏出的东西。
+ * 所有**已知调用方**产出的都是三值（draft / reviewing / completed，域枚举见
+ * domain/novel/entities/chapter.py:10-14）：审读路径的 pending/ok/revise 会给出
+ * reviewed/approved，但 chapter_service.py:236-245 在落库前就归一化
+ * （approved→COMPLETED、reviewed→REVIEWING、draft→DRAFT），原始审定值另存进
+ * chapter_reviews 表，而 TOC 端点只读 chapters（library_service.py:134）。
+ *
+ * 但归一化是**约定**、不是结构性保证，仍有绕过它的写入路径：
+ * - chapter_generation_workspace.py:195-198：`except ValueError` 分支把
+ *   **原始字符串**直接赋给 existing.status
+ * - persistence_queue.py:607-610：一条裸的 `UPDATE chapters SET status = ?`
+ *
+ * 这就是 reviewed/approved 两键要留的理由——它们当前不可达，但上面任一路径被
+ * 触达时，它们是唯一挡住英文原值漏进 UI 的东西。要删它们，先给
+ * chapters.status 加 CHECK 约束，而不是只改前端注释。
  *
  * 用 Map 而非对象字面量：对象字面量会继承 Object.prototype，`M['toString']` 命中原型链，
  * `??` 不触发，标签会变成函数。

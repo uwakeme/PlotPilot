@@ -4,9 +4,17 @@
 hydrate 进 DTO（一本 300 万字的书可达数十 MB）。书库只需要卡片和目录，
 所以这里直接走 SQL 聚合，章节正文仅在 ``get_chapter`` 里按需取一次。
 
-字数口径统一用 ``LENGTH(content)``：``chapters.word_count`` 列是写入期
-陈旧产物，读它会让书库与侧边栏统计对不上
-（依据 sqlite_stats_repository_adapter.get_book_word_totals 的说明）。
+字数口径统一用 ``LENGTH(content)`` 现场聚合，两种库都必须这么写：
+
+- **新库**（``schema.sql`` 建表 + 全部迁移）：``chapters`` 表**没有**
+  ``word_count`` 列。误读它不会得到错数，而是直接 ``no such column`` 崩掉。
+- **历史库**（文件存储时代遗留）：可能仍残留这一列，且其值是写入期产物、
+  已过期，读它才会与侧边栏统计对不上
+  （依据 sqlite_stats_repository_adapter.get_book_word_totals 的说明——
+  那段说明针对的是这一类库）。
+
+两种情况的结论一致：只有 ``SUM(LENGTH(content))`` 同时满足「与侧边栏口径
+一致」和「在新库上不崩」。
 
 对外标识一律是 ``novel_id``（即 ``novels.id``），不是 ``novels.slug`` 列：
 本服务按 ``WHERE id = ?`` 查，返回的就该是它查的那个键，「返回什么」与

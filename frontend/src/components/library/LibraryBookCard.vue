@@ -64,11 +64,12 @@ const continueLabel = computed(() =>
         <div class="lib-progress-fill" :style="{ width: `${progress * 100}%` }" />
       </div>
 
+      <!-- 无正文的书主按钮**不置灰禁用**：点击要能穿透进阅读器的空态
+           （见 LibraryView.openBook 的注释）。灰态只由 .is-empty 的样式表达。 -->
       <NButton
         type="primary"
         round
         block
-        :disabled="!readable"
         @click.stop="emit('open')"
       >
         {{ continueLabel }}
@@ -88,7 +89,8 @@ const continueLabel = computed(() =>
   transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 .lib-card:hover { transform: translateY(-2px); }
-.lib-card.is-empty { opacity: 0.55; cursor: default; }
+/* 空书保持灰态视觉，但 cursor 必须仍指向手型——它点得动，会进阅读器空态。 */
+.lib-card.is-empty { opacity: 0.55; }
 .lib-cover {
   aspect-ratio: 3 / 4;
   border-radius: 6px;
