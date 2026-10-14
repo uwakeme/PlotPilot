@@ -432,6 +432,63 @@ def test_list_recent_ai_spans_excludes_other_phases_and_novels(tmp_path):
     assert "s9" not in {r["span_id"] for r in rows}
 
 
+class _CursorSpyStore:
+    """透传真实 store 的快照查询，但把轮询换成返回一条固定的「新到」记录。
+
+    那条记录**故意不在 store 里**——它代表快照之后才落库的一次调用，
+    所以游标必须是快照里最新那条的下界，轮询才接得上。
+    """
+
+    def __init__(self, inner, live_row):
+        self._inner = inner
+        self._live_row = live_row
+        self.seen = []
+
+    def list_recent_ai_spans(self, novel_id, limit=0):
+        return self._inner.list_recent_ai_spans(novel_id, limit)
+
+    def list_ai_spans_since(self, novel_id, after_created_at, after_id, limit):
+        self.seen.append((after_created_at, after_id))
+        return [dict(self._live_row)]
+
+
+@pytest.mark.asyncio
+async def test_degraded_poll_resumes_from_seeded_cursor(monkeypatch, tmp_path):
+    """降级轮询必须从快照钉住的游标继续，不能退回空游标。
+
+    这条钉的是「不重放历史」这个保证的**调用点**。快照阶段的游标由
+    `_seed_cursor` 单点守卫，但循环里那句 `list_ai_spans_since(novel_id,
+    cursor_created_at, cursor_id, ...)` 此前没有任何测试观察到：既有的降级用例
+    只取 3 帧（connected + 快照 2 条），根本没进循环。将来若有人把它「简化」成
+    `("", 0)`，CI 一声不响，整段历史就会被逐批重放。
+    """
+    import application.engine.services.ai_stream_bus as bus_mod
+
+    monkeypatch.setattr(bus_mod, "get_ai_stream_queue", lambda: None)
+    store = SqliteTraceStore(_Pool(tmp_path / "poll.db"))
+    _seed(store, "n1")
+    snapshot_newest = store.list_recent_ai_spans("n1", limit=20)[-1]
+    assert snapshot_newest["created_at"] == "2026-05-28T00:00:01.000+00:00"
+
+    spy = _CursorSpyStore(
+        store,
+        {
+            "span_id": "s2", "trace_id": "t2", "novel_id": "n1",
+            "phase": "llm_response", "response_full": "新到的调用",
+            "token_input": 3, "token_output": 4, "latency_ms": 800,
+            "created_at": "2026-05-28T00:00:09.000+00:00", "id": 99,
+        },
+    )
+    monkeypatch.setattr(routes, "_trace_store", lambda: spy)
+
+    payloads = await _drive((await routes.ai_stream("n1")).body_iterator, 4)
+
+    assert [p["type"] for p in payloads] == ["connected", "start", "end", "end"]
+    assert spy.seen, "降级循环至少应当跑过一轮"
+    assert spy.seen[0] == (snapshot_newest["created_at"], int(snapshot_newest["id"]))
+    assert payloads[3]["span_id"] == "s2"
+
+
 def test_seed_cursor_takes_newest_snapshot_row():
     """快照非空时，游标取最后一行（快照已按时间正序返回）。"""
     rows = [
