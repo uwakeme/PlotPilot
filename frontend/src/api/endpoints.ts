@@ -69,6 +69,9 @@ export const apiRoutes = {
     circuitBreaker: (novelId: string) => apiRootPath('autopilot', novelId, 'circuit-breaker'),
     circuitBreakerReset: (novelId: string) => apiRootPath('autopilot', novelId, 'circuit-breaker', 'reset'),
   },
+  aiStream: {
+    stream: (novelId: string) => apiRootPath('novels', novelId, 'ai-stream'),
+  },
   dag: {
     events: (novelId: string) => withQuery(apiRootPath('dag', 'events'), { novel_id: novelId }),
   },
