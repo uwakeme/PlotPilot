@@ -20,6 +20,7 @@ class _DbBase:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.flush_calls = 0
+        self.flush_result = True
         self.conn.executescript(
             """
             CREATE TABLE novels (
@@ -42,7 +43,7 @@ class _DbBase:
 
     def flush_pending_writes(self, timeout: float = 2.0):
         self.flush_calls += 1
-        return True
+        return self.flush_result
 
     def fetch_one(self, sql, params=()):
         row = self.conn.execute(sql, params).fetchone()
@@ -121,3 +122,21 @@ def test_record_reads_back_only_after_flush():
 
     assert order.index("flush") < order.index("read")
     db.conn.close()
+
+
+def test_record_returns_none_when_flush_times_out(repo):
+    """写队列超时 = 可能读到旧行，必须让调用方能识别，不能静默返回过期数据。"""
+    repo.db.flush_result = False
+
+    assert repo.record("n1", 5) is None
+
+
+def test_record_returns_none_does_not_corrupt_stored_progress(repo):
+    """超时后回读为 None，但已入队的写最终仍会落盘——下次上报读到的是 5 而不是旧值。"""
+    repo.db.flush_result = False
+    assert repo.record("n1", 5) is None
+
+    repo.db.flush_result = True
+    row = repo.record("n1", 5)
+
+    assert row["last_chapter_number"] == 5
