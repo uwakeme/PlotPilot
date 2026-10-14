@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** LibraryView — 书库网格。只读：不提供删除、编辑、改设置。 */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NEmpty, NIcon, NInput, NSelect, NSpin } from 'naive-ui'
 import { SearchOutline } from '@vicons/ionicons5'
@@ -54,12 +54,25 @@ const load = async () => {
 
 onMounted(load)
 
-/** 直接带上「继续读到的那一章」进阅读器，阅读器无需再判断起点。 */
+// 「最近阅读 / 最近更新」是后端排序，切换即需重新取数；
+// 「书名」是纯前端排序（见 displayed），切过去不该发请求。
+watch(
+  () => sort.value,
+  (next) => {
+    if (next !== 'title') void load()
+  },
+)
+
+/** 直接带上「继续读到的那一章」进阅读器。 */
 const openBook = (book: LibraryBookItem) => {
   if (book.chapterCount <= 0) return
+  // 尽力钳制：章节被删后 lastRead.chapterNumber 可能越过 chapterCount。
+  // 但 chapterCount 只数有正文的章、章号未必连续，所以这只是兜底——
+  // 真正的权威判断在阅读器：它拿目录校验章号存在，不存在则走 notFound 态。
+  const target = Math.max(1, Math.min(book.chapterCount, book.lastRead?.chapterNumber ?? 1))
   router.push({
     name: 'Read',
-    params: { novelId: book.novelId, chapter: String(book.lastRead?.chapterNumber ?? 1) },
+    params: { novelId: book.novelId, chapter: String(target) },
   })
 }
 </script>
