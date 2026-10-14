@@ -76,4 +76,11 @@ export const apiRoutes = {
     voiceDrift: (novelId: string) => apiRootPath('novels', novelId, 'monitor', 'voice-drift'),
     tensionCurve: (novelId: string) => apiClientPath('novels', novelId, 'monitor', 'tension-curve'),
   },
+  library: {
+    books: (params?: QueryParams) => withQuery(apiClientPath('library', 'books'), params),
+    toc: (novelId: string) => apiClientPath('library', 'books', novelId, 'toc'),
+    chapter: (novelId: string, number: number) =>
+      apiClientPath('library', 'books', novelId, 'chapters', number),
+    progress: (novelId: string) => apiClientPath('library', 'books', novelId, 'progress'),
+  },
 }

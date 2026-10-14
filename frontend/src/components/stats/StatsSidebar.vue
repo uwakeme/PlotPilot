@@ -129,6 +129,16 @@
           </span>
           <span>新建书目</span>
         </button>
+        <button class="action-btn" @click="router.push('/library')">
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H9v16H5.5A1.5 1.5 0 0 1 4 18.5v-13Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+              <path d="M9 4h3v16H9V4Z" fill="currentColor" opacity="0.35"/>
+              <path d="M12 4h6.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H12V4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span>书库</span>
+        </button>
         <GlobalLLMEntryButton appearance="sidebar" />
         <PromptPlazaEntryButton appearance="sidebar" />
       </div>
@@ -162,6 +172,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { NSkeleton } from 'naive-ui'
 import StatCard from './StatCard.vue'
@@ -178,6 +189,7 @@ const emit = defineEmits<{
   (e: 'collapsed-change', collapsed: boolean): void
 }>()
 
+const router = useRouter()
 const collapsed = ref(readStorageBoolean(storageKeys.statsSidebarCollapsed))
 
 function toggleCollapse() {

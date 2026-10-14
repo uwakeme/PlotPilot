@@ -173,6 +173,9 @@
                 </template>
                 刷新书目列表
               </n-tooltip>
+              <n-button size="small" secondary @click="router.push('/library')">
+                进入书库
+              </n-button>
               <n-button
                 v-if="selectedBooks.length > 0"
                 type="error"

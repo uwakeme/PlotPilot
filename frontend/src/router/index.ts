@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const Home = () => import('../views/Home.vue')
+const Library = () => import('../views/LibraryView.vue')
 const Workbench = () => import('../views/Workbench.vue')
 const Chapter = () => import('../views/Chapter.vue')
 const Cast = () => import('../views/Cast.vue')
@@ -13,6 +14,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'Home', component: Home },
+    { path: '/library', name: 'Library', component: Library },
     { path: '/book/:slug/workbench', name: 'Workbench', component: Workbench },
     { path: '/book/:slug/cast', name: 'Cast', component: Cast },
     { path: '/book/:slug/chapter/:id', name: 'Chapter', component: Chapter },
