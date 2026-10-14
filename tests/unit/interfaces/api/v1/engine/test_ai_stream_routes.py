@@ -95,9 +95,11 @@ def test_build_event_from_db_span_maps_error():
     ev = routes._db_span_to_event(
         {
             "span_id": "s1",
+            "parent_span_id": "s1",
             "trace_id": "t1",
             "novel_id": "n1",
             "phase": "error",
+            "node_type": "llm",
             "error": "boom",
             "latency_ms": 300,
             "created_at": "2026-10-14T00:00:02.000+00:00",
@@ -105,6 +107,7 @@ def test_build_event_from_db_span_maps_error():
     )
     assert ev["type"] == "error"
     assert ev["error"] == "boom"
+    assert ev["span_id"] == "s1"
 
 
 def test_db_span_to_event_ignores_unknown_phase():
@@ -311,12 +314,20 @@ async def test_db_read_timeout_is_contained(monkeypatch, tmp_path):
 
 
 def _seed(store: SqliteTraceStore, novel_id: str) -> None:
+    """按 `provider_factory` 的**真实**形状写一次调用的两条 span。
+
+    请求行显式带 `span_id`；响应行不传 `span_id`——`record_span` 是
+    `span_id=span_id or ctx.new_span_id(phase)`，不传就另生成一个——只带
+    `parent_span_id`。这正是「一次调用在库里是两行两个 id」的由来，早期版本的
+    `_seed` 两行都写 `s1`，把真实存在的分裂给掩盖掉了。
+    """
     store.record_ai_span(
         {
             "trace_id": "t1",
             "span_id": "s1",
             "novel_id": novel_id,
             "phase": "llm_request",
+            "node_type": "llm",
             "prompt_full": {"system": "系统全文", "user": "用户全文"},
             "created_at": "2026-05-28T00:00:00.000+00:00",
         }
@@ -324,9 +335,11 @@ def _seed(store: SqliteTraceStore, novel_id: str) -> None:
     store.record_ai_span(
         {
             "trace_id": "t1",
-            "span_id": "s1",
+            "span_id": "s1-response",
+            "parent_span_id": "s1",
             "novel_id": novel_id,
             "phase": "llm_response",
+            "node_type": "llm",
             "response_full": "完整输出全文",
             "token_input": 10,
             "token_output": 20,
@@ -334,6 +347,63 @@ def _seed(store: SqliteTraceStore, novel_id: str) -> None:
             "created_at": "2026-05-28T00:00:01.000+00:00",
         }
     )
+
+
+def test_db_event_span_id_folds_response_and_error_into_the_request():
+    """一次调用在库里是两行两个 id，投影层必须折成队列口径的那一个。
+
+    队列那边 `publish_start` / `publish_end` / `publish_error` 全都用
+    `request_span_id`，只有一个 id；不折的话前端按 span_id 聚合会把一次调用
+    拆成「永远 running 的 start」+「只有正文没有提示词的 end」。
+    """
+    request = {"phase": "llm_request", "span_id": "req-1"}
+    response = {"phase": "llm_response", "span_id": "resp-9", "parent_span_id": "req-1"}
+    error = {"phase": "error", "node_type": "llm", "span_id": "err-3", "parent_span_id": "req-1"}
+
+    assert routes._db_event_span_id(request, "llm_request") == "req-1"
+    assert routes._db_event_span_id(response, "llm_response") == "req-1"
+    assert routes._db_event_span_id(error, "error") == "req-1"
+
+
+def test_db_event_span_id_falls_back_to_own_id_without_parent():
+    """没有父 span 时退回自己的 id，绝不能返回空串。"""
+    row = {"phase": "llm_response", "span_id": "resp-9", "parent_span_id": None}
+    assert routes._db_event_span_id(row, "llm_response") == "resp-9"
+
+
+def test_build_event_ignores_non_llm_error():
+    """prompt 渲染 / JSON schema 的 error 不是一次 AI 调用，不该进弹窗。
+
+    `prompt_gateway.py` 与 `structured_json_pipeline.py` 也往同一张表写
+    `phase='error'`。除了越界，它们还会挤占快照窗口的 `LIMIT`。
+    """
+    assert routes._db_span_to_event(
+        {
+            "span_id": "s9",
+            "phase": "error",
+            "node_type": "prompt",
+            "error": "schema 校验失败",
+            "created_at": "2026-05-28T00:00:03.000+00:00",
+        }
+    ) is None
+
+
+def test_one_call_from_db_becomes_one_span_id(tmp_path):
+    """真实往返：库里确实是两个 id，投影后必须是同一个。"""
+    store = SqliteTraceStore(_Pool(tmp_path / "merge.db"))
+    _seed(store, "n1")
+
+    rows = store.list_ai_spans_since("n1")
+    assert [r["phase"] for r in rows] == ["llm_request", "llm_response"]
+    # 前置条件：库里真的分裂成了两个 id——否则这条断言只是在测一个假前提
+    assert rows[0]["span_id"] == "s1"
+    assert rows[1]["span_id"] == "s1-response"
+    assert rows[1]["parent_span_id"] == "s1"
+
+    events = [routes._db_span_to_event(r) for r in rows]
+    assert events[0]["span_id"] == events[1]["span_id"] == "s1"
+    assert events[0]["prompt"] == {"system": "系统全文", "user": "用户全文"}
+    assert events[1]["response"] == "完整输出全文"
 
 
 def test_list_ai_spans_since_returns_deserialized_payloads(tmp_path):

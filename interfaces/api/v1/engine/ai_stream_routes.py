@@ -138,16 +138,49 @@ def _build_event(message: Dict[str, Any]) -> Dict[str, Any]:
     return event
 
 
+def _db_event_span_id(row: Dict[str, Any], phase: str) -> str:
+    """库里一次调用是两行两个 id，这里把它们折成队列口径的那一个。
+
+    `provider_factory` 给**队列**的口径是一次调用一个 id：`publish_start` /
+    `publish_end` / `publish_error` 全都传 `span_id=request_span_id`。但
+    `record_span` 是 `span_id=span_id or ctx.new_span_id(phase)`，而
+    `llm_response` / `error` 那两行没传 `span_id`，于是各自另生成了一个。
+
+    结果是前端按 `span_id` 聚合时，一次调用被拆成两条：一条带着提示词却永远
+    停在 running，一条只有正文没有提示词。降级模式下每次调用都这样，队列模式
+    的连接快照也一样。
+
+    所以 `llm_response` / `error` 改用 `parent_span_id`——它正是
+    `request_span_id`。`ai_trace_spans` 一个 phase 一行本来就是刻意的
+    （`TraceRecordPanel.vue` 和 `get_ai_timeline` 都按这个模型消费），
+    「一次调用 = 请求 span + 子 span」才是对的读法，折叠发生在投影层。
+    这样老库里已经写好的旧数据不需要迁移也能正确渲染。
+    """
+    own = str(row.get("span_id") or "")
+    if phase == "llm_request":
+        return own
+    return str(row.get("parent_span_id") or "") or own
+
+
 def _db_span_to_event(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """`ai_trace_spans` 行 → SSE 载荷；非 LLM 相关 phase 返回 None。"""
-    event_type = DB_PHASE_TO_EVENT.get(str(row.get("phase") or ""))
+    phase = str(row.get("phase") or "")
+    event_type = DB_PHASE_TO_EVENT.get(phase)
     if event_type is None:
+        return None
+    # `error` 不是 LLM 专属的 phase：prompt 渲染失败、JSON schema 校验失败
+    # 也写在同一张表里（`prompt_gateway.py` / `structured_json_pipeline.py`）。
+    # 那些不是一次「AI 调用」，与弹窗只看 LLM 输入输出的边界无关，而且会
+    # 挤占快照窗口的 `LIMIT`。`node_type='llm'` 是精确判据——全仓只有
+    # `provider_factory` 产出 llm_request / llm_response，它的 6 个 span
+    # 一律带 `node_type="llm"`。SQL 里已过滤一遍，这里再挡一次。
+    if phase == "error" and str(row.get("node_type") or "") != "llm":
         return None
     event: Dict[str, Any] = {
         "type": event_type,
         "novel_id": row.get("novel_id", ""),
         "trace_id": row.get("trace_id", ""),
-        "span_id": row.get("span_id", ""),
+        "span_id": _db_event_span_id(row, phase),
         "stage": row.get("stage", "") or "",
         "stage_label": row.get("stage_label", "") or "",
         "model": row.get("model", "") or "",

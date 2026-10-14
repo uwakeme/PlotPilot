@@ -439,7 +439,10 @@ class SqliteTraceStore(TracePort):
                         OR created_at > ?
                         OR (created_at = ? AND id > ?)
                       )
-                      AND phase IN ('llm_request', 'llm_response', 'error')
+                      AND (
+                        phase IN ('llm_request', 'llm_response')
+                        OR (phase = 'error' AND COALESCE(node_type, '') = 'llm')
+                      )
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                     """,
@@ -472,7 +475,10 @@ class SqliteTraceStore(TracePort):
                     """
                     SELECT * FROM ai_trace_spans
                     WHERE novel_id = ?
-                      AND phase IN ('llm_request', 'llm_response', 'error')
+                      AND (
+                        phase IN ('llm_request', 'llm_response')
+                        OR (phase = 'error' AND COALESCE(node_type, '') = 'llm')
+                      )
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                     """,
