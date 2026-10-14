@@ -7,6 +7,12 @@ hydrate 进 DTO（一本 300 万字的书可达数十 MB）。书库只需要卡
 字数口径统一用 ``LENGTH(content)``：``chapters.word_count`` 列是写入期
 陈旧产物，读它会让书库与侧边栏统计对不上
 （依据 sqlite_stats_repository_adapter.get_book_word_totals 的说明）。
+
+对外标识一律是 ``novel_id``（即 ``novels.id``），不是 ``novels.slug`` 列：
+本服务按 ``WHERE id = ?`` 查，返回的就该是它查的那个键，「返回什么」与
+「拿什么查」永远一致。两者今天取值相同，但这只是 repository save、
+连接回填、backup 克隆共同维持的一个事实，不是本契约的前提——
+所以契约只承诺 id，不依赖 ``id == slug`` 这条不变式。
 """
 from __future__ import annotations
 
@@ -25,7 +31,6 @@ from infrastructure.persistence.database.reading_progress_repository import (
 
 _BOOKS_SQL = """
 SELECT n.id AS novel_id,
-       n.slug,
        n.title,
        n.author,
        n.target_chapters,
@@ -104,7 +109,7 @@ class LibraryService:
             }
 
         return {
-            "slug": row["slug"],
+            "novel_id": row["novel_id"],
             "title": row["title"],
             "author": row.get("author") or "",
             "genre": prefs.locked_genre or parsed_genre,
@@ -120,7 +125,7 @@ class LibraryService:
 
     def get_toc(self, novel_id: str) -> Optional[Dict[str, Any]]:
         book = self.db.fetch_one(
-            "SELECT id, slug, title FROM novels WHERE id = ?", (novel_id,)
+            "SELECT id, title FROM novels WHERE id = ?", (novel_id,)
         )
         if book is None:
             return None
@@ -131,7 +136,7 @@ class LibraryService:
             (book["id"],),
         )
         return {
-            "slug": book["slug"],
+            "novel_id": book["id"],
             "title": book["title"],
             "chapters": [
                 {
@@ -148,7 +153,7 @@ class LibraryService:
 
     def get_chapter(self, novel_id: str, number: int) -> Optional[Dict[str, Any]]:
         book = self.db.fetch_one(
-            "SELECT id, slug FROM novels WHERE id = ?", (novel_id,)
+            "SELECT id FROM novels WHERE id = ?", (novel_id,)
         )
         if book is None:
             return None
@@ -162,7 +167,7 @@ class LibraryService:
             return None
 
         return {
-            "slug": book["slug"],
+            "novel_id": book["id"],
             "number": int(row["number"]),
             "title": _chapter_display_title(row.get("title"), int(row["number"])),
             # 原样返回：换行归一化与 markdown 渲染都交给前端
@@ -198,7 +203,7 @@ class LibraryService:
         # （列 NOT NULL）。这里不做「取不到就拿入参顶上」的兜底：真出现缺列
         # 就该报错，而不是返回一个从没被写进去过的章号。
         return {
-            "slug": novel_id,
+            "novel_id": novel_id,
             "last_chapter_number": int(row["last_chapter_number"]),
             "read_at": row.get("last_read_at"),
         }

@@ -16,7 +16,7 @@ class _Db:
         self.flush_timed_out = False
         self.books = [
             {
-                "slug": "n1",
+                "novel_id": "n1",
                 "title": "甲书",
                 "author": "作者",
                 "genre": "仙侠",
@@ -37,7 +37,7 @@ class _Db:
         if novel_id != "n1":
             return None
         return {
-            "slug": "n1",
+            "novel_id": "n1",
             "title": "甲书",
             "chapters": [
                 {"number": 1, "title": "第一章", "word_count": 2, "status": "draft"},
@@ -49,7 +49,7 @@ class _Db:
         if novel_id != "n1" or number not in (1, 2):
             return None
         return {
-            "slug": "n1",
+            "novel_id": "n1",
             "number": number,
             "title": f"第{number}章",
             "content": "正文内容",
@@ -64,7 +64,7 @@ class _Db:
         if self.flush_timed_out:
             raise ProgressWriteNotFlushedError("读进度写队列超时，未确认落盘")
         self.recorded.append((novel_id, chapter_number))
-        return {"slug": "n1", "last_chapter_number": chapter_number, "read_at": "2026-10-14 00:00:00"}
+        return {"novel_id": "n1", "last_chapter_number": chapter_number, "read_at": "2026-10-14 00:00:00"}
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ def test_list_books_returns_ok_envelope(client):
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    assert body["data"]["books"][0]["slug"] == "n1"
+    assert body["data"]["books"][0]["novel_id"] == "n1"
 
 
 def test_list_books_passes_sort_query(client, monkeypatch):

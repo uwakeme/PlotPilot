@@ -107,7 +107,7 @@ def test_chapter_count_excludes_chapters_without_content(service):
     _add_chapter(db, "n1", 2, content="")   # 空壳章节，不该计入
     _add_chapter(db, "n1", 3, content="四")
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["chapter_count"] == 2
 
@@ -118,7 +118,7 @@ def test_total_word_count_uses_length_of_content(service):
     _add_chapter(db, "n1", 1, content="一二三")     # 3
     _add_chapter(db, "n1", 2, content="四五")       # 2
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["total_word_count"] == 5
 
@@ -127,7 +127,7 @@ def test_book_with_no_chapters_yields_zero_counters(service):
     db = service.db
     _add_novel(db, "n1", "甲书")
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["chapter_count"] == 0
     assert book["total_word_count"] == 0
@@ -138,7 +138,7 @@ def test_stage_is_mapped_through_public_stage_name(service):
     db = service.db
     _add_novel(db, "n1", "甲书", stage="auditing")
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["stage"] == "reviewing"
 
@@ -147,7 +147,7 @@ def test_genre_prefers_locked_value_from_generation_prefs(service):
     db = service.db
     _add_novel(db, "n1", "甲书", prefs={"locked_genre": "仙侠", "locked_world_preset": "东方修真"})
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["genre"] == "仙侠"
     assert book["world_preset"] == "东方修真"
@@ -159,7 +159,7 @@ def test_last_read_carries_chapter_number_and_title(service):
     _add_chapter(db, "n1", 4, title="风起")
     service.record_progress("n1", 4)
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["last_read"]["chapter_number"] == 4
     assert book["last_read"]["chapter_title"] == "风起"
@@ -171,9 +171,21 @@ def test_last_read_title_falls_back_to_chapter_number(service):
     _add_chapter(db, "n1", 6, title=None)
     service.record_progress("n1", 6)
 
-    book = next(b for b in service.list_books() if b["slug"] == "n1")
+    book = next(b for b in service.list_books() if b["novel_id"] == "n1")
 
     assert book["last_read"]["chapter_title"] == "第 6 章"
+
+
+def test_list_books_returns_the_same_id_it_looks_up_by(service):
+    """契约要求回显 id（查表键），不是 slug 列——两者今天相等，但契约只承诺前者。"""
+    db = service.db
+    _add_novel(db, "n1", "甲书")
+    # 故意让 slug 列与 id 不同，验证返回值跟的是 id
+    db.execute("UPDATE novels SET slug = 'something-else' WHERE id = 'n1'", ())
+
+    book = next(b for b in service.list_books() if b["title"] == "甲书")
+
+    assert book["novel_id"] == "n1"
 
 
 # ── 排序 ───────────────────────────────────────────────────
@@ -184,7 +196,7 @@ def test_read_books_sort_before_unread(service):
     _add_novel(db, "n2", "乙书", updated="2099-01-01 00:00:00")
     service.record_progress("n1", 1)
 
-    order = [b["slug"] for b in service.list_books()]
+    order = [b["novel_id"] for b in service.list_books()]
 
     assert order.index("n1") < order.index("n2")
 
@@ -194,7 +206,7 @@ def test_sort_by_updated_is_accepted(service):
     _add_novel(db, "n1", "甲书", updated="2026-01-01 00:00:00")
     _add_novel(db, "n2", "乙书", updated="2099-01-01 00:00:00")
 
-    order = [b["slug"] for b in service.list_books(sort="updated")]
+    order = [b["novel_id"] for b in service.list_books(sort="updated")]
 
     assert order == ["n2", "n1"]
 
@@ -234,6 +246,18 @@ def test_toc_includes_chapter_even_when_content_empty(service):
 
 def test_toc_returns_none_for_unknown_novel(service):
     assert service.get_toc("nope") is None
+
+
+def test_get_toc_returns_the_same_id_it_looks_up_by(service):
+    """同 list_books：目录回显的必须是查表用的 id，不是 slug 列。"""
+    db = service.db
+    _add_novel(db, "n1", "甲书")
+    _add_chapter(db, "n1", 1, content="一")
+    db.execute("UPDATE novels SET slug = 'something-else' WHERE id = 'n1'", ())
+
+    toc = service.get_toc("n1")
+
+    assert toc["novel_id"] == "n1"
 
 
 # ── 单章 ───────────────────────────────────────────────────
@@ -295,6 +319,18 @@ def test_get_chapter_preserves_markdown_and_crlf(service):
     chapter = service.get_chapter("n1", 1)
 
     assert chapter["content"] == "# 标题\r\n\r\n正文"
+
+
+def test_get_chapter_returns_the_same_id_it_looks_up_by(service):
+    """同 list_books：单章回显的必须是查表用的 id，不是 slug 列。"""
+    db = service.db
+    _add_novel(db, "n1", "甲书")
+    _add_chapter(db, "n1", 1, content="一")
+    db.execute("UPDATE novels SET slug = 'something-else' WHERE id = 'n1'", ())
+
+    chapter = service.get_chapter("n1", 1)
+
+    assert chapter["novel_id"] == "n1"
 
 
 # ── 进度 ───────────────────────────────────────────────────
