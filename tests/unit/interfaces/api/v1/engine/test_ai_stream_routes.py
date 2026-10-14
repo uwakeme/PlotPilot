@@ -430,3 +430,26 @@ def test_list_recent_ai_spans_excludes_other_phases_and_novels(tmp_path):
     rows = store.list_recent_ai_spans("n1", limit=10)
     assert {r["novel_id"] for r in rows} == {"n1"}
     assert "s9" not in {r["span_id"] for r in rows}
+
+
+def test_seed_cursor_takes_newest_snapshot_row():
+    """快照非空时，游标取最后一行（快照已按时间正序返回）。"""
+    rows = [
+        {"id": 7, "created_at": "2026-05-28T00:00:00.000+00:00"},
+        {"id": 9, "created_at": "2026-05-28T00:00:02.000+00:00"},
+    ]
+    assert routes._seed_cursor(rows) == ("2026-05-28T00:00:02.000+00:00", 9)
+
+
+def test_seed_cursor_pins_to_now_when_snapshot_is_empty():
+    """快照为空必须钉到「现在」，不能留空游标。
+
+    留空会让降级轮询 `list_ai_spans_since(novel_id, "", 0, 200)` 从最老的一条
+    升序取、且不再裁剪，整段历史被逐批重放。这条就是那个行为的守卫。
+    """
+    created_at, row_id = routes._seed_cursor([])
+    assert created_at != ""
+    assert row_id == 0
+    # 必须与库里 created_at 同格式同偏移，否则字符串比较会失效
+    assert created_at.endswith("+00:00")
+    assert len(created_at.split("T")[1].split("+")[0].split(".")[0].split(":")) == 3

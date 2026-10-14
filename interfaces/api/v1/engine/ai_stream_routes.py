@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -50,6 +51,26 @@ DB_PHASE_TO_EVENT = {
     "llm_response": "end",
     "error": "error",
 }
+
+
+def _seed_cursor(spans) -> tuple[str, int]:
+    """从快照行里取**最新一条**作为后续轮询的复合游标。
+
+    快照为空时（DB 超时/异常，或这本书还没有任何 LLM span）**必须**钉到「现在」，
+    绝不能留空游标：`list_ai_spans_since` 对 `("", 0)` 是升序取，会从最老的一条
+    开始，而每轮 `AI_STREAM_DB_BATCH` 条全量下发、不再裁剪——一本攒了上万条
+    span 的书会在连接后被整体重放一遍。这次连接少一段历史，实时事件照常进来；
+    丢历史远好过灌历史。
+
+    单独抽成纯函数是为了能直接测：async generator 是惰性的，取完 `connected`
+    帧后它就停在那儿，要看到游标得再等 15 秒心跳，不适合放进用例。
+    """
+    if spans:
+        last = spans[-1]
+        created_at = str(last.get("created_at") or "")
+        if created_at:
+            return created_at, int(last.get("id") or 0)
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds"), 0
 
 
 async def _fetch_spans(fn):
@@ -200,21 +221,21 @@ async def ai_stream(novel_id: str):
             }
         )
 
-        cursor_created_at = ""
-        cursor_id = 0
+        # 先单独把 store 建起来：它的构造要走整套 CREATE TABLE IF NOT EXISTS，
+        # 跟后面的 SELECT 共用一次超时预算的话，慢盘上会把 SELECT 的额度吃掉，
+        # 结果是快照被放弃、游标没钉住（见 `_seed_cursor` 的兜底）。
+        await _fetch_spans(lambda: store())
 
         # 快照回填，两种模式共用：队列里只有「本次连接之后」的事件，历史在库里。
-        # 游标一并钉到快照里最新的一条，之后每轮只拿真正新增的 span——
-        # 否则攒了上千 span 的书会在连接后把整段历史重放一遍。
         spans = await _fetch_spans(
             lambda: store().list_recent_ai_spans(novel_id, AI_STREAM_SNAPSHOT_LIMIT)
         )
         for span in spans or []:
-            cursor_created_at = str(span.get("created_at") or "")
-            cursor_id = int(span.get("id") or 0)
             event = _db_span_to_event(span)
             if event is not None:
                 yield _sse(event)
+
+        cursor_created_at, cursor_id = _seed_cursor(spans)
 
         # `loop.time()` 是 time.monotonic()（开机以来的秒数），不是相对本次连接的
         # 偏移；写成 0.0 会让第一条 keepalive 在首次循环就发出去。
