@@ -27,6 +27,8 @@ export interface LibraryTocEntry {
   title: string
   wordCount: number
   status: string
+  /** 面向读者的中文状态标签；未知取值回落到 status 原文。 */
+  statusLabel: string
 }
 
 export interface LibraryToc {
@@ -84,12 +86,32 @@ function toBookItem(raw: any): LibraryBookItem {
   }
 }
 
+/**
+ * 章节状态标签。
+ *
+ * `chapters.status` 有两条写入路径，取值域是**并集**，缺任何一项都会让真实数据漏出英文原值：
+ * - 流水线 / 域枚举（domain/novel/entities/chapter.py:10-14）：draft / reviewing / completed
+ * - 审读保存（Chapter.vue:240-247 的 statusToNew，由 pending/ok/revise 转换）：draft / reviewed / approved
+ *
+ * 措辞沿用仓库既有中文：approved 取 Chapter.vue:98 的「已定稿」(ok)，
+ * reviewed 对应 Chapter.vue:99 的「需修订」(revise)。
+ */
+const CHAPTER_STATUS_LABEL: Record<string, string> = {
+  draft: '草稿',
+  reviewing: '审读中',
+  reviewed: '待修订',
+  approved: '已定稿',
+  completed: '已完稿',
+}
+
 function toTocEntry(raw: any): LibraryTocEntry {
+  const status = String(raw.status ?? 'draft')
   return {
     number: Number(raw.number),
     title: raw.title ?? '',
     wordCount: Number(raw.word_count ?? 0),
-    status: raw.status ?? 'draft',
+    status,
+    statusLabel: CHAPTER_STATUS_LABEL[status] ?? status,
   }
 }
 

@@ -49,13 +49,6 @@ const fontSize = ref(FONT_STEPS.includes(savedFont) ? savedFont : 17)
 const savedTheme = localStorage.getItem(THEME_KEY)
 const theme = ref(THEMES.includes(savedTheme ?? '') ? (savedTheme as string) : 'paper')
 
-/** 目录里的章节状态：不给读者甩 draft/reviewed/approved 原始英文。 */
-const STATUS_LABEL: Record<string, string> = {
-  draft: '草稿',
-  reviewed: '待审定',
-  approved: '已定稿',
-}
-
 watch(fontSize, (v) => localStorage.setItem(FONT_KEY, String(v)))
 watch(theme, (v) => localStorage.setItem(THEME_KEY, v))
 
@@ -238,7 +231,7 @@ onMounted(() => {
             @click="goTo(entry.number)"
           >
             <span class="rd-toc-title">{{ entry.title }}</span>
-            <span class="rd-toc-meta">{{ entry.wordCount }}字 · {{ STATUS_LABEL[entry.status] ?? entry.status }}</span>
+            <span class="rd-toc-meta">{{ entry.wordCount }}字 · {{ entry.statusLabel }}</span>
           </li>
         </ol>
       </NDrawerContent>
