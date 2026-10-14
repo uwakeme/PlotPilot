@@ -16,6 +16,33 @@ from infrastructure.ai import provider_factory as pf
 from infrastructure.ai.provider_factory import DynamicLLMService
 
 
+class _NullStore:
+    """吞掉 span 写入的空 store。"""
+
+    def record_ai_span(self, span):
+        pass
+
+    def record_ai_artifact(self, artifact):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_db_writes(monkeypatch):
+    """别把测试数据写进开发者的 `data/plotpilot.db`。
+
+    这些用例跑的是真的 `DynamicLLMService`，它会调 `get_trace_recorder()` 落库。
+    换掉 bus 不影响这条链路——`TraceRecorder._store()` 会去
+    `SqliteTraceStore(get_database())`，也就是**生产库**。
+
+    只拦落库，不动 trace 上下文本身：下面几条用例正是靠 `novel_id` / `stage`
+    经由上下文传到埋点参数里的，把上下文也换掉就测不到东西了。
+    """
+    monkeypatch.setattr(
+        "infrastructure.ai.trace_recorder.TraceRecorder._store",
+        staticmethod(lambda: _NullStore()),
+    )
+
+
 class _RecordingBus:
     def __init__(self):
         self.calls = []
