@@ -230,6 +230,7 @@ onMounted(() => {
             :class="{ 'is-current': entry.number === chapter?.number }"
             @click="goTo(entry.number)"
           >
+            <span class="rd-toc-no">第 {{ entry.number }} 章</span>
             <span class="rd-toc-title">{{ entry.title }}</span>
             <span class="rd-toc-meta">{{ entry.wordCount }}字 · {{ entry.statusLabel }}</span>
           </li>
@@ -258,10 +259,17 @@ onMounted(() => {
 .rd-error { color: #d03050; padding: 24px; }
 .rd-toc { list-style: none; margin: 0; padding: 0; }
 .rd-toc li {
-  display: flex; justify-content: space-between; gap: 12px;
+  display: flex; align-items: baseline; gap: 8px;
   padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .rd-toc li:hover { background: rgba(128, 128, 128, 0.14); }
 .rd-toc li.is-current { background: rgba(128, 128, 128, 0.22); font-weight: 600; }
-.rd-toc-meta { opacity: 0.55; flex-shrink: 0; }
+/* 章号定宽并右对齐，让 3 位数与 1 位数的条目竖直对齐，长卷一眼能数到位置 */
+.rd-toc-no {
+  flex-shrink: 0; min-width: 3.6em; text-align: right;
+  opacity: 0.45; font-variant-numeric: tabular-nums; font-size: 12px;
+}
+.rd-toc li.is-current .rd-toc-no { opacity: 0.8; }
+.rd-toc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-toc-meta { opacity: 0.55; flex-shrink: 0; font-size: 12px; }
 </style>
