@@ -241,12 +241,17 @@ onMounted(() => {
 </template>
 <style scoped>
 .reader { min-height: 100vh; }
-.theme-paper { background: #f6f1e7; color: #2b2620; }
-.theme-plain { background: #ffffff; color: #1f1f1f; }
-.theme-night { background: #17181c; color: #d6d3cd; }
+/* 每个主题给出与自身底色同色系的半透明表面色，供 sticky 顶栏使用。
+   没有它，backdrop-filter 只会模糊身后的正文却仍然透出文字。 */
+.theme-paper { background: #f6f1e7; color: #2b2620; --rd-surface: rgba(246, 241, 231, 0.82); }
+.theme-plain { background: #ffffff; color: #1f1f1f; --rd-surface: rgba(255, 255, 255, 0.82); }
+.theme-night { background: #17181c; color: #d6d3cd; --rd-surface: rgba(23, 24, 28, 0.82); }
 .rd-top {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 18px; position: sticky; top: 0; z-index: 2;
+  /* 底色必须与主题同色：只靠 backdrop-filter 的话正文会从顶栏下透出来 */
+  background: var(--rd-surface);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 .rd-book { flex: 1; font-size: 13px; opacity: 0.7; text-align: center; }
