@@ -37,7 +37,7 @@ const tokenLabel = computed(() => {
 
 <template>
   <div class="call" :class="`is-${call.status}`">
-    <button class="head" type="button" @click="open = !open">
+    <button class="head" type="button" :aria-expanded="open" @click="open = !open">
       <span class="dot" :class="`dot-${call.status}`" />
       <span class="stage">{{ call.stageLabel || call.stage || 'AI 调用' }}</span>
       <n-tag size="tiny" :type="statusType" :bordered="false" round>{{ statusLabel }}</n-tag>
@@ -75,33 +75,82 @@ const tokenLabel = computed(() => {
 </template>
 
 <style scoped>
-.call { border-bottom: 1px solid var(--n-divider-color, rgba(26,29,33,.06)); }
+.call {
+  border-bottom: 1px solid var(--app-divider);
+  transition: background var(--app-transition);
+}
+.call.is-running { background: var(--color-brand-light); }
+
 .head {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  padding: 8px 10px; background: none; border: 0; cursor: pointer;
-  font-size: 12px; color: inherit; text-align: left;
+  padding: 8px 12px; background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: var(--font-size-sm); color: inherit; text-align: left;
 }
-.head:hover { background: rgba(127,127,127,.06); }
+.head:hover { background: var(--app-surface-subtle); }
+.head:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
+
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.dot-running { background: #35567e; animation: pulse 1.1s ease-in-out infinite; }
-.dot-done { background: #52c41a; }
-.dot-error { background: #ef4444; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
-.stage { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot-running { background: var(--color-brand); animation: breathe 1.4s ease-in-out infinite; }
+.dot-done { background: var(--color-success); }
+.dot-error { background: var(--color-danger); }
+@keyframes breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.82); }
+}
+
+.stage {
+  font-weight: 600; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 45%;
+}
 .spacer { flex: 1; }
-.meta { color: #909399; font-size: 11px; }
-.body { padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
-.kv { display: flex; justify-content: space-between; font-size: 11px; color: #909399; }
+.meta {
+  color: var(--app-text-muted); font-size: var(--font-size-xs);
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+
+.body {
+  padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.kv {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: var(--font-size-xs); color: var(--app-text-muted);
+}
+.kv > :last-child {
+  color: var(--app-text-secondary);
+  font-family: var(--font-mono);
+  text-align: right;
+  word-break: break-all;
+}
+
+.block {
+  border-left: 2px solid var(--app-divider);
+  padding-left: 10px;
+}
 .block-title {
   background: none; border: 0; padding: 0; cursor: pointer;
-  font-size: 11px; color: #6b7280; text-align: left;
+  font: inherit; font-size: var(--font-size-xs);
+  color: var(--app-text-secondary); text-align: left;
 }
 .block-title.static { cursor: default; }
+.block-title:hover:not(.static) { color: var(--color-brand); }
+
 .text {
-  font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
-  max-height: 200px; overflow-y: auto; margin-top: 3px;
+  font-size: var(--font-size-xs); line-height: 1.65;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto; margin-top: 4px;
+  color: var(--app-text-primary);
 }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.dim { color: #909399; }
-.err { font-size: 11px; color: #ef4444; }
+.mono { font-family: var(--font-mono); }
+.dim { color: var(--app-text-muted); }
+.err {
+  font-size: var(--font-size-xs); color: var(--color-danger);
+  background: var(--color-danger-dim);
+  border-radius: var(--app-radius-sm);
+  padding: 6px 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-running { animation: none; }
+  .call { transition: none; }
+}
 </style>
