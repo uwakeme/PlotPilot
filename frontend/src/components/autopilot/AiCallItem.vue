@@ -1,12 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { NTag } from 'naive-ui'
+import { STAGE_BY_KEY } from '@/constants/aiCallStages'
 import type { AiCall } from '@/stores/aiStreamReduce'
 
 const props = defineProps<{ call: AiCall }>()
 
 const open = ref(false)
-const showPromptSystem = ref(false)
+const showInput = ref(true)
+const showSystem = ref(false)
+const showOutput = ref(true)
+
+/** 阶段语义决定配色：写作 / 规划 / 校验 / 同步 各用一色，扫一眼就知道性质。 */
+const stageSemantic = computed(() => STAGE_BY_KEY[props.call.stage]?.semantic ?? 'none')
+
+const stageTitle = computed(() => {
+  const label = props.call.stageLabel || STAGE_BY_KEY[props.call.stage]?.label
+  return label || props.call.stage || 'AI 调用'
+})
 
 const statusType = computed(() => {
   if (props.call.status === 'error') return 'error'
@@ -33,16 +44,26 @@ const tokenLabel = computed(() => {
   if (props.call.tokenOut != null) parts.push(`出 ${props.call.tokenOut}`)
   return parts.join(' · ') || '—'
 })
+
+const inputChars = computed(() =>
+  (props.call.promptSystem?.length ?? 0) + (props.call.promptUser?.length ?? 0),
+)
+
+const timeLabel = computed(() => {
+  const d = new Date(props.call.ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+})
 </script>
 
 <template>
-  <div class="call" :class="`is-${call.status}`">
+  <div class="call" :class="[`is-${call.status}`, `sem-${stageSemantic}`]">
     <button class="head" type="button" :aria-expanded="open" @click="open = !open">
       <span class="dot" :class="`dot-${call.status}`" />
-      <span class="stage">{{ call.stageLabel || call.stage || 'AI 调用' }}</span>
+      <span class="stage" :title="call.stage || undefined">{{ stageTitle }}</span>
       <n-tag size="tiny" :type="statusType" :bordered="false" round>{{ statusLabel }}</n-tag>
       <span class="spacer" />
-      <span class="meta">{{ elapsedLabel }}</span>
+      <span class="meta">{{ timeLabel }} · {{ elapsedLabel }}</span>
     </button>
 
     <div v-if="open" class="body">
@@ -53,21 +74,55 @@ const tokenLabel = computed(() => {
         <span>Token</span><span>{{ tokenLabel }}</span>
       </div>
 
-      <div class="block">
-        <button class="block-title" type="button" @click="showPromptSystem = !showPromptSystem">
-          输入 {{ showPromptSystem ? '▾' : '▸' }}
+      <!-- 输入：中性色导轨，表示「发出去的」 -->
+      <section class="sect sect-in">
+        <button
+          class="sect-head" type="button"
+          :aria-expanded="showInput"
+          @click="showInput = !showInput"
+        >
+          <span class="sect-name">输入</span>
+          <span class="sect-note">{{ inputChars }} 字</span>
+          <span class="caret">{{ showInput ? '▾' : '▸' }}</span>
         </button>
-        <div v-if="showPromptSystem && call.promptSystem" class="text mono">
-          {{ call.promptSystem }}
+        <div v-if="showInput" class="sect-body">
+          <div class="sub">
+            <button
+              class="sub-head" type="button"
+              :aria-expanded="showSystem"
+              @click="showSystem = !showSystem"
+            >
+              系统提示词
+              <span class="sub-note">{{ call.promptSystem?.length ?? 0 }} 字</span>
+              <span class="caret">{{ showSystem ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="showSystem" class="text mono">{{ call.promptSystem }}</div>
+          </div>
+          <div class="sub">
+            <div class="sub-head static">用户提示词</div>
+            <div class="text mono">{{ call.promptUser }}</div>
+          </div>
         </div>
-        <div v-if="call.promptUser" class="text mono">{{ call.promptUser }}</div>
-      </div>
+      </section>
 
-      <div class="block">
-        <div class="block-title static">输出</div>
-        <div v-if="call.status === 'running' && !call.response" class="text dim">思考中…</div>
-        <div class="text mono">{{ call.response }}</div>
-      </div>
+      <!-- 输出：品牌色导轨 + 极淡底色，表示「回来的成品」，与输入明确区分 -->
+      <section class="sect sect-out">
+        <button
+          class="sect-head" type="button"
+          :aria-expanded="showOutput"
+          @click="showOutput = !showOutput"
+        >
+          <span class="sect-name">输出</span>
+          <span class="sect-note">{{ call.response ? `${call.response.length} 字` : '—' }}</span>
+          <span class="caret">{{ showOutput ? '▾' : '▸' }}</span>
+        </button>
+        <div v-if="showOutput" class="sect-body">
+          <div v-if="call.status === 'running' && !call.response" class="waiting">
+            等待模型返回…
+          </div>
+          <div v-else class="text mono out-text">{{ call.response }}</div>
+        </div>
+      </section>
 
       <div v-if="call.error" class="err">{{ call.error }}</div>
     </div>
@@ -77,13 +132,21 @@ const tokenLabel = computed(() => {
 <style scoped>
 .call {
   border-bottom: 1px solid var(--app-divider);
+  border-left: 2px solid var(--sem-color, transparent);
   transition: background var(--app-transition);
 }
 .call.is-running { background: var(--color-brand-light); }
 
+/* semantic → 导轨色。写作绿、规划蓝、校验紫、同步橙，与仪表条呼应。 */
+.sem-write { --sem-color: var(--color-success); }
+.sem-plan { --sem-color: var(--color-info); }
+.sem-audit { --sem-color: var(--color-purple); }
+.sem-sync { --sem-color: var(--color-warning); }
+.sem-generate { --sem-color: var(--color-brand); }
+
 .head {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  padding: 8px 12px; background: none; border: 0; cursor: pointer;
+  padding: 8px 12px 8px 10px; background: none; border: 0; cursor: pointer;
   font: inherit; font-size: var(--font-size-sm); color: inherit; text-align: left;
 }
 .head:hover { background: var(--app-surface-subtle); }
@@ -100,16 +163,16 @@ const tokenLabel = computed(() => {
 
 .stage {
   font-weight: 600; white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; max-width: 45%;
+  text-overflow: ellipsis; max-width: 46%;
 }
 .spacer { flex: 1; }
 .meta {
   color: var(--app-text-muted); font-size: var(--font-size-xs);
-  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 
 .body {
-  padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+  padding: 2px 12px 12px; display: flex; flex-direction: column; gap: 8px;
 }
 .kv {
   display: flex; justify-content: space-between; gap: 12px;
@@ -118,30 +181,68 @@ const tokenLabel = computed(() => {
 .kv > :last-child {
   color: var(--app-text-secondary);
   font-family: var(--font-mono);
-  text-align: right;
-  word-break: break-all;
+  text-align: right; word-break: break-all;
 }
 
-.block {
-  border-left: 2px solid var(--app-divider);
-  padding-left: 10px;
+/* ── 输入 / 输出：两个结构完全对称的分区，靠导轨色与底色区分 ── */
+.sect { border-radius: var(--app-radius-sm); overflow: hidden; }
+.sect-in { border-left: 2px solid var(--app-border-strong); background: var(--app-surface-subtle); }
+.sect-out { border-left: 2px solid var(--color-brand); background: var(--color-brand-light); }
+
+.sect-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; background: none; border: 0; cursor: pointer;
+  font: inherit; text-align: left; color: inherit;
 }
-.block-title {
-  background: none; border: 0; padding: 0; cursor: pointer;
-  font: inherit; font-size: var(--font-size-xs);
+.sect-head:hover { background: var(--app-surface-subtle); }
+.sect-out .sect-head:hover { background: var(--color-brand-light); }
+.sect-name {
+  font-size: var(--font-size-xs); font-weight: 700;
+  letter-spacing: .06em; color: var(--app-text-primary);
+}
+.sect-out .sect-name { color: var(--color-brand); }
+.sect-note {
+  font-size: var(--font-size-xs); color: var(--app-text-muted);
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.caret { margin-left: auto; font-size: 10px; color: var(--app-text-muted); }
+
+.sect-body { padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+.sect-body:empty { display: none; }
+
+.sub-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 2px 0; background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: var(--font-size-xs); font-weight: 600;
   color: var(--app-text-secondary); text-align: left;
 }
-.block-title.static { cursor: default; }
-.block-title:hover:not(.static) { color: var(--color-brand); }
+.sub-head.static { cursor: default; }
+.sub-head:not(.static):hover { color: var(--color-brand); }
+.sub-note {
+  font-weight: 400; color: var(--app-text-muted);
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
 
 .text {
   font-size: var(--font-size-xs); line-height: 1.65;
   white-space: pre-wrap; word-break: break-word;
-  max-height: 200px; overflow-y: auto; margin-top: 4px;
+  max-height: 220px; overflow-y: auto; margin-top: 4px;
   color: var(--app-text-primary);
 }
+.out-text { max-height: 280px; }
 .mono { font-family: var(--font-mono); }
-.dim { color: var(--app-text-muted); }
+
+/* 只做透明度呼吸。不能用 .dot 的 breathe——那个关键帧带 transform: scale()，
+   作用在整行文字上会让提示语缩放抖动。 */
+.waiting {
+  font-size: var(--font-size-xs); color: var(--color-brand);
+  padding: 6px 0; animation: fade-pulse 1.6s ease-in-out infinite;
+}
+@keyframes fade-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+
 .err {
   font-size: var(--font-size-xs); color: var(--color-danger);
   background: var(--color-danger-dim);
@@ -150,7 +251,6 @@ const tokenLabel = computed(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dot-running { animation: none; }
+  .dot-running, .waiting { animation: none; }
   .call { transition: none; }
-}
-</style>
+}</style>

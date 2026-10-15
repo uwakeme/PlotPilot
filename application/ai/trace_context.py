@@ -132,6 +132,24 @@ def ensure_trace(
     return trace
 
 
+def set_trace_stage(stage: str, stage_label: str = "") -> None:
+    """就地把当前 trace 重标记到某个阶段。
+
+    ``ensure_trace`` 只在 ``not current.stage`` 时才写 stage（见上），所以它无法
+    表达「同一章的管线推进到了下一步」。章节管线一开始就把 trace 标成
+    ``pipeline.chapter``，若不重标记，这一章 12 步里所有的 LLM 调用在
+    ai_trace_spans / AI 调用流里都会挂同一个「章节生成」标签，看不出是哪一步。
+
+    只改 stage / stage_label，**不碰** novel_id / trace_id / operation——
+    novel_id 是跨书隔离的关键，由 :func:`set_current_trace` 在进入章节时一次性选定。
+    """
+    current = get_current_trace()
+    if current is None or not stage:
+        return
+    current.stage = stage
+    current.stage_label = stage_label or stage
+
+
 def extract_novel_id(payload: Mapping[str, Any] | None) -> str:
     """从常见变量名中提取 novel_id。"""
     if not payload:

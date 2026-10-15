@@ -76,6 +76,44 @@ def _exit_chapter_trace(token: Any) -> None:
     reset_current_trace(token)
 
 
+# 管线步骤 → AI 调用阶段 key，取值必须落在 application/ai/ai_call_stage.py 的
+# AI_CALL_STAGES 里（前端 frontend/src/constants/aiCallStages.ts 是它的镜像），
+# 这样 UI 拿到 stage 就能查到 label 和 semantic 配色，不必自己再维护一张表。
+#
+# 只列会真正发起 LLM 调用的步骤。其余步骤（章节定位 / 叙事治理 / 章节落盘 /
+# 收尾）不发 AI 调用，回落到章级标签——否则会把上一个步骤的标签错安到它们头上。
+_PIPELINE_STAGE_BY_STEP: Dict[str, str] = {
+    "build_context": "memory.context.compile",
+    "prepare_chapter_plan": "pipeline.chapter.script",
+    "generate": "pipeline.chapter.prose",
+    "validate_content": "pipeline.chapter.validate",
+    "validate_voice": "pipeline.chapter.voice",
+    "run_post_commit": "autopilot.post_chapter.pipeline",
+    "score_tension": "pipeline.chapter.tension",
+}
+
+_CHAPTER_STAGE = "pipeline.chapter"
+_CHAPTER_STAGE_LABEL = "章节生成"
+
+
+def _rescope_trace_to_step(step_name: str) -> None:
+    """把章节 trace 的 stage 推进到当前步骤。
+
+    纯观测旁路：它失败绝不能影响管线，所以整段包在 try 里。
+    """
+    try:
+        from application.ai.ai_call_stage import get_stage_label
+        from application.ai.trace_context import set_trace_stage
+
+        key = _PIPELINE_STAGE_BY_STEP.get(step_name)
+        if key is None:
+            set_trace_stage(_CHAPTER_STAGE, _CHAPTER_STAGE_LABEL)
+        else:
+            set_trace_stage(key, get_stage_label(key))
+    except Exception as exc:
+        logger.debug("trace 阶段重标记失败（可忽略）: %s", exc)
+
+
 def _writing_progress(
     ctx: PipelineContext,
     substep: str,
@@ -1161,6 +1199,12 @@ class BaseStoryPipeline(ABC):
             logger.debug("[%s] workspace discard failed: %s", ctx.novel_id, e)
 
     def _mark_pipeline_step(self, ctx: PipelineContext, step_name: str, *, completed: bool = False) -> None:
+        # 进入某一步时把观测 trace 跟着推进，这样该步发起的 LLM 调用会被打上
+        # 「正文撰写 / 策略校验 / …」而不是全部笼统的「章节生成」。
+        # completed=True 是收尾通知，不能再改。
+        if not completed:
+            _rescope_trace_to_step(step_name)
+
         boundary = boundary_for(step_name)
         payload: Dict[str, Any] = {
             "active_pipeline_step": "" if completed else step_name,
