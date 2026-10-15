@@ -41,7 +41,11 @@ export function withQuery(path: string, params: QueryParams = {}): string {
 
 export const apiRoutes = {
   novels: {
-    root: () => apiClientPath('novels'),
+    // 后端把书目集合挂在 `@router.get("/")` / `@router.post("/")` 上，
+    // 前缀拼接后是 `/api/v1/novels/`（**带尾斜杠**）。
+    // 少写尾斜杠时 GET 靠 FastAPI 的 307 重定向能兜住，但 POST 不会被重定向，
+    // 直接 404 —— 建书功能因此完全不可用。
+    root: () => `${apiClientPath('novels')}/`,
     suggestTitle: () => apiClientPath('novels', 'suggest-title'),
     detail: (novelId: string) => apiClientPath('novels', novelId),
     stage: (novelId: string) => apiClientPath('novels', novelId, 'stage'),
