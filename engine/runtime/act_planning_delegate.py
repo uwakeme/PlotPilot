@@ -11,6 +11,9 @@ from domain.structure.story_node import StoryNode, NodeType, PlanningStatus, Pla
 
 logger = logging.getLogger(__name__)
 
+# 暂停原因键值：结构/预算写尽但仍未写满目标章数时使用（区别于 target_reached）
+STRUCTURE_EXHAUSTED_PAUSE_REASON = "structure_exhausted"
+
 # 「前生成阶段」停滞状态：这些状态还没有可采纳的内容，卡住即属异常而非等待人工
 _PRE_GENERATION_STALL_STATUSES = {
     "requested",
@@ -269,6 +272,46 @@ async def _request_act_invocation(
     )
 
 
+def _observed_acts_per_volume(act_nodes, volume_nodes, fallback: int) -> int:
+    """每卷幕数：从**已落库结构**里观测，而不是公式预测。
+
+    换卷节奏由 LLM 规划的卷内幕数决定。历史实现传公式网格的 ``acts_per_volume``，
+    LLM 自由决定层数之后二者会对不上：公式说 3 幕/卷而 LLM 规划了 6 幕/卷时，
+    引擎会在第 4 幕就换卷，把 LLM 规划的卷内冲突弧拦腰截断。
+
+    取所有非空卷的幕数最大值作为节奏基准（"至少容纳这么多幕才换卷"），
+    没有任何卷已有幕时退回公式兜底。
+    """
+    counts = {}
+    for act in act_nodes:
+        parent = getattr(act, "parent_id", None)
+        if parent:
+            counts[parent] = counts.get(parent, 0) + 1
+    if not counts:
+        return max(int(fallback or 1), 1)
+    known_volume_ids = {getattr(v, "id", None) for v in volume_nodes}
+    relevant = [c for vid, c in counts.items() if vid in known_volume_ids] or list(counts.values())
+    return max(max(relevant), max(int(fallback or 1), 1))
+
+
+def _completed_chapter_count(host, novel) -> int:
+    """已完成章节数。
+
+    计数失败时按 0 处理（放行）：幕数封顶（``len(act_nodes) >= max_total_acts``）
+    不依赖 DB，是预算的主闸；这里放宽只会让次级闸门少一道，不会让阶梯失控。
+    反过来若在这里抛异常，整个 tick 会被打断，书会卡在幕级规划。
+    """
+    try:
+        return max(int(host._count_completed_chapters(novel.novel_id) or 0), 0)
+    except Exception:
+        logger.debug(
+            "[%s] 统计已完成章节数失败，按 0 处理",
+            getattr(getattr(novel, "novel_id", None), "value", "?"),
+            exc_info=True,
+        )
+        return 0
+
+
 async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     """处理幕级规划（插入缓冲章策略 + 动态幕生成）"""
     if not host._is_still_running(novel):
@@ -283,22 +326,126 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     novel_id = novel.novel_id.value
     target_act_number = novel.current_act + 1
 
-    from application.blueprint.services.continuous_planning_service import calculate_structure_params
+    from application.blueprint.services.structure_budget import (
+        calculate_structure_params,
+        resolve_act_ceiling,
+        resolve_chapter_ceiling,
+    )
 
     target_chapters = novel.target_chapters or 100
     struct_params = calculate_structure_params(target_chapters)
+    # 每幕章数只在「LLM 没给 estimated_chapters」时兜底。结构形状（部/卷/幕的层数）
+    # 由 LLM 自己定，这里不再拿公式网格去限制它。
     rec_chapters_per_act = struct_params["chapters_per_act"]
     rec_acts_per_volume = struct_params["acts_per_volume"]
+    chapter_ceiling = resolve_chapter_ceiling(novel.target_chapters)
 
     all_nodes = await host.story_node_repo.get_by_novel(novel_id)
     act_nodes = sorted(
         [n for n in all_nodes if n.node_type.value == "act"],
         key=lambda n: n.number,
     )
+    chapter_nodes = [n for n in all_nodes if n.node_type.value == "chapter"]
+    chapters_planned = len(chapter_nodes)
+
+    # 幕阶梯的硬上限。历史实现用公式网格预测的总幕数封顶，但部/卷/幕的层数现在由
+    # LLM 依据剧情容量自行决定，公式预测值与实际落库结构对不上——用它封顶要么误杀
+    # 正常长篇，要么放过被 LLM 拉长后的结构。改为「已落库幕数」+「每幕至少 1 章」
+    # 这条与公式无关的不变量（详见 resolve_act_ceiling）。
+    # 实测《测试小说6》目标 5 章，规划出 3 幕，最终动态长到 9 幕 / 53 章。
+    max_total_acts = resolve_act_ceiling(
+        novel.target_chapters, planned_act_count=len(act_nodes)
+    )
 
     target_act = next((n for n in act_nodes if n.number == target_act_number), None)
 
     if not target_act:
+        # ── 预算闸门：本幕不存在时，先确认还该不该开新的一幕 ──
+        # 开新幕 = 承诺再写 rec_chapters_per_act 章。承诺之前先对账：
+        #   幕数是否已到结构上限 / 已写章数是否已到目标 / 已规划章数是否已超目标
+        # 已写章数只在闸门里用得到，COUNT 查询按需触发（需要 NovelId 值对象，
+        # 内部取 .value，不是裸字符串）。
+        chapters_written = _completed_chapter_count(host, novel)
+        act_budget_reason = ""
+
+        # 闸门 0（最先判）：上一幕还有没动笔的章节，就根本不该开新幕。
+        # 这一条与任何章数公式无关，是纯粹的结构顺序问题——先写完当前幕再谈下一幕。
+        # 放它第一位是因为它一旦成立，其余闸门怎么判都不会改变"继续写"的结论。
+        prev_act = act_nodes[-1] if act_nodes else None
+        prev_act_unwritten = []
+        if prev_act is not None and chapter_ceiling is not None:
+            prev_act_unwritten = [
+                n
+                for n in chapter_nodes
+                if n.parent_id == prev_act.id
+                and not (n.word_count or 0)
+                and n.number <= chapter_ceiling
+            ]
+
+        if prev_act_unwritten:
+            logger.info(
+                "[%s] 第 %s 幕尚有 %s 章未动笔，先写完本幕再开新幕。",
+                novel_id,
+                prev_act.number,
+                len(prev_act_unwritten),
+            )
+            novel.current_stage = NovelStage.WRITING
+            host._flush_novel(novel)
+            return
+        elif len(act_nodes) >= max_total_acts:
+            act_budget_reason = f"幕数已达上限 {max_total_acts}（由章节预算封顶，非固定网格）"
+        elif chapter_ceiling is not None and chapters_written >= chapter_ceiling:
+            act_budget_reason = f"已完成 {chapters_written} 章，达到目标 {chapter_ceiling} 章"
+        elif chapter_ceiling is not None and chapters_planned >= chapter_ceiling:
+            act_budget_reason = (
+                f"已规划 {chapters_planned} 章，达到目标 {chapter_ceiling} 章"
+            )
+
+        if act_budget_reason:
+            # 还有没有「预算内、且尚未动笔」的章节？有就继续写。
+            pending = [
+                n
+                for n in chapter_nodes
+                if not (n.word_count or 0)
+                and (chapter_ceiling is None or n.number <= chapter_ceiling)
+            ]
+            if pending:
+                logger.info(
+                    "[%s] 幕数已达结构边界（%s），不再开新幕；本幕尚有 %s 章待写，继续写作。",
+                    novel_id,
+                    act_budget_reason,
+                    len(pending),
+                )
+                novel.current_stage = NovelStage.WRITING
+            elif chapter_ceiling is not None and chapters_written >= chapter_ceiling:
+                # 已写满目标且无剩余章节：交回章末审计，由目标达成闸门统一分流
+                # （暂停待人 / 写终局 / 就此完结），不要在此处自行决定。
+                logger.info(
+                    "[%s] 已写 %s 章并达到目标 %s 章且无剩余章节，交回章末审计做目标达成分流。",
+                    novel_id,
+                    chapters_written,
+                    chapter_ceiling,
+                )
+                novel.current_stage = NovelStage.AUDITING
+            else:
+                # 结构与预算都到头、却仍未写满目标（例如幕级规划少规划了几章）。
+                # 此时继续写作没有素材，停在审阅态等用户决定：加写预算 or 就此完结。
+                logger.warning(
+                    "[%s] 结构已写尽（%s），当前 %s 章 / 目标 %s 章：无剩余章节可写，"
+                    "暂停等待用户决定（可上调目标章数继续，或就此完结）。",
+                    novel_id,
+                    act_budget_reason,
+                    chapters_written,
+                    target_chapters,
+                )
+                novel.autopilot_status = AutopilotStatus.STOPPED
+                novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+                host._update_shared_state(
+                    novel_id, autopilot_pause_reason=STRUCTURE_EXHAUSTED_PAUSE_REASON
+                )
+            host._flush_novel(novel)
+            return
+
         volume_nodes = sorted(
             [n for n in all_nodes if n.node_type.value == "volume"],
             key=lambda n: n.number,
@@ -320,7 +467,9 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
         parent_volume = host._find_parent_volume_for_new_act(
             volume_nodes=volume_nodes,
             act_nodes=act_nodes,
-            rec_acts_per_volume=rec_acts_per_volume,
+            rec_acts_per_volume=_observed_acts_per_volume(
+                act_nodes, volume_nodes, rec_acts_per_volume
+            ),
             novel_id=novel.novel_id,
         )
 

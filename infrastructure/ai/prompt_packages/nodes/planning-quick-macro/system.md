@@ -10,17 +10,18 @@
 当前模式：超长篇渐进式框架规划。
 只输出「部」和「卷」。不要输出 acts，不要写幕节点、章节节点或细纲。
 所有卷的 estimated_chapters 之和必须精确等于 {target_chapters}；每部的 estimated_chapters 必须等于其下所有卷之和。
-每卷建议接近 {rec_chapters_per_act}×{rec_acts_per_volume} 章，但可按剧情容量微调。
+层数由剧情容量决定：部与卷的数量应匹配这个故事真正需要的阶段跨度，不要套用固定网格。
 {% elif planning_depth == "partial" %}
 当前模式：长篇渐进式部分规划。
 输出全书「部」和「卷」的完整结构，只为开篇前导卷规划幕节点；后续卷的幕节点留给写作过程中动态生成，acts 必须为空数组。
 所有卷的 estimated_chapters 之和必须精确等于 {target_chapters}；每部的 estimated_chapters 必须等于其下所有卷之和。
-已展开 acts 的 estimated_chapters 之和必须等于其所属卷的 estimated_chapters。每卷建议约 {rec_acts_per_volume} 幕，每幕约 {rec_chapters_per_act} 章。
+已展开 acts 的 estimated_chapters 之和必须等于其所属卷的 estimated_chapters。
+层数与每层章数由剧情容量决定：一个阶段能承载多少内容就分多少，不要套用固定网格。
 {% else %}
 当前模式：中短篇完整规划。
 输出全部「部」「卷」「幕」。每幕必须包含 estimated_chapters。
 所有幕的 estimated_chapters 之和必须精确等于 {target_chapters}；每卷的 estimated_chapters 必须等于其下所有幕之和；每部的 estimated_chapters 必须等于其下所有卷之和。
-建议共 {rec_parts} 部，每部 {rec_volumes_per_part} 卷，每卷 {rec_acts_per_volume} 幕，每幕约 {rec_chapters_per_act} 章，可按剧情容量微调。
+层数与每层章数由剧情容量决定：一个叙事弧能承载多少内容就分多少，不要套用固定网格。
 {% endif %}
 
 # 网文宏观规划原则
@@ -31,6 +32,6 @@
 5. 开篇留存：开篇前导卷必须优先建立主角处境、核心欲望、可感知威胁、即时目标和第一次正反馈，不能过度铺设背景。
 6. 节奏分层：部负责长期命运变化，卷负责阶段目标与回报，幕负责连续冲突弧线；信息、爽点、反转、情感推进和代价应交替出现。
 7. 钩子服从原设：每个阶段都留下未完成问题或正反馈预期，钩子形态必须来自原始设定和类型契约，不能硬塞无关阴谋、系统、血脉、宗门、豪门、末世等外壳。
-8. 数量服从剧情容量：推荐结构约为 {rec_parts} 部 × 每部 {rec_volumes_per_part} 卷 × 每卷 {rec_acts_per_volume} 幕，总计约 {total_recommended_acts} 幕；这是参考网格，不是固定模板。
+8. 数量服从剧情容量：部、卷、幕的层数与每层章数由你根据故事实际能承载的冲突、回报和转折自行判断。目标章数 {target_chapters} 是唯一硬约束，除此之外不套用任何推荐网格——部可以只有一部，幕可以短到两章，也可以厚到十几章，只要这一层确实承载了一个完整的叙事单元。
 
 请直接输出 JSON，不要添加解释性文字。

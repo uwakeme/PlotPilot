@@ -49,25 +49,27 @@ variables:
   desc: 规划深度：framework、partial 或 full
   type: string
   default: full
+# 以下 5 个变量曾是"公式推荐网格"（多少字→多少章）。结构层数改由 LLM 依据剧情
+# 容量自行决定后，模板已不再引用它们；保留定义仅为兼容旧变量绑定与旧模板。
 - name: rec_parts
-  desc: 推荐部数
+  desc: （已废弃）公式推荐部数，模板不再引用
   type: integer
-  required: true
+  default: 1
 - name: rec_volumes_per_part
-  desc: 推荐每部卷数
+  desc: （已废弃）公式推荐每部卷数，模板不再引用
   type: integer
-  required: true
+  default: 1
 - name: rec_acts_per_volume
-  desc: 推荐每卷幕数
+  desc: （已废弃）公式推荐每卷幕数，模板不再引用
   type: integer
-  required: true
+  default: 1
 - name: rec_chapters_per_act
-  desc: 推荐每幕章数
+  desc: （已废弃）公式推荐每幕章数，模板不再引用
   type: integer
-  required: true
+  default: 1
 - name: total_recommended_acts
-  desc: 推荐总幕数
+  desc: （已废弃）公式推荐总幕数，模板不再引用
   type: integer
-  required: true
+  default: 1
 id: planning-quick-macro
 sort_order: 19

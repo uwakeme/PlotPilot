@@ -123,86 +123,70 @@ def _append_act_chapters_llm_stream(act_id: str, delta: str) -> None:
 #  唯一真相源：根据 target_chapters 计算出合理的部/卷/幕/章分布。
 #  所有路径（极速模式 / 精密模式 / fallback / 动态幕生成）都必须通过本引擎
 #  获取结构参数，禁止任何地方再硬编码 "3幕" 或 "5章"。
+#
+#  实现已下沉到 structure_budget 模块（零重依赖，engine/ 层也要用同一口径），
+#  此处保留再导出以保持历史 import 路径可用。
 # ======================================================================
+from application.blueprint.services.structure_budget import (  # noqa: E402
+    calculate_structure_params,
+    resolve_chapter_ceiling,
+)
 
 
-def calculate_structure_params(target_chapters: int) -> Dict:
-    """根据目标总章节数，计算最优的结构参数。
+def _as_str_list(value) -> List[str]:
+    """把 LLM 可能给出的 str / list / None 统一成字符串列表。
 
-    这是整个规划系统的「唯一真相源」(Single Source of Truth)。
-    任何需要知道"该有几幕"、"每幕该几章"的地方都应调用此函数。
-
-    设计原则（基于叙事工程学 + 网文商业实践）：
-    - 一幕 = 一个完整的叙事弧线（激励事件 → 发展 → 高潮 → 降级），至少 5 章
-    - 一卷 = 一个大的故事单元（通常 3-8 幕）
-    - 一部 = 一个大阶段（起源 / 发展 / 决战）
-    - 每幕章数随总篇幅增长：短篇每幕薄，长篇每幕厚（更复杂的情节需要更多篇幅展开）
-
-    Args:
-        target_chapters: 目标总章节数
-
-    Returns:
-        {
-            "parts": int,              # 部数
-            "volumes_per_part": int,   # 每部卷数
-            "acts_per_volume": int,    # 每卷幕数
-            "chapters_per_act": int,   # 每幕建议章数
-            "total_acts": int,         # 总幕数
-            "reasoning": str,           # 计算理由（用于日志）
-        }
+    LLM 经常把 key_events 返回成单个字符串（"事件1、事件2"）或把 core_conflict
+    返回成一句话，这里统一成列表，避免下游拿到脏类型。
     """
-    t = max(target_chapters, 10)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.replace("；", ";").replace("，", ",").split(";")]
+        parts = [p for p in parts if p]
+        return parts or ([value] if value.strip() else [])
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+            elif item is not None and not isinstance(item, (dict, list, tuple)):
+                out.append(str(item).strip())
+        return out
+    return [str(value)]
 
-    if t <= 30:
-        # 短篇：1部1卷3幕，每幕约10章（三幕剧刚好是一个完整故事）
-        parts, vpp, apv = 1, 1, 3
-        cpa = max(t // 3, 5)
-        reason = f"短篇({t}章)：1部×1卷×3幕，每幕{cpa}章，经典三幕剧"
-    elif t <= 80:
-        # 中短篇：1部2-3卷，每卷3-4幕
-        parts, vpp = 1, 2
-        apv = 4 if t > 50 else 3
-        total_acts = vpp * apv
-        cpa = max(t // total_acts, 5)
-        reason = f"中短篇({t}章)：{parts}部×{vpp}卷×{apv}幕={total_acts}幕，每幕{cpa}章"
-    elif t <= 200:
-        # 中篇：2-3部，每部2-3卷，每卷4-5幕
-        parts = 2 if t <= 120 else 3
-        vpp = 3 if t <= 150 else 3
-        apv = 5 if t > 100 else 4
-        total_acts = parts * vpp * apv
-        cpa = max(t // total_acts, 6)
-        reason = f"中篇({t}章)：{parts}部×{vpp}卷×{apv}幕≈{total_acts}幕，每幕{cpa}章"
-    elif t <= 500:
-        # 长篇：3-4部，每部3-4卷，每卷5-7幕
-        parts = 3 if t <= 300 else 4
-        vpp = 3 if t <= 350 else 4
-        apv = 6 if t > 300 else 5
-        total_acts = parts * vpp * apv
-        cpa = max(t // total_acts, 8)
-        reason = f"长篇({t}章)：{parts}部×{vpp}卷×{apv}幕≈{total_acts}幕，每幕{cpa}章"
-    else:
-        # 超长篇(500+)：4-6部，每部4-6卷，每卷6-10幕
-        # 超长篇的幕只规划框架，具体幕在写作时动态生成
-        # 这里给出的是"每卷建议幕数"的上限参考值
-        if t <= 800:
-            parts, vpp, apv = 4, 4, 7
-        elif t <= 1500:
-            parts, vpp, apv = 5, 5, 8
-        else:
-            parts, vpp, apv = 6, 6, 10
-        total_acts = parts * vpp * apv
-        cpa = max(t // total_acts, 10)
-        reason = f"超长篇({t}章)：{parts}部×{vpp}卷×{apv}幕≈{total_acts}幕，每幕{cpa}章（动态扩展）"
 
-    return {
-        "parts": parts,
-        "volumes_per_part": vpp,
-        "acts_per_volume": apv,
-        "chapters_per_act": cpa,
-        "total_acts": parts * vpp * apv,
-        "reasoning": reason,
-    }
+def _as_positive_int(value) -> Optional[int]:
+    """LLM 常把章数返回成字符串（"6" / "6章"），统一成正整数；非法值返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 else None
+    if isinstance(value, str):
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if digits:
+            parsed = int(digits)
+            return parsed if parsed > 0 else None
+    return None
+
+
+def _first_text(*candidates) -> Optional[str]:
+    """返回第一个非空字符串候选（用于 quick / precise 两种 schema 的字段归一）。"""
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    return None
+
+
+def _count_total_acts(structure: List[Dict]) -> int:
+    """统计嵌套结构里规划出的幕总数（用于标记收束幕）。"""
+    total = 0
+    for part_data in structure or []:
+        for volume_data in part_data.get("volumes") or []:
+            total += len(volume_data.get("acts") or [])
+    return total
 
 
 def _sanitize_llm_json_output(raw: str) -> str:
@@ -1489,7 +1473,10 @@ class ContinuousPlanningService:
         act_node = await self.story_node_repo.get_by_id(act_id)
         if not act_node:
             raise ValueError(f"幕节点不存在: {act_id}")
-        _default_cpa = calculate_structure_params(100)["chapters_per_act"]
+        # 与动态建幕同一口径：按本书真实目标算每幕章数，不再用 100 章硬编码基准
+        _default_cpa = self._act_budget_context(
+            act_node.novel_id, int(act_node.number or 0)
+        )["chapters_per_act"]
         chapter_count = custom_chapter_count or act_node.suggested_chapter_count or _default_cpa
         if not custom_chapter_count and not act_node.suggested_chapter_count:
             logger.info(
@@ -1915,12 +1902,21 @@ class ContinuousPlanningService:
 
         Returns:
             平面节点列表 [{"id": "part-xxx", "node_type": "PART", ...}]
+
+        预算与内容透传（2026-10 修复）：此前本方法只输出 title/description 等 8 个字段，
+        把 LLM 已经规划好的 ``estimated_chapters``（每幕章数）以及叙事目标、情节点、
+        情绪弧、核心冲突**全部丢弃**。后果有二：
+          1. 幕级规划拿不到 suggested_chapter_count，只能回落到硬编码默认值；
+          2. 幕节点只剩一个标题，没有任何"这一幕要干什么"的内容规划，
+             这是"结构只有骨架、写不到头"的第二层成因。
+        这些列 story_nodes 本来就有，apply_merge_plan 的 INSERT 也已经支持，这里只补映射。
         """
         nodes = []
         order_index = 0
         part_number = 0
         volume_number = 0
         act_number = 0
+        total_acts = _count_total_acts(structure)
 
         for part_data in structure:
             part_number += 1
@@ -1935,6 +1931,8 @@ class ContinuousPlanningService:
                 "number": part_number,
                 "title": part_data["title"],
                 "description": part_data.get("description", ""),
+                "themes": _as_str_list(part_data.get("themes")),
+                "key_events": _as_str_list(part_data.get("key_events")),
                 "order_index": order_index,
             })
             order_index += 1
@@ -1952,6 +1950,8 @@ class ContinuousPlanningService:
                     "number": volume_number,
                     "title": volume_data["title"],
                     "description": volume_data.get("description", ""),
+                    "themes": _as_str_list(volume_data.get("themes")),
+                    "key_events": _as_str_list(volume_data.get("key_events")),
                     "order_index": order_index,
                 })
                 order_index += 1
@@ -1961,7 +1961,7 @@ class ContinuousPlanningService:
                     act_data["number"] = act_number
                     act_id = f"act-{novel_id}-{act_number}"
 
-                    nodes.append({
+                    node = {
                         "id": act_id,
                         "novel_id": novel_id,
                         "parent_id": volume_id,
@@ -1970,7 +1970,34 @@ class ContinuousPlanningService:
                         "title": act_data["title"],
                         "description": act_data.get("description", ""),
                         "order_index": order_index,
-                    })
+                        # 章节预算：LLM 的 estimated_chapters 与兜底骨架的
+                        # suggested_chapter_count 是同一个语义的两个来源名。
+                        "suggested_chapter_count": _as_positive_int(
+                            act_data.get("estimated_chapters")
+                            or act_data.get("suggested_chapter_count")
+                        ),
+                        # 内容规划：quick 模式与 precise 模式的字段名不同，这里做归一
+                        "content": _first_text(
+                            act_data.get("narrative_goal"),
+                            act_data.get("description"),
+                        ),
+                        "key_events": _as_str_list(
+                            act_data.get("key_events") or act_data.get("plot_points")
+                        ),
+                        "narrative_arc": _first_text(
+                            act_data.get("emotional_arc"), act_data.get("narrative_arc")
+                        ),
+                        "conflicts": _as_str_list(
+                            act_data.get("conflicts") or act_data.get("core_conflict")
+                        ),
+                        # 最后一幕标记为收束幕：幕级规划据此把预算倾倒向结局
+                        "metadata": {
+                            "is_final_act": act_number >= total_acts,
+                            "planned_act_index": act_number,
+                            "planned_total_acts": total_acts,
+                        },
+                    }
+                    nodes.append(node)
                     order_index += 1
 
         return nodes
@@ -2419,26 +2446,25 @@ class ContinuousPlanningService:
         """构建 planning-quick-macro 的运行变量。
 
         AI Invocation 需要变量快照，旧宏观规划提示词也复用同一份变量构造，避免两套规则漂移。
+
+        注意这里**不再**计算任何"推荐网格"（部数 / 卷数 / 幕数 / 每幕章数）：
+        结构形状改由 LLM 依据剧情容量自行决定，唯一硬约束是各层
+        ``estimated_chapters`` 之和等于 ``target_chapters``（由 user.md 强制）。
+        引擎侧的封顶改走 ``structure_budget.resolve_act_ceiling``，不依赖公式预测。
         """
-        params = calculate_structure_params(target_chapters)
-        rec_acts_per_volume = params["acts_per_volume"]
-        rec_chapters_per_act = params["chapters_per_act"]
-        rec_parts = params["parts"]
-        rec_volumes_per_part = params["volumes_per_part"]
-        total_recommended_acts = params["total_acts"]
-
-        logger.info(
-            f"[QuickPrompt] target={target_chapters} → "
-            f"推荐 {rec_parts}部×{rec_volumes_per_part}卷×{rec_acts_per_volume}幕"
-            f"≈{total_recommended_acts}幕, 每幕~{rec_chapters_per_act}章"
-        )
-
         if target_chapters > 500:
             planning_depth = "framework"
         elif target_chapters > 100:
             planning_depth = "partial"
         else:
             planning_depth = "full"
+
+        logger.info(
+            "[QuickPrompt] target=%s → 结构层数由 LLM 按剧情容量自定（planning_depth=%s），"
+            "引擎只封顶总章数",
+            target_chapters,
+            planning_depth,
+        )
 
         story_context = self._format_bible_context(bible_context, character_limit=5, location_limit=5)
         worldbuilding_context = self._format_worldbuilding_context(bible_context, limit=5)
@@ -2456,11 +2482,13 @@ class ContinuousPlanningService:
             "locations": {"list": locations_context},
             "characters": character_context,
             "planning_depth": planning_depth,
-            "rec_parts": rec_parts,
-            "rec_volumes_per_part": rec_volumes_per_part,
-            "rec_acts_per_volume": rec_acts_per_volume,
-            "rec_chapters_per_act": rec_chapters_per_act,
-            "total_recommended_acts": total_recommended_acts,
+            # 兼容旧模板/旧变量绑定：模板已不再引用这些网格值，但变量中枢里
+            # 已有的 required 绑定仍需能取到值，否则 invocation 组装会失败。
+            "rec_parts": 1,
+            "rec_volumes_per_part": 1,
+            "rec_acts_per_volume": 1,
+            "rec_chapters_per_act": 1,
+            "total_recommended_acts": 1,
         }
 
     def _build_precise_macro_prompt(
@@ -2643,6 +2671,89 @@ class ContinuousPlanningService:
                 skeleton,
             )
 
+    def _novel_target_chapters(self, novel_id: str, default: int = 100) -> int:
+        """读取小说目标章数（读不到时用 default，绝不返回 0/None 参与运算）。"""
+        if self.novel_repository is None:
+            return default
+        try:
+            novel = self.novel_repository.get_by_id(NovelId(novel_id))
+        except Exception as exc:
+            logger.debug("[ActPlanning] 读取目标章数失败 novel=%s: %s", novel_id, exc)
+            return default
+        value = getattr(novel, "target_chapters", None) if novel is not None else None
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    def _observed_total_acts(self, novel_id: str) -> int:
+        """统计已落库的幕节点数（LLM 实际规划出的结构规模）。
+
+        部/卷/幕的层数改由 LLM 依据剧情容量自行决定，公式网格预测的 total_acts
+        不再代表真实结构；收束幕判定必须以实际落库结构为准，否则会出现
+        「LLM 规划了 5 幕但公式说 3 幕」→ 第 3 幕被误标为终局、故事提前收口。
+
+        读取失败时返回 0，由调用方退回公式估算（宁可用旧口径，也不要崩）。
+        """
+        if not novel_id or self.story_node_repo is None:
+            return 0
+        try:
+            tree = self.story_node_repo.get_tree_sync(novel_id)
+            nodes = getattr(tree, "nodes", None)
+            if nodes is None:
+                return 0
+            return sum(1 for n in nodes if getattr(n.node_type, "value", "") == "act")
+        except Exception as exc:
+            logger.debug("[ActPlanning] 统计幕节点总数失败 novel=%s: %s", novel_id, exc)
+            return 0
+
+    def _act_budget_context(self, novel_id: str, act_number: int) -> Dict[str, object]:
+        """判断某一幕在全书里的位置，并给出收束指令。
+
+        幕节点可能来自宏观规划（带 metadata.is_final_act），也可能是写作途中
+        动态补出来的（无该标记），因此统一按「幕号 vs 结构总幕数」重新判定，
+        两个来源口径一致。
+
+        「结构总幕数」优先取**已落库的幕节点数**（LLM 依据剧情容量自行决定层数，
+        公式网格预测值不再作为依据）；读不到时才退回公式估算。
+
+        Returns:
+            {"target_chapters", "total_acts", "chapters_per_act", "is_final_act", "brief"}
+        """
+        target = self._novel_target_chapters(novel_id)
+        params = calculate_structure_params(target)
+        try:
+            act_number = int(act_number or 0)
+        except (TypeError, ValueError):
+            # 脏数据/测试替身可能给出非数字幕号：按 0 处理（视为未定位置），
+            # 不让提示词构建因为一个字段崩掉。
+            act_number = 0
+        total_acts = max(self._observed_total_acts(novel_id) or 0, 0) or max(
+            int(params["total_acts"]), 1
+        )
+        is_final = act_number >= total_acts
+        if is_final:
+            brief = (
+                f"【全书收束】第 {act_number} 幕是全书最后一幕（全书 {target} 章）。"
+                "本幕必须完成结局：核心冲突正面了结、主要矛盾给出结果、"
+                "本卷与全书主线留下的悬念必须回收，不要再埋新的大悬念或开启新战线。"
+                "章节推进要向'尘埃落定'倾斜，最后一章必须落在结局而非新悬念上。"
+            )
+        else:
+            brief = (
+                f"【全书进度】本幕为第 {act_number}/{total_acts} 幕，"
+                f"全书目标 {target} 章，每幕约 {params['chapters_per_act']} 章。"
+                "本幕需为后续幕次留出推进空间，不要在本幕内提前解决全书主线。"
+            )
+        return {
+            "target_chapters": target,
+            "total_acts": total_acts,
+            "chapters_per_act": params["chapters_per_act"],
+            "is_final_act": is_final,
+            "brief": brief,
+        }
+
     def _build_act_planning_prompt(
         self,
         act_node: StoryNode,
@@ -2654,8 +2765,16 @@ class ContinuousPlanningService:
         context_parts = [f"幕信息：《{act_node.title}》"]
         if act_node.description:
             context_parts.append(f"幕简介：{act_node.description}")
+        if act_node.content:
+            context_parts.append(f"幕叙事目标：{act_node.content}")
         if previous_summary:
             context_parts.append(f"前情提要：{previous_summary}")
+        # 全书进度/收束指令：告诉模型这一幕在全书里的真实位置，
+        # 否则每一幕都被当成"中段推进"，故事自然没有终点。
+        budget_ctx = self._act_budget_context(
+            getattr(act_node, "novel_id", None) or "", getattr(act_node, "number", 0)
+        )
+        context_parts.append(budget_ctx["brief"])
 
         try:
             next_chapter_number = 1
@@ -2765,9 +2884,11 @@ class ContinuousPlanningService:
 
         target_volume：新幕将要挂载的卷（换卷时传入），用于向 LLM 标注卷切换。
         """
-        # 使用结构计算引擎获取推荐每幕章数（替代硬编码的 5）
-        # 通过 current_act 的 novel_id 查找小说目标章节数
-        _default_cpa = calculate_structure_params(100)["chapters_per_act"]  # 保守默认值
+        # 每幕章数取自本书真实目标，而不是历史遗留的硬编码 100 章基准
+        # （对一部 5 章目标的书，按 100 章算会得出每幕 6 章，直接把预算撑破）。
+        _default_cpa = self._act_budget_context(
+            novel_id, int(current_act.number or 0) + 1
+        )["chapters_per_act"]
 
         # 收集双轨上下文
         dual_track_context = await self._collect_dual_track_context(novel_id, current_act, bible_context)
@@ -2928,6 +3049,13 @@ class ContinuousPlanningService:
             context_parts.append(note)
         context_block = "\n\n".join(context_parts) if context_parts else "暂无前文上下文"
         current_number = current_act.number or 0
+
+        # 新幕自身在全书里的位置（尤其"这是最后一幕"必须写进 prompt，
+        # 否则动态补出来的幕永远只是"继续推进"，故事不会收口）
+        budget_ctx = self._act_budget_context(
+            getattr(current_act, "novel_id", None) or "", getattr(current_act, "number", 0) + 1
+        )
+        context_block = f"{context_block}\n\n{budget_ctx['brief']}"
 
         return self._render_contract_prompt(
             CONTINUOUS_PLANNING_NEXT_ACT_CONTRACT,

@@ -26,7 +26,25 @@ from engine.pipeline.recovery import StepCommitKind, boundary_for
 from engine.pipeline.steps import StepResult
 from engine.pipeline.telemetry import story_pipeline_wave_meta
 
+# structure_budget 只依赖标准库，顶层导入无循环风险；
+# 预算口径必须与幕级规划（act_planning_delegate）完全一致，否则两层闸门会打架。
+from application.blueprint.services.structure_budget import resolve_chapter_ceiling
+
 logger = logging.getLogger(__name__)
+
+
+def _load_target_chapters(ctx) -> Optional[int]:
+    """读取当前小说的目标章数；读不到返回 None（= 不设章节上限）。"""
+    if ctx.novel_repository is None:
+        return None
+    try:
+        from domain.novel.value_objects.novel_id import NovelId
+
+        novel = ctx.novel_repository.get_by_id(NovelId(ctx.novel_id))
+        return getattr(novel, "target_chapters", None)
+    except Exception:
+        logger.debug("[%s] 读取目标章数失败，本轮不设章节上限", getattr(ctx, "novel_id", ""))
+        return None
 
 def _enter_chapter_trace(ctx) -> Any:
     """为章节管线装一个带 novel_id 的 TraceContext，返回 token 供退出时还原。
@@ -266,12 +284,28 @@ class BaseStoryPipeline(ABC):
             return StepResult.fail("story_node_repo 未设置，无法定位章节")
 
         try:
+            # ── 章节预算硬闸 ──
+            # 幕级规划已经封顶了「还能不能开新的一幕」，但幕内还会一次规划多章
+            # （LLM 返回的章节数不必等于 suggested_chapter_count）。这里再卡一道
+            # 单章上限：目标章数是软目标，达成后由 target_reached_gate 分流
+            # （暂停待人 / 加终局预算 / 上调续写），每次合法上调都写回
+            # novel.target_chapters，所以直接读当前值即可。
+            ceiling = resolve_chapter_ceiling(_load_target_chapters(ctx))
+
             nodes = await ctx.story_node_repo.get_by_novel(ctx.novel_id)
             chapter_nodes = sorted(
                 [n for n in nodes if getattr(n, 'node_type', None) and n.node_type.value == "chapter"],
                 key=lambda n: n.number,
             )
             for node in chapter_nodes:
+                if ceiling is not None and node.number > ceiling:
+                    logger.info(
+                        "[%s] 第 %s 章超过目标上限 %s，跳过；不再产出超出目标的新章节",
+                        ctx.novel_id,
+                        node.number,
+                        ceiling,
+                    )
+                    break
                 # 找到第一个未完成的章节
                 existing = None
                 if ctx.chapter_repository:
