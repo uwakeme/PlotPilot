@@ -35,6 +35,17 @@ const progress = computed(() => {
 
 const readable = computed(() => props.book.chapterCount > 0)
 
+/**
+ * 元信息行。已开写但没读过时不要显示「第0章」——那是 lastRead 缺失的兜底值，
+ * 对读者没有意义，直接说总章数即可。
+ */
+const metaText = computed(() => {
+  if (!readable.value) return '尚未开写'
+  const total = `共${props.book.chapterCount}章`
+  const read = props.book.lastRead ? `第${props.book.lastRead.chapterNumber}章 · ` : ''
+  return `${read}${total} · ${(props.book.totalWordCount / 10000).toFixed(1)}万字`
+})
+
 const continueLabel = computed(() =>
   props.book.lastRead ? `继续阅读 · 第${props.book.lastRead.chapterNumber}章` : '开始阅读',
 )
@@ -48,17 +59,23 @@ const continueLabel = computed(() =>
 
     <div class="lib-body">
       <div class="lib-tags">
-        <NTag v-if="book.genre" size="small" :bordered="false">{{ book.genre }}</NTag>
-        <NTag v-if="book.worldPreset" size="small" :bordered="false" type="info">
+        <NTag v-if="book.genre" size="small" :bordered="false" class="lib-tag" :title="book.genre">
+          {{ book.genre }}
+        </NTag>
+        <NTag
+          v-if="book.worldPreset"
+          size="small"
+          :bordered="false"
+          type="info"
+          class="lib-tag"
+          :title="book.worldPreset"
+        >
           {{ book.worldPreset }}
         </NTag>
       </div>
 
-      <h3 class="lib-title">{{ book.title }}</h3>
-      <p class="lib-meta">
-        {{ readable ? `第${book.lastRead?.chapterNumber ?? 0}章 · 共${book.chapterCount}章` : '尚未开写' }}
-        · {{ (book.totalWordCount / 10000).toFixed(1) }}万字
-      </p>
+      <h3 class="lib-title" :title="book.title">{{ book.title }}</h3>
+      <p class="lib-meta">{{ metaText }}</p>
 
       <div class="lib-progress" role="progressbar" :aria-valuenow="Math.round(progress * 100)">
         <div class="lib-progress-fill" :style="{ width: `${progress * 100}%` }" />
@@ -81,7 +98,9 @@ const continueLabel = computed(() =>
 <style scoped>
 .lib-card {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  /* 必须是 minmax(0, 1fr) 而不是 1fr：1fr 等价 minmax(auto, 1fr)，
+     auto 的下限是 min-content，长世界观预设会把这条轨道撑爆、顶穿整个网格。 */
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: 14px;
   padding: 12px;
   border-radius: 10px;
@@ -104,11 +123,22 @@ const continueLabel = computed(() =>
   color: rgba(255, 255, 255, 0.92);
   font-size: 14px;
   letter-spacing: 2px;
+  /* 长书名在竖排封面里限高截断，否则会溢出封面 */
+  max-height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .lib-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.lib-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.lib-tags { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+/* 标签可能是一整段世界观预设描述，必须允许收缩+省略，否则撑爆 grid 轨道 */
+.lib-tag { max-width: 100%; }
+.lib-tag :deep(.n-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .lib-title { margin: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lib-meta { margin: 0; font-size: 12px; opacity: 0.65; }
+.lib-meta { margin: 0; font-size: 12px; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-progress { height: 3px; border-radius: 2px; background: rgba(128, 128, 128, 0.22); }
 .lib-progress-fill { height: 100%; border-radius: 2px; background: currentColor; opacity: 0.7; }
 </style>

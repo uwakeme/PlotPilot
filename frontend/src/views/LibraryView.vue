@@ -130,10 +130,16 @@ const openBook = (book: LibraryBookItem) => {
 
 <style scoped>
 .library { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
-.lib-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+/* 标题与工具栏在窄窗口下换行，而不是把搜索框挤扁 */
+.lib-header {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+}
 .lib-header h1 { margin: 0; font-size: 22px; }
 .lib-sub { margin: 4px 0 0; font-size: 12px; opacity: 0.6; }
-.lib-tools { display: flex; align-items: center; gap: 10px; }
+.lib-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 换行后让搜索框独占一行，窄窗口下仍可用 */
+.lib-tools :deep(.n-input) { min-width: 200px; flex: 1 1 200px; }
 .lib-error { color: #d03050; font-size: 13px; }
 .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 </style>
