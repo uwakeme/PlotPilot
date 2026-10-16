@@ -21,6 +21,7 @@ import time
 from abc import ABC
 from typing import Any, Dict, List, Optional
 
+from domain.ai.value_objects.assessment_state import AssessmentState
 from engine.pipeline.context import PipelineContext, PipelineResult
 from engine.pipeline.recovery import StepCommitKind, boundary_for
 from engine.pipeline.steps import StepResult
@@ -784,6 +785,7 @@ class BaseStoryPipeline(ABC):
                 )
                 ctx.validation_passed = report.passed
                 ctx.validation_score = report.overall_score
+                ctx.validation_state = report.state.value
                 ctx.validation_violations = report.all_violations
                 ctx.validation_dimensions = {
                     "language_style": report.language_style_score,
@@ -793,11 +795,26 @@ class BaseStoryPipeline(ABC):
                     "viewpoint": report.viewpoint_score,
                     "rhythm": report.rhythm_score,
                 }
+                if report.state is AssessmentState.UNASSESSED:
+                    # 护栏没跑成：不阻断，但不得报成"未通过"——那会把
+                    # 「没结论」说成「有结论且不合格」。分数保持 None。
+                    logger.info(
+                        "策略验证未评估（UNASSESSED），缺输入不影响管线推进；"
+                        f"各维度分（None 即该维未评估）: {report.to_dict()['scores']}"
+                    )
+                    return StepResult(
+                        passed=True,  # 不阻断
+                        message="策略验证未评估（护栏未跑成，本次无结论）",
+                        score=None,
+                        violations=report.all_violations,
+                        metadata={"validation_state": report.state.value},
+                    )
                 return StepResult.ok() if report.passed else StepResult(
                     passed=True,  # 不阻断
                     message=f"验证未通过 (score={report.overall_score:.2f})",
                     score=report.overall_score,
                     violations=report.all_violations,
+                    metadata={"validation_state": report.state.value},
                 )
             except Exception as e:
                 logger.warning(f"策略验证异常: {e}")

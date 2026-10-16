@@ -9,43 +9,64 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from domain.ai.value_objects.assessment_state import AssessmentState
+
 logger = logging.getLogger(__name__)
 
 
 class PolicyReport:
-    """策略验证报告（对应 QualityReport）"""
+    """策略验证报告（对应 QualityReport）
+
+    三态语义（见 ``AssessmentState``）：
+
+    - ``DECIDED``：真的跑过，数值可依赖；
+    - ``UNASSESSED``：没跑成 / 没数据，``overall_score`` 与 ``passed`` 均为 ``None``。
+      **下游不得把它当成 0 分或「干净」**，也不得拿它去比较阈值。
+
+    构造时省略 ``state`` 会按 ``passed`` 推断：``passed is None`` → UNASSESSED。
+    """
 
     def __init__(
         self,
-        overall_score: float = 0.0,
-        dimensions: Optional[Dict[str, float]] = None,
+        overall_score: Optional[float] = None,
+        dimensions: Optional[Dict[str, Optional[float]]] = None,
         violations: Optional[List[Dict[str, Any]]] = None,
-        passed: bool = False,
+        passed: Optional[bool] = None,
+        state: Optional[AssessmentState] = None,
     ):
         self.overall_score = overall_score
-        self.language_style_score = (dimensions or {}).get("language_style", 0.0)
-        self.character_consistency_score = (dimensions or {}).get("character_consistency", 0.0)
-        self.plot_density_score = (dimensions or {}).get("plot_density", 0.0)
-        self.naming_score = (dimensions or {}).get("naming", 0.0)
-        self.viewpoint_score = (dimensions or {}).get("viewpoint", 0.0)
-        self.rhythm_score = (dimensions or {}).get("rhythm", 0.0)
+        self.state = state or (
+            AssessmentState.DECIDED if passed is not None else AssessmentState.UNASSESSED
+        )
+        self.language_style_score = (dimensions or {}).get("language_style")
+        self.character_consistency_score = (dimensions or {}).get("character_consistency")
+        self.plot_density_score = (dimensions or {}).get("plot_density")
+        self.naming_score = (dimensions or {}).get("naming")
+        self.viewpoint_score = (dimensions or {}).get("viewpoint")
+        self.rhythm_score = (dimensions or {}).get("rhythm")
         self.all_violations = violations or []
         self.passed = passed
 
+    @staticmethod
+    def _round3(value: Optional[float]) -> Optional[float]:
+        """未评估的维度是 None，落库前不得对它 round()——那会 TypeError。"""
+        return None if value is None else round(value, 3)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "overall_score": round(self.overall_score, 3),
+            "overall_score": self._round3(self.overall_score),
             "scores": {
-                "language_style": round(self.language_style_score, 3),
-                "character_consistency": round(self.character_consistency_score, 3),
-                "plot_density": round(self.plot_density_score, 3),
-                "naming": round(self.naming_score, 3),
-                "viewpoint": round(self.viewpoint_score, 3),
-                "rhythm": round(self.rhythm_score, 3),
+                "language_style": self._round3(self.language_style_score),
+                "character_consistency": self._round3(self.character_consistency_score),
+                "plot_density": self._round3(self.plot_density_score),
+                "naming": self._round3(self.naming_score),
+                "viewpoint": self._round3(self.viewpoint_score),
+                "rhythm": self._round3(self.rhythm_score),
             },
             "violation_count": len(self.all_violations),
             "violations": self.all_violations,
             "passed": self.passed,
+            "state": self.state.value,
         }
 
 
@@ -71,7 +92,9 @@ class PolicyValidator:
     使用方式：
         validator = PolicyValidator()
         report = validator.advise(text=content, character_masks=masks)
-        if not report.passed:
+        if report.state is AssessmentState.UNASSESSED:
+            print("护栏没跑成，本次没有结论")
+        elif not report.passed:
             print(f"验证未通过: {report.all_violations}")
     """
 
@@ -86,7 +109,7 @@ class PolicyValidator:
             from engine.runtime.quality_guardrails.quality_guardrail import QualityGuardrail
             self._guardrail = QualityGuardrail()
         except ImportError:
-            logger.debug("QualityGuardrail 不可用，PolicyValidator 将返回默认结果")
+            logger.debug("QualityGuardrail 不可用，PolicyValidator 将返回 UNASSESSED 报告")
 
     def check(
         self,
@@ -138,24 +161,13 @@ class PolicyValidator:
                     },
                     violations=report.all_violations,
                     passed=report.passed,
+                    state=getattr(report, "state", None),
                 )
             except Exception as e:
                 logger.warning(f"QualityGuardrail.check 失败: {e}")
 
-        # 降级：返回默认通过
-        return PolicyReport(
-            overall_score=0.85,
-            dimensions={
-                "language_style": 0.85,
-                "character_consistency": 0.9,
-                "plot_density": 0.8,
-                "naming": 0.95,
-                "viewpoint": 0.85,
-                "rhythm": 0.8,
-            },
-            violations=[],
-            passed=True,
-        )
+        # 降级：显式未评估，不得伪造 0.85 通过分
+        return PolicyReport(state=AssessmentState.UNASSESSED)
 
     def enforce(
         self,
@@ -191,6 +203,12 @@ class PolicyValidator:
         )
 
         threshold = min_score or self._min_pass_score
+        if report.overall_score is None:
+            # 未评估：无从比较阈值。返回带 UNASSESSED 的报告由调用方决定，
+            # 不得用常量分顶替——那正是 F-03 的成因。
+            logger.warning("策略验证未评估（UNASSESSED），跳过阈值比较")
+            return report
+
         if report.overall_score < threshold:
             raise PolicyViolationError(
                 violations=report.all_violations,

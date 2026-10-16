@@ -71,7 +71,10 @@ class PipelineContext:
 
     # ═══ 步骤5产出：策略验证 ═══
     validation_passed: bool = True
-    validation_score: float = 0.0
+    validation_score: Optional[float] = None
+    # 护栏三态（decided / unassessed / blocked）；validation_score 为 None
+    # 表示本次未评估，不得当作 0 分使用。
+    validation_state: str = "unassessed"
     validation_violations: List[Dict[str, Any]] = field(default_factory=list)
     validation_suggestions: List[str] = field(default_factory=list)
     validation_dimensions: Dict[str, float] = field(default_factory=dict)  # 各维度分数
@@ -187,8 +190,11 @@ class PipelineResult:
     tension: int = 0                            # 0-100
     drift_alert: bool = False
     similarity_score: Optional[float] = None
-    validation_score: float = 0.0
+    validation_score: Optional[float] = None
     validation_passed: bool = True
+    # 护栏三态：validation_score 为 None 表示「本次未评估」，
+    # 不得当作 0 分使用（AssessmentState.UNASSESSED）。
+    validation_state: str = "unassessed"
     narrative_sync_ok: bool = False
     error: Optional[str] = None
 
@@ -206,8 +212,12 @@ class PipelineResult:
             "tension": self.tension,
             "drift_alert": self.drift_alert,
             "similarity_score": self.similarity_score,
-            "validation_score": round(self.validation_score, 3),
+            # 未评估时是 None，不是 0 分——round(None) 会 TypeError
+            "validation_score": (
+                None if self.validation_score is None else round(self.validation_score, 3)
+            ),
             "validation_passed": self.validation_passed,
+            "validation_state": self.validation_state,
             "narrative_sync_ok": self.narrative_sync_ok,
             "error": self.error,
             "step_status": self.step_status,

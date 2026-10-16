@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 
+from domain.ai.value_objects.assessment_state import AssessmentState
 from engine.core.value_objects.character_mask import CharacterMask
 from engine.runtime.quality_guardrails.language_style_guardrail import (
     LanguageStyleGuardrail, StyleViolation,
@@ -47,16 +48,33 @@ logger = logging.getLogger(__name__)
 #
 # v1（旧）：角色一致性 / 命名 / 视角三个维度在"取不到数据"时直接返回常量
 #     （0.73 / 0.82 / 0.77），无论本章内容如何。
-# v2（本分支之后）：取得到数据就真判、判得到违规就扣分；只有"确实无法评估"
+# v2：取得到数据就真判、判得到违规就扣分；只有"确实无法评估"
 #     （缺 cast、同框不足两人）才保留 0.77 这个保守基准。
+#     v1→v2 实测：同一章 overall +0.0616、单角色章节 +0.0230；综合分原本落在
+#     [0.506, 0.600) 的章节会零内容变化地从 fail 翻成 pass（MIN_PASS_SCORE=0.6）。
+# v3（本分支，登记表 F-09）：v1/v2 的 0.73 / 0.82 仍然是把"从未审评"
+#     伪装成"审过了"。现在缺输入的维度记 None 且**不参与加权平均**，
+#     overall 按剩余权重归一化；一个维度都评不出来时整体 UNASSESSED。
 #
-# 跨版本的分不可比：同一章在 v2 下的分数普遍**升高**（实测接线后 overall
-# +0.0616，单角色章节 +0.0230）。升高不是 bug——v1 的常量分是"从未审评"，
-# v2 才是真判；综合分原本落在 [0.506, 0.600) 的章节会零内容变化地从 fail 翻成
-# pass（MIN_PASS_SCORE=0.6），门禁行为因此发生一次性的、可见的迁移。
+# 0.77 只在"有伏笔、无 cast"这一种**确实评估过绑定判据**的场景保留：
+# 绑定违规会从它上面扣分，因此它是保守基准而非"没审评"的占位数。
 #
-# 历史数据的处理办法是重新基线化，不是把常量往回调。
-QUALITY_SCORE_SEMANTICS_VERSION = 2
+# 跨版本的分不可比：同一章在 v3 下的分数与 v1/v2 不同是预期的——被删掉的
+# 是从未审评却照样计入权重的分。历史数据的处理办法是重新基线化，
+# 不是把常量往回调。
+QUALITY_SCORE_SEMANTICS_VERSION = 3
+
+# 各维度在整体分中的权重，合计 1.0。缺输入的维度会被剔除并重新归一化，
+# 因此"少评一维"不会让整体分被稀释成看起来更保守的样子。
+DIMENSION_WEIGHTS: Dict[str, float] = {
+    "language_style": 0.23,
+    "character_consistency": 0.23,
+    "plot_density": 0.18,
+    "naming": 0.05,
+    "viewpoint": 0.10,
+    "rhythm": 0.13,
+    "macro_pacing": 0.08,
+}
 
 
 def _chapter_goal_is_weak_signal(goal: str) -> bool:
@@ -83,33 +101,53 @@ class QualityViolationError(Exception):
 
 @dataclass
 class QualityReport:
-    """质量检查报告"""
-    overall_score: float = 0.0
-    language_style_score: float = 0.0
-    character_consistency_score: float = 0.0
-    plot_density_score: float = 0.0
-    naming_score: float = 0.0
-    viewpoint_score: float = 0.0
-    rhythm_score: float = 0.0
-    macro_pacing_score: float = 0.0
+    """质量检查报告
+
+    三态语义（见 ``AssessmentState``）与逐维覆盖率：
+
+    - ``state``：DECIDED 表示至少有一维真的评过；UNASSESSED 表示一维都没评出来，
+      此时 ``overall_score`` 与 ``passed`` 均为 ``None``。
+    - 可评估的维度分是 float，**不可评估的是 None**（不是 0，也不是常量）。
+    - ``unevaluated_dimensions`` 必须显式列出缺口：state 为 DECIDED 时它可能非空，
+      下游据此判断置信度，不得把部分覆盖当成完整覆盖。
+    """
+    overall_score: Optional[float] = None
+    language_style_score: Optional[float] = None
+    character_consistency_score: Optional[float] = None
+    plot_density_score: Optional[float] = None
+    naming_score: Optional[float] = None
+    viewpoint_score: Optional[float] = None
+    rhythm_score: Optional[float] = None
+    macro_pacing_score: Optional[float] = None
     all_violations: List[Dict[str, Any]] = field(default_factory=list)
-    passed: bool = False
+    passed: Optional[bool] = None
+    state: AssessmentState = AssessmentState.UNASSESSED
+    evaluated_dimensions: List[str] = field(default_factory=list)
+    unevaluated_dimensions: List[str] = field(default_factory=list)
+
+    @staticmethod
+    def _round3(value: Optional[float]) -> Optional[float]:
+        """未评估的维度是 None，落库前不得对它 round()——那会 TypeError。"""
+        return None if value is None else round(value, 3)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "overall_score": round(self.overall_score, 3),
+            "overall_score": self._round3(self.overall_score),
             "scores": {
-                "language_style": round(self.language_style_score, 3),
-                "character_consistency": round(self.character_consistency_score, 3),
-                "plot_density": round(self.plot_density_score, 3),
-                "naming": round(self.naming_score, 3),
-                "viewpoint": round(self.viewpoint_score, 3),
-                "rhythm": round(self.rhythm_score, 3),
-                "macro_pacing": round(self.macro_pacing_score, 3),
+                "language_style": self._round3(self.language_style_score),
+                "character_consistency": self._round3(self.character_consistency_score),
+                "plot_density": self._round3(self.plot_density_score),
+                "naming": self._round3(self.naming_score),
+                "viewpoint": self._round3(self.viewpoint_score),
+                "rhythm": self._round3(self.rhythm_score),
+                "macro_pacing": self._round3(self.macro_pacing_score),
             },
             "violation_count": len(self.all_violations),
             "violations": self.all_violations,
             "passed": self.passed,
+            "state": self.state.value,
+            "evaluated_dimensions": list(self.evaluated_dimensions),
+            "unevaluated_dimensions": list(self.unevaluated_dimensions),
         }
 
 
@@ -183,8 +221,8 @@ class QualityGuardrail:
                 "suggestion": v.suggestion,
             })
 
-        # 2. 角色一致性
-        cc_score = 0.73
+        # 2. 角色一致性：缺 cast 则该维度不可评估（记 None，不写死常量）
+        cc_score: Optional[float] = None
         if character_masks:
             cc_score, cc_violations = self._character_consistency.check(text, character_masks)
             for v in cc_violations:
@@ -207,11 +245,11 @@ class QualityGuardrail:
                 "description": v.description,
                 "suggestion": v.suggestion,
             })
-        if _chapter_goal_is_weak_signal(chapter_goal):
+        if pd_score is not None and _chapter_goal_is_weak_signal(chapter_goal):
             pd_score = max(0.0, pd_score * 0.92 - 0.045)
 
-        # 4. 命名
-        n_score = 0.82
+        # 4. 命名：缺角色名则该维度不可评估（记 None，不写死常量）
+        n_score: Optional[float] = None
         if character_names:
             n_score, n_violations = self._naming.check(character_names, era)
             for v in n_violations:
@@ -229,7 +267,7 @@ class QualityGuardrail:
         #    - 伏笔绑定层级只依赖 foreshadows，与视角语境无关
         #    历史上两者被同一个 `if scene_info:` 门控连带，导致没有 cast 的书
         #    会连带跳过伏笔绑定校验——那条校验就此静默失效。
-        vp_score = 0.77
+        vp_score: Optional[float] = None
         vp_violations: List[Any] = []
         if scene_info:
             _, vp_violations = self._viewpoint.check(text, scene_info)
@@ -237,8 +275,9 @@ class QualityGuardrail:
             _, binding_violations = self._viewpoint.check(text, None, foreshadows)
             vp_violations = vp_violations + binding_violations
         if scene_info or foreshadows:
-            # 有 scene_info 才能真正评估视角，基准 1.0；否则维持保守基准 0.77，
-            # 只让已查出的违规扣分——避免"没数据"反而比"有数据且干净"更高分。
+            # 有 scene_info 才能真正评估视角，基准 1.0；只有伏笔时以保守基准 0.77
+            # 起算，只让已查出的违规扣分——避免"没数据"反而比"有数据且干净"更高分。
+            # 两者都缺时该维度不可评估，保持 None（v3：不再用 0.77 占位）。
             base = 1.0 if scene_info else 0.77
             vp_score = max(0.0, base - self._viewpoint.severity_penalty(vp_violations))
         for v in vp_violations:
@@ -272,16 +311,33 @@ class QualityGuardrail:
                 "suggestion": v.suggestion,
             })
 
-        # 加权计算总分
-        overall = (
-            ls_score * 0.23 +
-            cc_score * 0.23 +
-            pd_score * 0.18 +
-            n_score * 0.05 +
-            vp_score * 0.10 +
-            r_score * 0.13 +
-            mp_score * 0.08
-        )
+        # 加权计算总分：只吃真正评估过的维度，并按剩余权重归一化。
+        # 不可评估的维度记 None、不参与加权——写死常量会让「什么都没评」
+        # 依然凑出高于 MIN_PASS_SCORE 的总分（登记表 F-09）。
+        dimension_scores: Dict[str, Optional[float]] = {
+            "language_style": ls_score,
+            "character_consistency": cc_score,
+            "plot_density": pd_score,
+            "naming": n_score,
+            "viewpoint": vp_score,
+            "rhythm": r_score,
+            "macro_pacing": mp_score,
+        }
+        evaluated = [k for k, v in dimension_scores.items() if v is not None]
+        unevaluated = [k for k, v in dimension_scores.items() if v is None]
+
+        if evaluated:
+            total_weight = sum(DIMENSION_WEIGHTS[k] for k in evaluated)
+            overall = (
+                sum(dimension_scores[k] * DIMENSION_WEIGHTS[k] for k in evaluated)
+                / total_weight
+            )
+            state = AssessmentState.DECIDED
+            passed = overall >= self.MIN_PASS_SCORE
+        else:
+            overall = None
+            state = AssessmentState.UNASSESSED
+            passed = None
 
         return QualityReport(
             overall_score=overall,
@@ -293,7 +349,10 @@ class QualityGuardrail:
             rhythm_score=r_score,
             macro_pacing_score=mp_score,
             all_violations=violations,
-            passed=overall >= self.MIN_PASS_SCORE,
+            passed=passed,
+            state=state,
+            evaluated_dimensions=evaluated,
+            unevaluated_dimensions=unevaluated,
         )
 
     def enforce(
@@ -333,6 +392,12 @@ class QualityGuardrail:
         )
 
         threshold = min_score or self.MIN_PASS_SCORE
+
+        if report.overall_score is None:
+            # 一个维度都没评出来：无从比较阈值。返回带 UNASSESSED 的报告由
+            # 调用方决定，不得用常量分顶替——那正是 F-09 的成因。
+            logger.warning("质量检查未评估（UNASSESSED），跳过阈值比较")
+            return report
 
         if report.overall_score < threshold:
             raise QualityViolationError(

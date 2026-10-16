@@ -142,11 +142,18 @@ def _violations_from_quality_error(e: Any) -> List[Dict[str, Any]]:
 
 
 def quality_report_to_snapshot_dict(report: Any) -> Dict[str, Any]:
-    """将 QualityReport 转为与前端 GuardrailCheckResponse 一致的 dict。"""
+    """将 QualityReport 转为与前端 GuardrailCheckResponse 一致的 dict。
+
+    护栏可能整份 UNASSESSED（一个维度都没评出来），此时 overall_score 是
+    None。这里不做兜底数值：单角色章节的 scene_info 本就取不到（见
+    ``_minimal_scene_context``），写死一个 0 分会让"没评"看起来像"评了个
+    零分"。快照里的 None 由调用方按 state 解释。
+    """
     dimensions: List[Dict[str, Any]] = []
     for key, name, weight in DIMENSION_META:
-        score = float(getattr(report, f"{key}_score", 0.0) or 0.0)
-        dimensions.append({"name": name, "key": key, "score": round(score, 3), "weight": weight})
+        raw = getattr(report, f"{key}_score", None)
+        score = None if raw is None else round(float(raw), 3)
+        dimensions.append({"name": name, "key": key, "score": score, "weight": weight})
 
     violations: List[Dict[str, Any]] = []
     for v in report.all_violations:
@@ -162,9 +169,11 @@ def quality_report_to_snapshot_dict(report: Any) -> Dict[str, Any]:
             }
         )
 
+    overall = report.overall_score
     return {
-        "overall_score": round(float(report.overall_score), 3),
-        "passed": bool(report.passed),
+        "overall_score": None if overall is None else round(float(overall), 3),
+        "passed": report.passed,
+        "state": getattr(getattr(report, "state", None), "value", None),
         "dimensions": dimensions,
         "violations": violations,
     }

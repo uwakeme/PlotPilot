@@ -89,7 +89,9 @@ class GuardrailCheckRequest(BaseModel):
 class GuardrailDimensionScore(BaseModel):
     name: str
     key: str
-    score: float
+    # None = 该维度本次未评估（缺 cast / 角色名 / 场景语境），
+    # 不是 0 分。见 domain.ai.value_objects.assessment_state。
+    score: Optional[float] = None
     weight: float
 
 
@@ -113,8 +115,11 @@ class GuardrailViolationDTO(BaseModel):
 
 
 class GuardrailCheckResponse(BaseModel):
-    overall_score: float = 0.0
-    passed: bool = False
+    # None = 护栏本次没跑成 / 没数据，下游不得当作 0 分或「干净」。
+    overall_score: Optional[float] = None
+    passed: Optional[bool] = None
+    # decided | unassessed | blocked（AssessmentState 的 wire 值，可为空表示未知）
+    state: Optional[str] = None
     dimensions: List[GuardrailDimensionScore] = Field(default_factory=list)
     violations: List[GuardrailViolationDTO] = Field(default_factory=list)
 

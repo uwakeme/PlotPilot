@@ -129,13 +129,20 @@ class TestGetSceneContext:
 class TestGuardrailScoresLeaveConstants:
     """接线是否真的有意义：拿到数据后分数必须离开常量。"""
 
-    def test_constants_when_nothing_supplied(self):
-        """对照组：不传三项，三维仍是写死的常量。"""
+    def test_missing_inputs_yield_none_not_constants(self):
+        """对照组：不传三项，那三维必须是无结论（None），不是写死的常量。
+
+        登记表 F-09：常量分让「什么都没评」照样凑得出高于 MIN_PASS_SCORE 的
+        总分，下游因此分不清「检查通过」与「根本没跑成」。
+        """
         report = QualityGuardrail().advise(text=TWO_CHARACTER_TEXT, era="ancient")
 
-        assert report.character_consistency_score == 0.73
-        assert report.naming_score == 0.82
-        assert report.viewpoint_score == 0.77
+        assert report.character_consistency_score is None
+        assert report.naming_score is None
+        assert report.viewpoint_score is None
+        assert report.unevaluated_dimensions == [
+            "character_consistency", "naming", "viewpoint",
+        ]
 
     def test_scores_move_once_pipeline_supplies_data(self, monkeypatch):
         """接线后三维分数的具体期望值。

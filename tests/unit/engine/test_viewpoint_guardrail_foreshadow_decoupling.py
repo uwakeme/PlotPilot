@@ -8,7 +8,8 @@
 本测试锁住修复后的语义：
 - scene_info=None + foreshadows 非空 → 绑定校验仍执行，且违规进 vp_score
 - 视角分不得因为"没数据"而高于保守基准
-- API 路径（只传 scene_info、从不传 foreshadows）行为不变
+- API 路径（只传 scene_info、从不传 foreshadows）：有 scene_info 仍报 1.0；
+  两者皆缺时该维度无结论（v3 起是 None 而非 0.77，登记表 F-09）
 """
 import pytest
 
@@ -53,13 +54,19 @@ class TestForeshadowBindingIndependentOfSceneInfo:
 
         若只产违规不扣分，enforce() 的阈值与 MIN_PASS_SCORE 就看不到它，
         违规退化成纯建议。
+
+        对照组改用同样"有绑定判据可评估"的干净伏笔：v3 起，既无 scene_info
+        又无 foreshadows 时该维度是 None（无结论），拿它当分数下限比大小
+        会得到 TypeError，而"没有结论"本身也说明不了扣分是否生效。
         """
         with_violation = QualityGuardrail().advise(
             text=TEXT, scene_info=None, foreshadows=CORE_FORESHADOW
         )
-        without = QualityGuardrail().advise(text=TEXT, scene_info=None)
+        without_violation = QualityGuardrail().advise(
+            text=TEXT, scene_info=None, foreshadows=CLEAN_FORESHADOW
+        )
 
-        assert with_violation.viewpoint_score < without.viewpoint_score
+        assert with_violation.viewpoint_score < without_violation.viewpoint_score
 
     def test_no_data_never_scores_above_conservative_baseline(self):
         """没数据时保持保守分 0.77，不得因为「没查出违规」而报满分。"""
@@ -103,9 +110,16 @@ class TestApiPathUnaffected:
     """API 路径从不传 foreshadows，解耦后行为必须逐值不变。"""
 
     def test_api_shape_scene_info_only_keeps_conservative_score(self):
+        """API 路径从不传 foreshadows：既无 scene_info 又无绑定判据时无结论。
+
+        v3 起该维度是 None 而不是 0.77——"没数据"不得伪装成一个看起来
+        正常的保守分（登记表 F-09）。这比原断言（不得高于 0.77）更强：
+        根本没有分可高。
+        """
         report = QualityGuardrail().advise(text=TEXT, scene_info=None)
 
-        assert report.viewpoint_score == pytest.approx(CONSERVATIVE_BASELINE)
+        assert report.viewpoint_score is None
+        assert "viewpoint" in report.unevaluated_dimensions
         assert not _viewpoint_violations(report)
 
     def test_api_shape_with_scene_info_still_scores_one(self):
