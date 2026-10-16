@@ -21,6 +21,7 @@ from application.engine.dag.models import (
     PortDataType,
 )
 from application.engine.dag.registry import BaseNode, NodeRegistry
+from domain.ai.value_objects.assessment_state import AssessmentState
 from infrastructure.ai.prompt_keys import (
     CHAPTER_AFTERMATH,
     CLICHE_SCAN,
@@ -67,34 +68,91 @@ class StyleNode(BaseNode):
         import time
         start = time.time()
         content = inputs.get("content", "")
-        drift_score = 0.0
-        drift_alert = False
+        novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+
+        # chapter_number 必须是真的章节号。来源：registry.py:307-311 把 DAG state 的
+        # chapter_number 放进 context，缺省为 0；而领域不变量是 chapter_number >= 1
+        # （domain/novel/value_objects/timeline_event.py:19），所以 0/缺失 == 没有章节上下文。
+        # 不伪造章节号：score_chapter 会 upsert chapter_style_scores，塞 0 会往库里灌
+        # 一条「第 0 章」的垃圾基准，反而污染后续漂移判定。
+        raw_chapter_number = inputs.get("chapter_number") or context.get("chapter_number") or 0
+        try:
+            chapter_number = int(raw_chapter_number)
+        except (TypeError, ValueError):
+            chapter_number = 0
+
+        thresholds = self._config.thresholds if self._config else {}
+        warning_threshold = thresholds.get("drift_warning", 0.5)
+
+        drift_score: Any = None
+        drift_alert: Any = None
+        state = AssessmentState.UNASSESSED
+        error: str = ""
 
         try:
-            try:
-                from application.analyst.services.voice_drift_service import VoiceDriftService
-                novel_id = context.get("novel_id", "")
-                svc = VoiceDriftService()
-                result = await svc.analyze(novel_id, content)
-                drift_score = getattr(result, "similarity_score", 0.0) or 0.0
-                drift_alert = getattr(result, "drift_alert", False) or False
-            except Exception as e:
-                logger.warning(f"VoiceDriftService 调用失败: {e}")
+            if not novel_id:
+                raise ValueError("缺 novel_id，文风漂移未评估（不写入无主评分）")
+            if chapter_number < 1:
+                raise ValueError(
+                    f"缺真实 chapter_number（拿到 {raw_chapter_number!r}），文风漂移未评估"
+                )
 
-            # 应用阈值
-            thresholds = self._config.thresholds if self._config else {}
-            warning_threshold = thresholds.get("drift_warning", 0.5)
+            # 旧实现 VoiceDriftService() 无参构造（真实签名要 score_repo / fingerprint_repo
+            # 两个必选位置参数，必然 TypeError）后又调不存在的 .analyze()，异常被本层
+            # except 吞成一条 warning，drift_score 停在 0.0、节点恒 SUCCESS —— 文风警报器
+            # 从未响过一次。改走 dependencies 的正确装配点（同 execution_nodes.py:94）。
+            from interfaces.api.dependencies import get_voice_drift_service
+
+            svc = get_voice_drift_service()
+            result = await svc.score_chapter_async(novel_id, chapter_number, content)
+
+            if not isinstance(result, dict):
+                raise TypeError(
+                    f"score_chapter_async 返回 {type(result).__name__}，预期 dict"
+                )
+
+            # 真实服务在无作者指纹基准时返回 similarity_score=None
+            # （voice_drift_service.py:108-111）：那是「没得比」，不是「文风完美」，
+            # 与「键缺失」一样按未评估处理，绝不回填 0.0。
+            if result.get("similarity_score") is None:
+                raise ValueError("VoiceDriftService 未给出 similarity_score（可能无指纹基准）")
+
+            drift_score = float(result["similarity_score"])
+            drift_alert = bool(result.get("drift_alert", False))
             if drift_score > warning_threshold:
                 drift_alert = True
-
-            return NodeResult(
-                outputs={"drift_score": drift_score, "drift_alert": drift_alert},
-                status=NodeStatus.WARNING if drift_alert else NodeStatus.SUCCESS,
-                metrics={"drift_score": drift_score},
-                duration_ms=int((time.time() - start) * 1000),
-            )
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"drift_score": 0.0, "drift_alert": False}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"VoiceDriftService 调用失败: {e}"
+            logger.warning(error)
+
+        if state is AssessmentState.UNASSESSED:
+            # 未评估：分数与警报都给 None，状态不谎报 SUCCESS。
+            # NodeStatus 里没有 UNASSESSED 成员，取 ERROR —— 它是枚举中唯一表示
+            # 「没产出结论」的值；SUCCESS 会谎报通过，WARNING 已被 drift_alert 占用
+            # （真出警报时也返回 WARNING，两者含义不能混），BYPASSED/DISABLED 指节点
+            # 被跳过而非跑失败。
+            return NodeResult(
+                outputs={
+                    "drift_score": None,
+                    "drift_alert": None,
+                    "state": state,
+                },
+                status=NodeStatus.ERROR,
+                duration_ms=int((time.time() - start) * 1000),
+                error=error,
+            )
+
+        return NodeResult(
+            outputs={
+                "drift_score": drift_score,
+                "drift_alert": drift_alert,
+                "state": state,
+            },
+            status=NodeStatus.WARNING if drift_alert else NodeStatus.SUCCESS,
+            metrics={"drift_score": drift_score},
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return "content" in inputs

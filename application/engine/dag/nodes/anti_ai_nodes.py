@@ -27,6 +27,7 @@ from application.engine.dag.models import (
     PromptMode,
 )
 from application.engine.dag.registry import BaseNode, NodeRegistry
+from domain.ai.value_objects.assessment_state import AssessmentState
 from infrastructure.ai.prompt_keys import (
     ANTI_AI_ALLOWLIST_EXPLAIN,
     ANTI_AI_BEHAVIOR_PROTOCOL,
@@ -37,6 +38,31 @@ from infrastructure.ai.prompt_keys import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _opt_int(value: Any) -> Any:
+    """缺失 / None / 非数值 → None（未评估），而不是静默补 0。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(value: Any) -> Any:
+    """缺失 / None / 非数值 → None（未评估），而不是静默补 0.0。
+
+    注意：这里返回 None 表示「没判出来」，与真实的 0.0 是两件事 ——
+    调用方靠它区分「跑成了得 0 分」和「压根没跑成」。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 
 # ─── anti_ai_behavior: 行为协议 (L1+L2) ───
@@ -311,57 +337,92 @@ class ChapterAuditNode(BaseNode):
         start = time.time()
         content = inputs.get("content", "")
 
+        # 缺字段一律 None（「没判」），不回填 0 / [] / 「未检测」——后三者读起来都像
+        # 「查过了，没问题」。整体三态由 severity_score 是否判出决定。
+        total_hits: Any = None
+        severity_score: Any = None
+        hits: Any = None
+        overall_assessment: Any = None
+        state = AssessmentState.UNASSESSED
+        error: str = ""
+
         try:
-            total_hits = 0
-            severity_score = 0.0
-            hits = []
-            overall_assessment = "未检测"
-
             resolved = self.resolve_prompt({"content": content})
+            from domain.ai.services.llm_service import GenerationConfig
+            from domain.ai.value_objects.prompt import Prompt
 
+            # 旧实现 LLMService() 无参构造：真实是 class LLMService(ABC)
+            # （llm_service.py:47-65），带 @abstractmethod generate/stream_generate，
+            # 必然 TypeError，异常被吞后节点恒 SUCCESS。改走 dependencies 的装配点，
+            # 拿到的是长生命周期 DynamicLLMService（同 execution_nodes.py:94）。
+            from interfaces.api.dependencies import get_llm_service
+
+            if not (resolved.get("system") or "").strip() or not (resolved.get("user") or "").strip():
+                raise ValueError("CPMS 提示词解析为空，无法审计")
+
+            llm = get_llm_service()
+            prompt = Prompt(system=resolved["system"], user=resolved["user"])
+            config = GenerationConfig(
+                max_tokens=self._config.max_tokens or 2000,
+                temperature=self._config.temperature,
+            )
+            result = await llm.generate(prompt, config)
+            # GenerationResult 只有 .content（llm_service.py:34-44），没有 .text。
+            # 旧代码 `result.text if hasattr(result, 'text') else str(result)` 会退化成
+            # 对象 repr 的字符串，再被当成「LLM 返回非 JSON」处理。
+            raw_text = result.content
+
+            import json
             try:
-                from domain.ai.services.llm_service import LLMService
-                from domain.ai.value_objects.prompt import Prompt
-                from domain.ai.services.llm_service import GenerationConfig
-
-                llm = LLMService()
-                prompt = Prompt(system=resolved["system"], user=resolved["user"])
-                config = GenerationConfig(max_tokens=2000, temperature=0.2)
-                if self._config:
-                    if self._config.temperature is not None:
-                        config.temperature = self._config.temperature
-                    if self._config.max_tokens is not None:
-                        config.max_tokens = self._config.max_tokens
-
-                result = await llm.generate(prompt, config)
-                raw_text = result.text if hasattr(result, 'text') else str(result)
-
-                import json
-                try:
-                    parsed = json.loads(raw_text)
-                    total_hits = parsed.get("total_hits", 0)
-                    severity_score = float(parsed.get("severity_score", 0))
-                    hits = parsed.get("hits", [])
-                    overall_assessment = parsed.get("overall_assessment", "未检测")
-                except (json.JSONDecodeError, TypeError):
+                parsed = json.loads(raw_text)
+            except (json.JSONDecodeError, TypeError) as e:
+                overall_assessment = raw_text[:200]
+                error = f"LLM 返回非 JSON，审计未评估: {e}"
+            else:
+                if not isinstance(parsed, dict):
                     overall_assessment = raw_text[:200]
+                    error = "LLM 返回的 JSON 不是对象，审计未评估"
+                else:
+                    total_hits = _opt_int(parsed.get("total_hits"))
+                    # 键缺失 / None / 非数值 → None。注意不能用 `.get(key, 0)`：
+                    # 那把「没给这个字段」和「字段确实是 0」压成同一个值。
+                    severity_score = _opt_float(parsed.get("severity_score"))
+                    hits = parsed.get("hits")
+                    overall_assessment = parsed.get("overall_assessment")
+                    if severity_score is None:
+                        error = "LLM 未给出可解析的 severity_score，审计未评估"
+                    else:
+                        state = AssessmentState.DECIDED
+        except Exception as e:
+            error = f"LLM 调用失败: {e}"
+            logger.warning(error)
 
-            except Exception as e:
-                logger.warning(f"LLM 调用失败: {e}")
-
+        if state is AssessmentState.UNASSESSED:
             return NodeResult(
                 outputs={
                     "total_hits": total_hits,
                     "severity_score": severity_score,
                     "hits": hits,
                     "overall_assessment": overall_assessment,
+                    "state": state,
                 },
-                status=NodeStatus.WARNING if severity_score > 50 else NodeStatus.SUCCESS,
-                metrics={"severity_score": severity_score},
+                status=NodeStatus.ERROR,
                 duration_ms=int((time.time() - start) * 1000),
+                error=error,
             )
-        except Exception as e:
-            return NodeResult(outputs={"total_hits": 0, "severity_score": 0, "hits": [], "overall_assessment": ""}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+
+        return NodeResult(
+            outputs={
+                "total_hits": total_hits,
+                "severity_score": severity_score,
+                "hits": hits,
+                "overall_assessment": overall_assessment,
+                "state": state,
+            },
+            status=NodeStatus.WARNING if severity_score > 50 else NodeStatus.SUCCESS,
+            metrics={"severity_score": severity_score},
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return "content" in inputs
