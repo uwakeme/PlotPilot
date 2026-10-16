@@ -122,6 +122,21 @@ function onPointerUp(): void {
   else expanded.value = !expanded.value
 }
 
+/**
+ * 键盘可达性。
+ *
+ * bar 是 `<button>` 且带 `aria-expanded`，但展开逻辑只挂在 pointerdown /
+ * pointerup 上。`onHeadPointerDown` 里的 `preventDefault()` 会按 Pointer Events
+ * 规范吞掉后续的兼容性鼠标事件（含 click），所以 Enter / Space 合成的 click
+ * 根本到不了这里——键盘用户永远打不开这个弹窗。单独补一条 keydown 通路，
+ * 不动指针通路，避免真实鼠标点击被 toggle 两次。
+ */
+function onBarKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Enter' && e.key !== ' ') return
+  e.preventDefault()
+  expanded.value = !expanded.value
+}
+
 function onResize(): void {
   pos.value = clampPos(pos.value)
 }
@@ -185,6 +200,7 @@ onBeforeUnmount(() => {
       :aria-expanded="expanded"
       title="拖动移动，点击展开或收起"
       @pointerdown="onHeadPointerDown"
+      @keydown="onBarKeydown"
     >
       <span class="dot" :class="{ live: store.runningCount > 0 }" />
       <span class="title">{{ expanded ? 'AI 调用流' : idleLabel }}</span>
