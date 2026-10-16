@@ -783,9 +783,16 @@ class BaseStoryPipeline(ABC):
                     foreshadows=self._build_foreshadows(ctx),
                     era=ctx.era,
                 )
+                # 校验器可能是不带 state 的旧实现或测试桩，按 overall_score 推断，
+                # 别让"缺属性"把一次真实评估误记成未评估。
+                report_state = getattr(report, "state", None) or (
+                    AssessmentState.DECIDED
+                    if getattr(report, "overall_score", None) is not None
+                    else AssessmentState.UNASSESSED
+                )
                 ctx.validation_passed = report.passed
                 ctx.validation_score = report.overall_score
-                ctx.validation_state = report.state.value
+                ctx.validation_state = report_state.value
                 ctx.validation_violations = report.all_violations
                 ctx.validation_dimensions = {
                     "language_style": report.language_style_score,
@@ -795,34 +802,42 @@ class BaseStoryPipeline(ABC):
                     "viewpoint": report.viewpoint_score,
                     "rhythm": report.rhythm_score,
                 }
-                if report.state is AssessmentState.UNASSESSED:
+                if report_state is AssessmentState.UNASSESSED:
                     # 护栏没跑成：不阻断，但不得报成"未通过"——那会把
                     # 「没结论」说成「有结论且不合格」。分数保持 None。
                     logger.info(
                         "策略验证未评估（UNASSESSED），缺输入不影响管线推进；"
-                        f"各维度分（None 即该维未评估）: {report.to_dict()['scores']}"
+                        f"各维度分（None 即该维未评估）: {ctx.validation_dimensions}"
                     )
                     return StepResult(
                         passed=True,  # 不阻断
                         message="策略验证未评估（护栏未跑成，本次无结论）",
                         score=None,
                         violations=report.all_violations,
-                        metadata={"validation_state": report.state.value},
+                        metadata={"validation_state": report_state.value},
                     )
                 return StepResult.ok() if report.passed else StepResult(
                     passed=True,  # 不阻断
                     message=f"验证未通过 (score={report.overall_score:.2f})",
                     score=report.overall_score,
                     violations=report.all_violations,
-                    metadata={"validation_state": report.state.value},
+                    metadata={"validation_state": report_state.value},
                 )
             except Exception as e:
                 logger.warning(f"策略验证异常: {e}")
+                # 异常路径同样是无结论：显式写三态，不靠 dataclass 默认值兜。
+                ctx.validation_state = AssessmentState.UNASSESSED
+                ctx.validation_passed = None
+                ctx.validation_score = None
+                ctx.validation_dimensions = {}
         else:
-            # 无 PolicyValidator，跳过
-            ctx.validation_passed = True
-            ctx.validation_score = 0.85
-            ctx.validation_dimensions = {"language_style": 0.85}
+            # 无 PolicyValidator：无结论，显式标记（登记表 F-03）。
+            # 这里曾经伪造 overall_score=0.85 + passed=True，而 validation_state
+            # 又停在默认的 unassessed，落库即成自相矛盾的快照。
+            ctx.validation_state = AssessmentState.UNASSESSED
+            ctx.validation_passed = None
+            ctx.validation_score = None
+            ctx.validation_dimensions = {}
 
         return StepResult.ok()
 

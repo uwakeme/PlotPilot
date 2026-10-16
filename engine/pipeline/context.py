@@ -70,10 +70,11 @@ class PipelineContext:
     generation_interrupted: bool = False         # stop/restart 导致本步骤中断
 
     # ═══ 步骤5产出：策略验证 ═══
-    validation_passed: bool = True
+    # validation_score / validation_passed 为 None 表示「本次未评估」，
+    # 不得当作 0 分或「通过」使用。validation_state 是权威三态标记。
+    validation_passed: Optional[bool] = None
     validation_score: Optional[float] = None
-    # 护栏三态（decided / unassessed / blocked）；validation_score 为 None
-    # 表示本次未评估，不得当作 0 分使用。
+    # 护栏三态（decided / unassessed / blocked）
     validation_state: str = "unassessed"
     validation_violations: List[Dict[str, Any]] = field(default_factory=list)
     validation_suggestions: List[str] = field(default_factory=list)
@@ -191,7 +192,7 @@ class PipelineResult:
     drift_alert: bool = False
     similarity_score: Optional[float] = None
     validation_score: Optional[float] = None
-    validation_passed: bool = True
+    validation_passed: Optional[bool] = None
     # 护栏三态：validation_score 为 None 表示「本次未评估」，
     # 不得当作 0 分使用（AssessmentState.UNASSESSED）。
     validation_state: str = "unassessed"

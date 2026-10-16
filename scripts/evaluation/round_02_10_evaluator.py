@@ -172,9 +172,14 @@ class ComprehensiveEvaluator:
         }
 
         report = self.quality.check(text, character_masks=masks)
-        dimensions_checked = sum(1 for attr in ['language_style_score', 'character_consistency_score',
-                                                  'plot_density_score', 'naming_score', 'viewpoint_score', 'rhythm_score']
-                                 if getattr(report, attr, 0) > 0)
+        # 维度分可能是 None（该维未评估），None > 0 会 TypeError，
+        # 因此先过滤掉再计数——「没评估」不算「已检查」。
+        dimensions_checked = sum(
+            1 for attr in ['language_style_score', 'character_consistency_score',
+                           'plot_density_score', 'naming_score', 'viewpoint_score',
+                           'rhythm_score']
+            if (getattr(report, attr, None) or 0) > 0
+        )
         self._record("R3_集成", "QualityGuardrail_6维检查", dimensions_checked >= 3,
                      f"dimensions={dimensions_checked}, score={report.overall_score}")
 

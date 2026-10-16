@@ -289,34 +289,55 @@ class WritingOrchestrator:
             len(r.quality_report.all_violations) for r in results if r.quality_report
         )
 
-        # 各维度平均分
-        avg_style = 0.0
-        avg_consistency = 0.0
-        avg_density = 0.0
-        avg_viewpoint = 0.0
-        avg_rhythm = 0.0
-        count = len(results)
-
+        # 各维度平均分。只对**真正评估过**的维度求和与计数：
+        # 维度分可能是 None（该维未评估），None 不能当 0 参与平均——
+        # 那会让「没评」伪装成「评了个零分」。无任何评估的维度不进结果。
+        dim_totals = {
+            "style": 0.0, "consistency": 0.0, "density": 0.0,
+            "viewpoint": 0.0, "rhythm": 0.0,
+        }
+        dim_counts = {k: 0 for k in dim_totals}
         for r in results:
-            if r.quality_report:
-                avg_style += r.quality_report.language_style_score
-                avg_consistency += r.quality_report.character_consistency_score
-                avg_density += r.quality_report.plot_density_score
-                avg_viewpoint += r.quality_report.viewpoint_score
-                avg_rhythm += r.quality_report.rhythm_score
+            if not r.quality_report:
+                continue
+            pairs = (
+                ("style", "language_style_score"),
+                ("consistency", "character_consistency_score"),
+                ("density", "plot_density_score"),
+                ("viewpoint", "viewpoint_score"),
+                ("rhythm", "rhythm_score"),
+            )
+            for key, attr in pairs:
+                val = getattr(r.quality_report, attr, None)
+                if val is None:
+                    continue
+                dim_totals[key] += val
+                dim_counts[key] += 1
 
-        if count > 0:
-            avg_style /= count
-            avg_consistency /= count
-            avg_density /= count
-            avg_viewpoint /= count
-            avg_rhythm /= count
+        avg_style = dim_totals["style"] / dim_counts["style"] if dim_counts["style"] else None
+        avg_consistency = (
+            dim_totals["consistency"] / dim_counts["consistency"]
+            if dim_counts["consistency"] else None
+        )
+        avg_density = dim_totals["density"] / dim_counts["density"] if dim_counts["density"] else None
+        avg_viewpoint = (
+            dim_totals["viewpoint"] / dim_counts["viewpoint"] if dim_counts["viewpoint"] else None
+        )
+        avg_rhythm = dim_totals["rhythm"] / dim_counts["rhythm"] if dim_counts["rhythm"] else None
 
-        # 评级
-        overall = (avg_style * 0.25 + avg_consistency * 0.25 +
-                   avg_density * 0.20 + avg_viewpoint * 0.10 + avg_rhythm * 0.20)
-
-        grade = "S" if overall >= 0.9 else "A" if overall >= 0.8 else "B" if overall >= 0.7 else "C" if overall >= 0.6 else "D"
+        # 评级：只吃有评估的维度，缺项不按 0 计入
+        weighted = (
+            (avg_style, 0.25), (avg_consistency, 0.25), (avg_density, 0.20),
+            (avg_viewpoint, 0.10), (avg_rhythm, 0.20),
+        )
+        present = [(v, w) for v, w in weighted if v is not None]
+        if present:
+            total_w = sum(w for _, w in present)
+            overall = sum(v * w for v, w in present) / total_w
+            grade = "S" if overall >= 0.9 else "A" if overall >= 0.8 else "B" if overall >= 0.7 else "C" if overall >= 0.6 else "D"
+        else:
+            overall = None
+            grade = "未评估"
 
         # 收集所有违规类型
         violation_types = {}
@@ -330,18 +351,22 @@ class WritingOrchestrator:
 
         return {
             "grade": grade,
-            "overall_score": round(overall, 3),
-            "total_chapters": count,
+            # 未评估时是 None，不是 0 分：round(None) 会 TypeError，
+            # 写成 0 则等于把"没评"说成"评了个零分"。
+            "overall_score": None if overall is None else round(overall, 3),
+            "total_chapters": len(results),
             "total_words": total_words,
-            "avg_words_per_chapter": total_words // max(count, 1),
-            "quality_pass_rate": passed_count / max(count, 1),
+            "avg_words_per_chapter": total_words // max(len(results), 1),
+            "quality_pass_rate": passed_count / max(len(results), 1),
             "total_violations": total_violations,
             "scores": {
-                "language_style": round(avg_style, 3),
-                "character_consistency": round(avg_consistency, 3),
-                "plot_density": round(avg_density, 3),
-                "viewpoint": round(avg_viewpoint, 3),
-                "rhythm": round(avg_rhythm, 3),
+                "language_style": None if avg_style is None else round(avg_style, 3),
+                "character_consistency": (
+                    None if avg_consistency is None else round(avg_consistency, 3)
+                ),
+                "plot_density": None if avg_density is None else round(avg_density, 3),
+                "viewpoint": None if avg_viewpoint is None else round(avg_viewpoint, 3),
+                "rhythm": None if avg_rhythm is None else round(avg_rhythm, 3),
             },
             "top_violations": dict(
                 sorted(violation_types.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -351,7 +376,9 @@ class WritingOrchestrator:
                     "chapter": r.chapter_number,
                     "word_count": r.word_count,
                     "quality_passed": r.quality_passed,
-                    "overall_score": r.quality_report.overall_score if r.quality_report else 0,
+                    "overall_score": (
+                        r.quality_report.overall_score if r.quality_report else None
+                    ),
                     "phase": r.phase.value,
                 }
                 for r in results

@@ -236,3 +236,57 @@ class TestValidateContentFeedsGuardrails:
         assert validator.calls[0]["foreshadows"] == []
         assert any(r.levelno >= logging.WARNING for r in caplog.records), "取数失败必须告警"
         assert "novel-1" in caplog.text
+
+
+class TestValidateContentNeverFabricatesAScore:
+    """登记表 F-03：管线层不得在「没护栏 / 护栏炸了」时伪造一个像样的分数。
+
+    这两条钉的是 ``base.py`` 的 ``else`` 与 ``except`` 分支。改回
+    ``validation_score = 0.85`` / ``passed = True`` 必红——那条路径曾让
+    落库快照同时出现 ``score=0.85`` 与 ``state="unassessed"``，自相矛盾。
+    """
+
+    async def test_no_policy_validator_yields_unassessed_not_085(self):
+        pipeline = _pipeline()
+        ctx = _ctx()
+        ctx.policy_validator = None
+
+        result = await pipeline._step_validate_content(ctx)
+
+        assert ctx.validation_score is None, "无护栏时不得伪造 0.85"
+        assert ctx.validation_passed is None, "无结论不得声称通过"
+        assert ctx.validation_state == "unassessed"
+        assert ctx.validation_dimensions == {}
+        assert result.passed is True, "未评估不应阻断管线"
+
+    async def test_guardrail_exception_yields_unassessed_not_default(self):
+        """护栏抛异常时也必须显式写三态，而不是靠 dataclass 默认值兜。"""
+
+        class _Exploding:
+            def advise(self, **kwargs):
+                raise RuntimeError("护栏炸了")
+
+        pipeline = _pipeline()
+        ctx = _ctx()
+        ctx.policy_validator = _Exploding()
+
+        result = await pipeline._step_validate_content(ctx)
+
+        assert ctx.validation_score is None
+        assert ctx.validation_passed is None
+        assert ctx.validation_state == "unassessed"
+        assert ctx.validation_dimensions == {}
+        assert result.passed is True, "未评估不应阻断管线"
+
+    async def test_decided_state_is_recorded(self, monkeypatch):
+        """对照组：真的跑过就必须是 decided，不能一律 unassessed。"""
+        monkeypatch.setattr(f"{MODULE}._character_masks_for_novel", _two_character_cast)
+        pipeline = _pipeline()
+        ctx = _ctx(TWO_CHARACTER_TEXT)
+        ctx.policy_validator = RecordingValidator()
+
+        result = await pipeline._step_validate_content(ctx)
+
+        assert ctx.validation_state == "decided"
+        assert ctx.validation_score == pytest.approx(0.9)
+        assert result.passed is True

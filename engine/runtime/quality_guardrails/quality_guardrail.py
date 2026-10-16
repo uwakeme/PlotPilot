@@ -99,6 +99,19 @@ class QualityViolationError(Exception):
         super().__init__(message)
 
 
+class GuardrailUnavailableError(Exception):
+    """护栏本次没跑成 / 没数据到无法评估任何维度。
+
+    与 ``QualityViolationError`` 分开是刻意的：「没评出来」既不是
+    「不合格」，更不是「通过」。enforce 的调用方只 catch 前者时，
+    本异常会向上传播，避免把无结论读成放行。
+    """
+
+    def __init__(self, message: str = "质量护栏未评估（UNASSESSED），本次无结论"):
+        self.state = AssessmentState.UNASSESSED
+        super().__init__(message)
+
+
 @dataclass
 class QualityReport:
     """质量检查报告
@@ -121,9 +134,20 @@ class QualityReport:
     macro_pacing_score: Optional[float] = None
     all_violations: List[Dict[str, Any]] = field(default_factory=list)
     passed: Optional[bool] = None
-    state: AssessmentState = AssessmentState.UNASSESSED
+    # None = 未显式指定，由 __post_init__ 按 overall_score 推断
+    state: Optional[AssessmentState] = None
     evaluated_dimensions: List[str] = field(default_factory=list)
     unevaluated_dimensions: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # 手写 QualityReport(overall_score=0.9, passed=True)（测试桩、后续调用方）
+        # 不应被误标成 UNASSESSED：有结论就 DECIDED，无结论才 UNASSESSED。
+        if self.state is None:
+            self.state = (
+                AssessmentState.DECIDED
+                if self.overall_score is not None
+                else AssessmentState.UNASSESSED
+            )
 
     @staticmethod
     def _round3(value: Optional[float]) -> Optional[float]:
@@ -394,10 +418,13 @@ class QualityGuardrail:
         threshold = min_score or self.MIN_PASS_SCORE
 
         if report.overall_score is None:
-            # 一个维度都没评出来：无从比较阈值。返回带 UNASSESSED 的报告由
-            # 调用方决定，不得用常量分顶替——那正是 F-09 的成因。
-            logger.warning("质量检查未评估（UNASSESSED），跳过阈值比较")
-            return report
+            # 一个维度都没评出来：不得当作通过，也不得当作不合格。
+            # 抛 GuardrailUnavailableError 让调用方显式面对「没评成」——
+            # 只 catch QualityViolationError 的调用方会看到它向上传播，
+            # 而不是把无结论读成放行（登记表 F-03 / F-09）。
+            raise GuardrailUnavailableError(
+                "质量检查未评估（UNASSESSED）：缺少可评估的维度输入，无结论"
+            )
 
         if report.overall_score < threshold:
             raise QualityViolationError(

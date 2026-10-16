@@ -89,9 +89,10 @@ class GuardrailCheckRequest(BaseModel):
 class GuardrailDimensionScore(BaseModel):
     name: str
     key: str
-    # None = 该维度本次未评估（缺 cast / 角色名 / 场景语境），
-    # 不是 0 分。见 domain.ai.value_objects.assessment_state。
-    score: Optional[float] = None
+    # None = 该维度本次未评估（缺 cast / 角色名 / 场景语境），不是 0 分。
+    # 可空但必填：不给默认值，上游漏填应当 422，而不是静默序列化成 null
+    # ——那正是本改造要消灭的「缺数据伪装成值」，只是换了一层。
+    score: Optional[float]
     weight: float
 
 
@@ -116,9 +117,11 @@ class GuardrailViolationDTO(BaseModel):
 
 class GuardrailCheckResponse(BaseModel):
     # None = 护栏本次没跑成 / 没数据，下游不得当作 0 分或「干净」。
-    overall_score: Optional[float] = None
-    passed: Optional[bool] = None
-    # decided | unassessed | blocked（AssessmentState 的 wire 值，可为空表示未知）
+    # 可空但必填（不给默认值）：漏填应当 422，不该静默变 null。
+    overall_score: Optional[float]
+    passed: Optional[bool]
+    # decided | unassessed | blocked。本字段是后加的，历史快照里没有，
+    # 故保留 None 默认值以免旧快照读不回来；其余字段一律必填。
     state: Optional[str] = None
     dimensions: List[GuardrailDimensionScore] = Field(default_factory=list)
     violations: List[GuardrailViolationDTO] = Field(default_factory=list)

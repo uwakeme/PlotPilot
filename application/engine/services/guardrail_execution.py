@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from domain.ai.value_objects.assessment_state import AssessmentState
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,7 +192,10 @@ def run_guardrail_sync(
 ) -> Dict[str, Any]:
     """同步执行护栏（advise | enforce），返回与前端 GuardrailCheckResponse 一致的 dict。"""
     from interfaces.api.dependencies import get_quality_guardrail
-    from engine.runtime.quality_guardrails.quality_guardrail import QualityViolationError
+    from engine.runtime.quality_guardrails.quality_guardrail import (
+        GuardrailUnavailableError,
+        QualityViolationError,
+    )
 
     guardrail = get_quality_guardrail()
     character_masks = _character_masks_for_novel(novel_id) or None
@@ -224,6 +229,17 @@ def run_guardrail_sync(
                 scene_type=scene_type,
             )
         return quality_report_to_snapshot_dict(report)
+    except GuardrailUnavailableError as e:
+        # 没评成：既不是不合格也不是通过。返回 null 而不是 0 分，
+        # 否则 enforce 模式会把「没评」显示成「评了个零分」。
+        logger.info("护栏未评估 novel=%s mode=%s: %s", novel_id, mode, e)
+        return {
+            "overall_score": None,
+            "passed": None,
+            "state": AssessmentState.UNASSESSED.value,
+            "dimensions": [],
+            "violations": [],
+        }
     except QualityViolationError as e:
         return {
             "overall_score": round(float(getattr(e, "overall_score", 0.0) or 0.0), 3),

@@ -80,6 +80,18 @@ class PolicyViolationError(Exception):
         super().__init__(message)
 
 
+class PolicyUnavailableError(Exception):
+    """策略验证本次没跑成 —— 无结论，既不是不合格也不是通过。
+
+    与 ``PolicyViolationError`` 分开，理由同 ``GuardrailUnavailableError``：
+    只 catch 前者的调用方必须看到「没评成」，不能把它读成放行。
+    """
+
+    def __init__(self, message: str = "策略验证未评估（UNASSESSED），本次无结论"):
+        self.state = AssessmentState.UNASSESSED
+        super().__init__(message)
+
+
 class PolicyValidator:
     """策略验证器 — 对 QualityGuardrail 的薄封装
 
@@ -204,10 +216,10 @@ class PolicyValidator:
 
         threshold = min_score or self._min_pass_score
         if report.overall_score is None:
-            # 未评估：无从比较阈值。返回带 UNASSESSED 的报告由调用方决定，
-            # 不得用常量分顶替——那正是 F-03 的成因。
-            logger.warning("策略验证未评估（UNASSESSED），跳过阈值比较")
-            return report
+            # 未评估：不得当作通过，也不得当作不合格（登记表 F-03）。
+            raise PolicyUnavailableError(
+                "策略验证未评估（UNASSESSED）：护栏未跑成或无任何可评估维度，无结论"
+            )
 
         if report.overall_score < threshold:
             raise PolicyViolationError(

@@ -16,8 +16,15 @@
 import pytest
 
 from domain.ai.value_objects.assessment_state import AssessmentState
-from engine.runtime.policy_validator import PolicyReport, PolicyValidator
-from engine.runtime.quality_guardrails.quality_guardrail import QualityGuardrail
+from engine.runtime.policy_validator import (
+    PolicyReport,
+    PolicyUnavailableError,
+    PolicyValidator,
+)
+from engine.runtime.quality_guardrails.quality_guardrail import (
+    GuardrailUnavailableError,
+    QualityGuardrail,
+)
 
 
 def _mask(name="林渊"):
@@ -160,8 +167,12 @@ def test_no_dimension_evaluable_yields_unassessed_and_no_score(monkeypatch):
     assert len(report.unevaluated_dimensions) == 7
 
 
-def test_enforce_does_not_raise_when_nothing_was_evaluated(monkeypatch):
-    """UNASSESSED 时 enforce 无从比较阈值，不得拿 None 去比大小。"""
+def test_enforce_raises_when_nothing_was_evaluated(monkeypatch):
+    """UNASSESSED 时 enforce 必须抛错，不得静默放行。
+
+    只 catch QualityViolationError 的调用方会把静默 return 读成「通过」。
+    「没评成」既不是不合格也不是通过，因此走专门的 GuardrailUnavailableError。
+    """
     g = QualityGuardrail()
 
     def _nothing(*a, **k):
@@ -170,10 +181,21 @@ def test_enforce_does_not_raise_when_nothing_was_evaluated(monkeypatch):
     for attr in ("_language_style", "_plot_density", "_rhythm", "_macro_pacing"):
         monkeypatch.setattr(g, attr, type("G", (), {"check": _nothing})())
 
-    report = g.enforce(text="正文")
+    with pytest.raises(GuardrailUnavailableError):
+        g.enforce(text="正文")
 
-    assert report.state is AssessmentState.UNASSESSED
-    assert report.overall_score is None
+
+def test_policy_enforce_raises_when_guardrail_unavailable(monkeypatch):
+    """PolicyValidator.enforce 同样不得把无结论当放行。"""
+    v = PolicyValidator()
+
+    def boom(*a, **k):
+        raise RuntimeError("护栏炸了")
+
+    monkeypatch.setattr(v, "_guardrail", type("G", (), {"check": boom})())
+
+    with pytest.raises(PolicyUnavailableError):
+        v.enforce(text="正文")
 
 
 def test_policy_report_propagates_guardrail_state(monkeypatch):
@@ -220,3 +242,31 @@ def test_to_dict_is_none_safe():
     assert d["overall_score"] is None
     assert d["state"] == "unassessed"
     assert d["passed"] is None
+
+
+def test_novelist_assessment_survives_unevaluated_dimensions():
+    """聚合端不得把 None 当 0 累加——那正是"没评"伪装成"零分"。
+
+    登记表 F-09 的下游受害者之一：WritingOrchestrator 逐维求和时
+    遇到 None 会 TypeError，改成 `or 0` 又会静默拉低均分。
+    """
+    from engine.runtime.quality_guardrails.quality_guardrail import QualityReport
+    from engine.runtime.writing_orchestrator import ChapterResult, WritingOrchestrator
+
+    unassessed = QualityReport(
+        overall_score=None,
+        language_style_score=None,
+        character_consistency_score=None,
+        plot_density_score=None,
+        naming_score=None,
+        viewpoint_score=None,
+        rhythm_score=None,
+        all_violations=[],
+        passed=None,
+    )
+    results = [ChapterResult(chapter_number=1, quality_report=unassessed)]
+
+    out = WritingOrchestrator.__new__(WritingOrchestrator).generate_novelist_assessment(results)
+
+    assert out.get("overall_score") is None, "一维都没评出来时不得报 0 分"
+    assert out.get("grade") == "未评估"
