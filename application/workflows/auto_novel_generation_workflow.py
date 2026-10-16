@@ -513,9 +513,20 @@ class AutoNovelGenerationWorkflow:
         chapter_state = await self._extract_chapter_state(content, chapter_number)
         consistency_report = self._check_consistency(chapter_state, novel_id)
         ghost_annotations = self._detect_conflicts(novel_id, chapter_number, outline, scene_director)
+        state_report = None
         if self.state_updater:
             try:
-                self.state_updater.update_from_chapter(novel_id, chapter_number, chapter_state)
+                state_report = self.state_updater.update_from_chapter(
+                    novel_id, chapter_number, chapter_state
+                )
+                # 未配对的回收指令必须浮到调用方，否则又变回静默丢失（登记表 G-02）：
+                # AI 说「这条伏笔已回收」却配不上具体伏笔，伏笔就永远停在 PLANTED。
+                if state_report and state_report.has_unresolved:
+                    logger.warning(
+                        "  ⚠️ StateUpdater: %d 条伏笔回收指令未配对（伏笔仍为未回收）: %s",
+                        len(state_report.unresolved),
+                        [(u.reason, u.chapter_number) for u in state_report.unresolved],
+                    )
             except Exception as e:
                 logger.warning("StateUpdater 失败: %s", e)
 
@@ -547,6 +558,7 @@ class AutoNovelGenerationWorkflow:
             "consistency_report": consistency_report,
             "ghost_annotations": ghost_annotations,
             "memory_delta": memory_delta,
+            "foreshadowing_report": state_report,
         }
 
     async def generate_chapter(

@@ -2,6 +2,7 @@ import re
 import uuid
 import logging
 from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
 from datetime import datetime
 from domain.novel.value_objects.chapter_state import ChapterState
 from domain.novel.value_objects.novel_id import NovelId
@@ -28,6 +29,41 @@ from domain.novel.entities.foreshadowing_registry import ForeshadowingRegistry
 from domain.novel.entities.timeline_registry import TimelineRegistry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class UnresolvedForeshadowingResolution:
+    """一条没能配对到已注册伏笔的回收指令。
+
+    AI 说「这条伏笔已回收」，代码却配不上具体伏笔时，**绝不能静默丢弃**：
+    丢弃意味着伏笔永远停在 PLANTED，且没有任何痕迹说明它本该被回收。
+
+    这里只如实记录发生了什么，不替 AI 做「选哪个候选」的创作判断 ——
+    那是创作决定，应交还给 LLM / 作者重新决策。
+    """
+
+    reason: str                    # unpaired_resolution / mark_resolved_failed
+    chapter_number: int            # 该回收指令声称的回收章节
+    resolved_data: Dict[str, Any]  # LLM 原始载荷，供复盘与重新配对
+    detail: str = ""               # 失败细节（异常消息等）
+
+
+@dataclass
+class ForeshadowingUpdateReport:
+    """章后伏笔同步的显式结果。
+
+    调用方拿到它，就能区分「回收指令全部落库」与「有指令没落地」。
+    丢弃这个返回值 = 重新引入静默丢失。
+    """
+
+    novel_id: str
+    chapter_number: int
+    resolved_ids: List[str] = field(default_factory=list)
+    unresolved: List[UnresolvedForeshadowingResolution] = field(default_factory=list)
+
+    @property
+    def has_unresolved(self) -> bool:
+        return bool(self.unresolved)
 
 
 def _normalize_text(value: Any) -> str:
@@ -153,18 +189,24 @@ class StateUpdater:
         novel_id: str,
         chapter_number: int,
         chapter_state: ChapterState
-    ) -> None:
+    ) -> ForeshadowingUpdateReport:
         """从章节状态更新所有相关对象
 
         Args:
             novel_id: 小说ID
             chapter_number: 章节号
             chapter_state: 章节状态
+
+        Returns:
+            ForeshadowingUpdateReport: 显式结果。``unresolved`` 非空表示本章存在
+            「AI 说已回收、但配不上伏笔」的指令，必须由调用方决定如何呈现，
+            不得当作无事发生。
         """
         chapter_number = _safe_chapter_int(chapter_number, 1)
         if chapter_number < 1:
             chapter_number = 1
         novel_id_obj = NovelId(novel_id)
+        report = ForeshadowingUpdateReport(novel_id=novel_id, chapter_number=chapter_number)
         logger.info(
             f"StateUpdater.update_from_chapter: novel={novel_id}, chapter={chapter_number}, "
             f"new_characters={len(chapter_state.new_characters)}, "
@@ -257,17 +299,46 @@ class StateUpdater:
                 resolved_ch = _safe_chapter_int(
                     resolved_data.get("chapter"), chapter_number
                 )
-                if not fid:
-                    logger.warning("Skipping foreshadowing resolution with no identifiable reference: %s", resolved_data)
+                # ★ 未配对的回收指令不得静默跳过（登记表 G-02）。
+                #   歧义 / 无匹配 / fid 不存在时若直接 continue，这条伏笔会永远停在
+                #   PLANTED 且无人知晓；此处显式记入 report 并打 ERROR 日志。
+                if fid is None:
+                    report.unresolved.append(
+                        UnresolvedForeshadowingResolution(
+                            reason="unpaired_resolution",
+                            chapter_number=resolved_ch,
+                            resolved_data=dict(resolved_data),
+                            detail="回收指令未配对到任何已注册伏笔；具体原因见同批 ERROR 日志",
+                        )
+                    )
+                    logger.error(
+                        "伏笔回收指令未配对，已记入 report.unresolved（该伏笔不会被标记回收）: "
+                        "novel=%s chapter=%s resolved_data=%s",
+                        novel_id, resolved_ch, resolved_data,
+                    )
                     continue
                 try:
                     foreshadowing_registry.mark_resolved(
                         foreshadowing_id=fid,
                         resolved_in_chapter=resolved_ch
                     )
+                    report.resolved_ids.append(fid)
                     logger.debug(f"Resolved foreshadowing: {fid}")
                 except Exception as e:
-                    logger.warning(f"Failed to resolve foreshadowing {fid}: {e}")
+                    # 落库失败同样不能只 warning 了事——记入 report 交由调用方呈现。
+                    report.unresolved.append(
+                        UnresolvedForeshadowingResolution(
+                            reason="mark_resolved_failed",
+                            chapter_number=resolved_ch,
+                            resolved_data=dict(resolved_data),
+                            detail=str(e),
+                        )
+                    )
+                    logger.error(
+                        "伏笔回收落库失败，已记入 report.unresolved: "
+                        "novel=%s chapter=%s fid=%s error=%s",
+                        novel_id, resolved_ch, fid, e,
+                    )
 
             self.foreshadowing_repository.save(foreshadowing_registry)
             logger.info(f"ForeshadowingRegistry updated for novel {novel_id}")
@@ -376,15 +447,26 @@ class StateUpdater:
         if chapter_state.has_new_characters() and self.db_connection:
             self._write_chapter_elements(novel_id, chapter_number, chapter_state.new_characters)
 
+        return report
+
     def _resolve_foreshadowing_id(
         self,
         registry: ForeshadowingRegistry,
         resolved_data: Dict[str, Any],
-    ) -> str:
-        """兼容 LLM 返回描述而非伏笔 ID 的情况。"""
+    ) -> Optional[str]:
+        """兼容 LLM 返回描述而非伏笔 ID 的情况。
+
+        返回 None 表示「这条回收指令配不上任何已注册伏笔」。调用方**必须**让它
+        可见：静默跳过等于让伏笔永远停在 PLANTED 而无人知晓（登记表 G-02）。
+
+        绝不返回未经 ``registry.get_by_id`` 校验的 fid —— 那种 fid 会在
+        ``mark_resolved`` 处抛错，异常再被降级成 warning，回收指令同样凭空消失。
+        歧义时也绝不替 AI 选一个候选。
+        """
         fid = str(resolved_data.get("foreshadowing_id", "")).strip()
-        if fid and registry.get_by_id(fid):
-            return fid
+        verified = self._verified_foreshadowing_id(registry, fid)
+        if verified is not None:
+            return verified
 
         description = str(
             resolved_data.get("description")
@@ -394,7 +476,7 @@ class StateUpdater:
             or ""
         ).strip()
         if not description:
-            return fid
+            return None
 
         normalized = _normalize_text(description)
         exact_match = None
@@ -414,13 +496,33 @@ class StateUpdater:
         if len(fuzzy_matches) == 1:
             return fuzzy_matches[0]
         if len(fuzzy_matches) > 1:
-            logger.warning(
-                "Ambiguous foreshadowing resolution for %r, candidates=%s",
+            logger.error(
+                "Ambiguous foreshadowing resolution for %r, candidates=%s "
+                "— 不替 AI 选候选，该伏笔保持 PLANTED",
                 description,
                 fuzzy_matches,
             )
-            return ""
-        return fid
+            return None
+        # 描述匹配不上任何已注册伏笔：不再回退到未经校验的 fid。
+        logger.error(
+            "Foreshadowing resolution matched nothing for %r (raw fid=%r) — 该伏笔保持 PLANTED",
+            description,
+            fid,
+        )
+        return None
+
+    @staticmethod
+    def _verified_foreshadowing_id(
+        registry: ForeshadowingRegistry,
+        fid: str,
+    ) -> Optional[str]:
+        """fid 非空且 registry 里真实存在才返回它，否则 None。
+
+        三个返回点共用这一个校验，避免各自复述一遍判断。
+        """
+        if fid and registry.get_by_id(fid):
+            return fid
+        return None
 
     def _update_knowledge(
         self,
