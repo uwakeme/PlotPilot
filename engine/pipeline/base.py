@@ -792,7 +792,7 @@ class BaseStoryPipeline(ABC):
                 )
                 ctx.validation_passed = report.passed
                 ctx.validation_score = report.overall_score
-                ctx.validation_state = report_state.value
+                ctx.validation_state = report_state
                 ctx.validation_violations = report.all_violations
                 ctx.validation_dimensions = {
                     "language_style": report.language_style_score,

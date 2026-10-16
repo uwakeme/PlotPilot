@@ -14,9 +14,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from domain.ai.value_objects.assessment_state import AssessmentState
+
+
+class _ValidationStateContract:
+    """三态字段（validation_state）的写入归一化。
+
+    该字段此前在三条路径上并存两种运行时类型：dataclass 默认值给裸
+    "unassessed"，护栏降级给 AssessmentState.UNASSESSED，真的跑过给
+    report_state.value。因为 AssessmentState 是 str, Enum，`==` 全真，
+    `is` 只有一条为真——静默的类型地雷。
+
+    在写入点统一收敛，非法三态值直接 ValueError：写进一个不存在的状态
+    比写裸串更危险。登记表 F-03。
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "validation_state" and not isinstance(value, AssessmentState):
+            value = AssessmentState(value)
+        super().__setattr__(name, value)
+
 
 @dataclass
-class PipelineContext:
+class PipelineContext(_ValidationStateContract):
     """管线执行上下文 — 贯穿所有步骤的数据载体
 
     使用方式：
@@ -70,15 +90,15 @@ class PipelineContext:
     generation_interrupted: bool = False         # stop/restart 导致本步骤中断
 
     # ═══ 步骤5产出：策略验证 ═══
-    # validation_score / validation_passed 为 None 表示「本次未评估」，
-    # 不得当作 0 分或「通过」使用。validation_state 是权威三态标记。
+    # 三态（AssessmentState）：UNASSESSED 时 score/passed/dimensions 均无结论，
+    # 下游不得当作 0 分或「通过」使用。登记表 F-03。
+    validation_state: AssessmentState = AssessmentState.UNASSESSED
     validation_passed: Optional[bool] = None
     validation_score: Optional[float] = None
-    # 护栏三态（decided / unassessed / blocked）
-    validation_state: str = "unassessed"
     validation_violations: List[Dict[str, Any]] = field(default_factory=list)
     validation_suggestions: List[str] = field(default_factory=list)
-    validation_dimensions: Dict[str, float] = field(default_factory=dict)  # 各维度分数
+    # 逐维诚实：某个维度可能因缺输入而未评估，此时值为 None（不是 0）。
+    validation_dimensions: Dict[str, Optional[float]] = field(default_factory=dict)
 
     # ═══ 步骤6产出：章节保存 ═══
     chapter_saved: bool = False
@@ -182,7 +202,7 @@ class PipelineContext:
 
 
 @dataclass
-class PipelineResult:
+class PipelineResult(_ValidationStateContract):
     """管线最终输出 — 不可变记录"""
     success: bool = True
     chapter_number: int = 0
@@ -193,9 +213,9 @@ class PipelineResult:
     similarity_score: Optional[float] = None
     validation_score: Optional[float] = None
     validation_passed: Optional[bool] = None
-    # 护栏三态：validation_score 为 None 表示「本次未评估」，
-    # 不得当作 0 分使用（AssessmentState.UNASSESSED）。
-    validation_state: str = "unassessed"
+    # 护栏三态（AssessmentState）：UNASSESSED 时 validation_score 为 None，
+    # 不得当作 0 分使用（AssessmentState.UNASSESSED）。登记表 F-03。
+    validation_state: AssessmentState = AssessmentState.UNASSESSED
     narrative_sync_ok: bool = False
     error: Optional[str] = None
 
@@ -218,7 +238,7 @@ class PipelineResult:
                 None if self.validation_score is None else round(self.validation_score, 3)
             ),
             "validation_passed": self.validation_passed,
-            "validation_state": self.validation_state,
+            "validation_state": self.validation_state.value,
             "narrative_sync_ok": self.narrative_sync_ok,
             "error": self.error,
             "step_status": self.step_status,
