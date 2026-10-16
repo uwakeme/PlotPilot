@@ -843,19 +843,51 @@ class BaseStoryPipeline(ABC):
                     # 队列积压/消费者延迟导致超时：独立短连接直写兜底
                     # （同一 payload 的幂等 upsert，队列任务后到无害）
                     await self._save_chapter_via_repository(ctx)
-                ctx.chapter_saved = True
                 ctx.save_method = "queue"
-                self._discard_generation_workspace(ctx)
-                return StepResult.ok()
+            else:
+                # 降级：通过 repository 直接写库
+                await self._save_chapter_via_repository(ctx)
+                ctx.save_method = "repository"
 
-            # 降级：通过 repository 直接写库
-            await self._save_chapter_via_repository(ctx)
             ctx.chapter_saved = True
-            ctx.save_method = "repository"
             self._discard_generation_workspace(ctx)
+            # 结构树必须镜像章节真实进度：幕级规划的闸门 0 / 预算 pending 与
+            # ContinuousPlanningService._count_written_chapters_in_act 都靠
+            # story_nodes.word_count 判断「这一章动笔没有」。本步骤过去只写
+            # chapters 表，导致该字段对所有引擎写出来的书恒为 0，三处判定永久
+            # 失明（闸门 0 永远认为上一幕还有章没写 → 新幕开不出来 → 死循环）。
+            await self._sync_chapter_node_progress(ctx)
             return StepResult.ok()
         except Exception as e:
             return StepResult.fail(f"章节保存失败: {e}")
+
+    async def _sync_chapter_node_progress(self, ctx: PipelineContext) -> bool:
+        """把本章真实字数/状态回写到 story_nodes 章节节点。
+
+        同步失败不阻断写作——chapters 表才是事实源，结构树只是镜像。
+        """
+        from application.blueprint.services.story_node_progress_sync import (
+            sync_chapter_node_progress,
+        )
+
+        if ctx.story_node_repo is None:
+            return False
+        try:
+            return await sync_chapter_node_progress(
+                ctx.story_node_repo,
+                ctx.novel_id,
+                int(ctx.chapter_number),
+                word_count=int(ctx.word_count or 0),
+                status="completed",
+            )
+        except Exception:
+            logger.warning(
+                "[%s] 第%s章进度回写失败（不阻断写作）",
+                getattr(ctx, "novel_id", "?"),
+                getattr(ctx, "chapter_number", "?"),
+                exc_info=True,
+            )
+            return False
 
     def _wait_for_chapter_persistence(self, ctx: PipelineContext) -> bool:
         """轮询等待本章落库生效，返回是否在预算内确认。

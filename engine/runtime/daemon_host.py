@@ -315,7 +315,33 @@ class DaemonHostMixin:
         params.extend([novel_id, chapter_number])
 
         # 全部经由持久化队列；completed 亦不直连 DB，杜绝第二写者。
-        return self._queue_sql(sql, params)
+        ok = self._queue_sql(sql, params)
+
+        # 结构树镜像：story_nodes 章节节点的 word_count/status 必须跟着 chapters 走。
+        # 幕级规划闸门 0、预算 pending、ContinuousPlanningService._count_written_chapters_in_act
+        # 都靠它判断「这一章动笔没有」。本方法过去只写 chapters 表，导致该字段对所有
+        # 引擎写出来的书恒为 0，那三处判定永久失明（闸门 0 永远认为上一幕还有章没写，
+        # 新幕开不出来，与 _current_act_fully_written 的指针推进合成死循环）。
+        # 走同一个队列，保持单写者语义与相对顺序。
+        effective_wc = word_count
+        if effective_wc is None and content is not None:
+            effective_wc = len(content)
+        node_parts, node_params = [], []
+        if effective_wc is not None:
+            node_parts.append("word_count = ?")
+            node_params.append(int(effective_wc))
+        if status is not None:
+            node_parts.append("status = ?")
+            node_params.append(str(status))
+        if node_parts:
+            node_parts.append("updated_at = CURRENT_TIMESTAMP")
+            self._queue_sql(
+                f"UPDATE story_nodes SET {', '.join(node_parts)}"
+                f" WHERE novel_id = ? AND node_type = 'chapter' AND number = ?",
+                node_params + [novel_id, chapter_number],
+            )
+
+        return ok
 
 
     def _queue_sql(self, sql: str, params: tuple | list = ()) -> bool:
@@ -2403,7 +2429,21 @@ class DaemonHostMixin:
             None
         )
         if not current_act_node:
-            return True
+            # 「找不到这一幕」不等于「这一幕写完了」。旧实现在这里 return True，
+            # writing_delegate 随即 current_act += 1，于是指针每 tick 越界一次、
+            # 变成棘轮：结构树只有 5 幕的线上书把 current_act 推到了 182。
+            #
+            # 找不到这一幕的真实含义是"指针越界 / 结构待补"，正确处置是回幕级规划，
+            # 与下方"幕下无章节节点 → return False"保持同一语义。
+            logger.warning(
+                "[%s] 找不到第 %s 幕的节点（已落库 %s 幕，current_act=%s）："
+                "不得判定为本幕已写完，应回幕级规划补齐结构",
+                novel_id,
+                novel.current_act + 1,
+                len(act_nodes),
+                novel.current_act,
+            )
+            return False
 
         act_children = self.story_node_repo.get_children_sync(current_act_node.id)
         chapter_nodes = [n for n in act_children if n.node_type.value == "chapter"]
