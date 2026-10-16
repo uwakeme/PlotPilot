@@ -2,6 +2,12 @@
 import { computed, ref } from 'vue'
 import { NTag } from 'naive-ui'
 import { STAGE_BY_KEY } from '@/constants/aiCallStages'
+import {
+  splitCodeSegments,
+  type CodeSegment,
+  type TextSegment,
+} from '@/utils/aiStreamSegments'
+import { highlightCode } from '@/utils/codeHighlight'
 import type { AiCall } from '@/stores/aiStreamReduce'
 
 const props = defineProps<{ call: AiCall }>()
@@ -53,6 +59,32 @@ const timeLabel = computed(() => {
   const d = new Date(props.call.ts * 1000)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+})
+
+/**
+ * 已渲染好的分段：代码段多带一份高亮后的 HTML。
+ *
+ * 写成联合类型而不是 `interface RenderedSegment extends AiSegment`：
+ * AiSegment 本身就是联合，interface 只能继承「成员静态可知」的对象类型。
+ * 用 `kind` 收窄后，模板里 `seg.kind === 'code'` 分支上 `seg.html` 依然可见。
+ */
+type RenderedSegment = (CodeSegment & { html?: string }) | TextSegment
+
+/**
+ * 输出的分段视图。
+ *
+ * **流式进行中不做高亮**：delta 每来一次就重渲染一次，而中途的 JSON 本身是
+ * 残缺的（截图中那句「最后一场苏晴…被苏晴」就是中途状态），高亮既没意义
+ * 也在白烧 CPU。等 end 到达、status 变成 done / error 才一次性高亮。
+ */
+const outputSegments = computed<RenderedSegment[]>(() => {
+  const segments = splitCodeSegments(props.call.response ?? '')
+  const settled = props.call.status !== 'running'
+  return segments.map((seg) =>
+    seg.kind === 'code' && settled
+      ? { ...seg, html: highlightCode(seg.text, seg.lang) }
+      : seg,
+  )
 })
 </script>
 
@@ -120,7 +152,14 @@ const timeLabel = computed(() => {
           <div v-if="call.status === 'running' && !call.response" class="waiting">
             等待模型返回…
           </div>
-          <div v-else class="text mono out-text">{{ call.response }}</div>
+          <template v-else>
+            <div v-for="(seg, i) in outputSegments" :key="i" class="seg">
+              <pre v-if="seg.kind === 'code'" class="ai-code"><code
+                v-if="seg.html" class="hljs" v-html="seg.html"
+              ></code><code v-else>{{ seg.text }}</code></pre>
+              <div v-else class="text">{{ seg.text }}</div>
+            </div>
+          </template>
         </div>
       </section>
 
@@ -226,11 +265,47 @@ const timeLabel = computed(() => {
 .text {
   font-size: var(--font-size-xs); line-height: 1.65;
   white-space: pre-wrap; word-break: break-word;
-  max-height: 220px; overflow-y: auto; margin-top: 4px;
+  max-height: 280px; overflow-y: auto; margin-top: 4px;
   color: var(--app-text-primary);
 }
-.out-text { max-height: 280px; }
 .mono { font-family: var(--font-mono); }
+
+/* ── 围栏代码块 ──────────────────────────────────────────────────
+   模型的结构化输出几乎总被包在 ```json 里。之前整段按纯文本渲染，
+   围栏字符本身也照原样显示，读者得自己把 ```json 剥掉才能看到结构。 */
+.seg { min-width: 0; }
+.ai-code {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--app-text-primary);
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ai-code code { font: inherit; background: none; padding: 0; }
+
+/* hljs 只吐出 class，全仓没有任何地方引它的主题 CSS，颜色在这里自己给。
+   映射到 app 的 token，这样 light / dark / anchor 三套主题自动跟随。 */
+.hljs-attr { color: var(--color-info); }
+.hljs-string { color: var(--color-success); }
+.hljs-number { color: var(--color-purple); }
+.hljs-literal { color: var(--color-warning); }
+.hljs-punctuation { color: var(--app-text-muted); }
+.hljs-comment { color: var(--app-text-muted); font-style: italic; }
+.hljs-title,
+.hljs-built_in,
+.hljs-type { color: var(--color-brand); }
+.hljs-meta { color: var(--app-text-secondary); }
+.hljs-tag { color: var(--color-danger); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
 
 /* 只做透明度呼吸。不能用 .dot 的 breathe——那个关键帧带 transform: scale()，
    作用在整行文字上会让提示语缩放抖动。 */
