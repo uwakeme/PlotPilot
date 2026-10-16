@@ -96,8 +96,13 @@ class TensionScoringService:
 
         if payload is None:
             if parsed is not None and parsed.failure_stage == "parse_or_schema":
-                logger.warning("张力评分解析失败，使用中性 50: %s", list(parsed.errors[:4]))
-                return TensionDimensions.neutral()
+                # 解析失败不是「张力正好 50」。返回 UNEVALUATED 哨兵，
+                # 由下游（chapter_narrative_sync / monitor）按未评估处理。
+                logger.warning(
+                    "张力评分解析失败，本次不评分（未评估）: %s",
+                    list(parsed.errors[:4]),
+                )
+                return TensionDimensions.unevaluated()
             return TensionDimensions.unevaluated()
 
         dims = tension_scoring_payload_to_domain(payload)

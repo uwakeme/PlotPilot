@@ -75,16 +75,11 @@ class TensionDimensions:
     def unevaluated(cls) -> TensionDimensions:
         """返回全维度 -1 的未评估结果（用于评分失败/兜底）。
 
-        与 neutral() 不同，unevaluated 明确标记"没有真实评分"，
-        前端/API 可以区分"张力真的低"和"评分失败了"。
+        与「直接给一个看起来正常的分数」不同，unevaluated 明确标记"没有真实
+        评分"，前端/API 可以区分"张力真的低"和"评分失败了"。
+
+        历史：本方法此前有个姊妹方法 neutral()（全维度 50.0），docstring 已
+        标注废弃却仍被 tension_scoring_service 调用——那正是登记表 F-07 的根因。
+        该方法已随修复删除，本 docstring 是它留下的最后一句悬空引用。
         """
         return cls(UNEVALUATED, UNEVALUATED, UNEVALUATED, UNEVALUATED)
-
-    @classmethod
-    def neutral(cls) -> TensionDimensions:
-        """返回全维度 50.0 的中性结果（用于兜底）。
-
-        ⚠ 已废弃：请使用 unevaluated() 代替。
-        保留此方法仅为向后兼容，新代码应使用 unevaluated()。
-        """
-        return cls(50.0, 50.0, 50.0, 50.0)

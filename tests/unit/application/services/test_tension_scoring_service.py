@@ -14,7 +14,12 @@ class _Gateway:
 
 
 @pytest.mark.asyncio
-async def test_tension_scoring_parse_failure_uses_neutral_score(monkeypatch):
+async def test_tension_scoring_parse_failure_stays_unevaluated(monkeypatch):
+    """解析失败不得返回中性 50 —— 那是「张力正好 50」，不是「没评出来」。
+
+    历史：这条用例原先断言 ``== 50.0``，把登记表 F-07 的缺陷**钉成了表征测试**。
+    缺陷修掉后它必然转红，所以随修复一并翻转断言（登记表 F-07）。
+    """
     monkeypatch.setattr(
         "application.analyst.services.tension_scoring_service.get_prompt_gateway",
         lambda: _Gateway(),
@@ -26,7 +31,8 @@ async def test_tension_scoring_parse_failure_uses_neutral_score(monkeypatch):
         chapter_number=3,
     )
 
-    assert dims.composite_score == 50.0
+    assert dims.composite_score == UNEVALUATED
+    assert dims.composite_score != 50.0
 
 
 @pytest.mark.asyncio
