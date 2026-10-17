@@ -45,7 +45,10 @@ class EchoRecall:
             max_results: 最大返回数量
 
         Returns:
-            早期发言列表 [{chapter, content, relevance_score}]
+            早期发言列表 [{chapter, content, relevance_score, source?}]
+            source == "fallback_recent" 表示走的是 DB 近期检索兜底，
+            此时 relevance_score 恒为 None（没算过相似度，不给假值）。
+            向量路径的结果不带 source 键。
         """
         results = []
 
@@ -62,7 +65,9 @@ class EchoRecall:
             except Exception as e:
                 logger.warning(f"向量检索失败: {e}")
 
-        # 2. 回退到DB检索
+        # 2. 回退到DB检索：取该角色最近 N 章的发言
+        #    「回响召回」要的是角色近期说过的话，因此按章号倒序取最新，
+        #    不是取最早——否则 max_results=1 时永远注入开篇第一句台词。
         if not results and self._db_pool:
             try:
                 with self._db_pool.get_connection() as conn:
@@ -70,7 +75,7 @@ class EchoRecall:
                         """SELECT chapter_number, content, embedding
                            FROM character_voice_samples
                            WHERE character_id = ?
-                           ORDER BY chapter_number ASC
+                           ORDER BY chapter_number DESC
                            LIMIT ?""",
                         (character_id, max_results)
                     ).fetchall()
@@ -79,7 +84,11 @@ class EchoRecall:
                         results.append({
                             "chapter": row["chapter_number"],
                             "content": row["content"],
-                            "relevance_score": 0.5,  # 无向量匹配时的默认分数
+                            # 降级路径没有计算任何相似度：None 表示「未计算」。
+                            # 不填 0.5 之类的中间值，否则下游分不出兜底分与真实相似度。
+                            "relevance_score": None,
+                            # 来源标记：向量路径不带这个键，下游据此分辨两条路径
+                            "source": "fallback_recent",
                         })
             except Exception as e:
                 logger.warning(f"DB检索失败: {e}")
