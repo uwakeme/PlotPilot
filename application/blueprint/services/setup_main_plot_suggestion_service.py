@@ -1,3 +1,4 @@
+
 """向导 Step 4：基于 Bible 与小说元数据，由 LLM 推演三条主线候选。"""
 from __future__ import annotations
 
@@ -13,6 +14,15 @@ from application.core.services.novel_service import NovelService
 from application.blueprint.services.setup_context_builder import SetupContextBuilder
 from application.ai_invocation.prompt_variables import aliases_with_dotted_variables
 from application.ai.knowledge_llm_contract import parse_json_from_response
+
+from application.blueprint.services.subline_contract import (  # noqa: E402
+    SOURCE_AI as SUBLINE_SOURCE_AI,
+    SOURCE_NONE as SUBLINE_SOURCE_NONE,
+    normalize_sublines,
+)
+
+DEFAULT_TARGET_CHAPTERS = 100
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +51,9 @@ def normalize_main_plot_options_data(raw_data: Any, ctx: Dict[str, Any]) -> List
         raw_list = raw_data
     if not isinstance(raw_list, list):
         raise MainPlotSuggestionContractError("主线候选输出必须是数组")
-    normalized = SetupMainPlotSuggestionService._normalize_options(raw_list)
+    normalized = SetupMainPlotSuggestionService._normalize_options(
+        raw_list, target_chapters=DEFAULT_TARGET_CHAPTERS
+    )
     normalized = SetupMainPlotSuggestionService._complete_option_architecture(ctx, normalized)
     if len(normalized) >= 3:
         return normalized[:3]
@@ -129,34 +141,21 @@ class SetupMainPlotSuggestionService:
         return opts
 
     @staticmethod
-    def _normalize_options(raw_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _normalize_options(
+        raw_list: List[Dict[str, Any]],
+        *,
+        target_chapters: int,
+    ) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for i, item in enumerate(raw_list[:5]):
             if not isinstance(item, dict):
                 continue
             raw_sublines = item.get("sublines") or item.get("supporting_storylines") or []
-            sublines: List[Dict[str, Any]] = []
-            if isinstance(raw_sublines, list):
-                for j, raw_sub in enumerate(raw_sublines[:4]):
-                    if not isinstance(raw_sub, dict):
-                        continue
-                    merge_chapter = raw_sub.get("merge_chapter") or raw_sub.get("target_chapter")
-                    try:
-                        merge_chapter_int = int(merge_chapter) if merge_chapter is not None else 0
-                    except (TypeError, ValueError):
-                        merge_chapter_int = 0
-                    role = str(raw_sub.get("role") or "sub").strip().lower()
-                    if role not in ("sub", "dark"):
-                        role = "sub"
-                    sublines.append({
-                        "id": str(raw_sub.get("id") or f"subline_{j + 1}")[:80],
-                        "name": str(raw_sub.get("name") or raw_sub.get("title") or f"支线 {j + 1}")[:160],
-                        "role": role,
-                        "purpose": str(raw_sub.get("purpose") or "")[:800],
-                        "description": str(raw_sub.get("description") or "")[:1200],
-                        "merge_chapter": max(0, merge_chapter_int),
-                        "guard": str(raw_sub.get("guard") or raw_sub.get("forbidden_drift") or "")[:800],
-                    })
+            # A-01：走共享规范化。merge_chapter 缺失时记 None 而非 0 ——
+            # 0 会同时违反「≤ 目标章数」与「晚于引入章」，且完全静默。
+            sublines, sublines_source, subline_errors = normalize_sublines(
+                raw_sublines, target_chapters=target_chapters
+            )
             oid = str(item.get("id") or f"option_{chr(ord('a') + i)}")
             out.append(
                 {
@@ -170,6 +169,10 @@ class SetupMainPlotSuggestionService:
                     "opening_pressure": str(item.get("opening_pressure") or "")[:1200],
                     "forbidden_drift": str(item.get("forbidden_drift") or "")[:1200],
                     "sublines": sublines,
+                    # A-01：区分「模型规划了支线」与「模型没给」——
+                    # 改造前两者都会被补成一条编造的支线，数据上无从分辨。
+                    "sublines_source": sublines_source,
+                    "subline_issues": subline_errors,
                 }
             )
         return out
@@ -243,48 +246,6 @@ class SetupMainPlotSuggestionService:
                     item["forbidden_drift"] = " ".join(drift_rules)
                 else:
                     item["forbidden_drift"] = "不得让新谜团、新支线或回忆说明连续抢走主角的现实行动目标。"
-            if not item.get("sublines"):
-                if core_promise or false_mystery or true_mystery:
-                    subline_by_mode = {
-                        "survival": {
-                            "id": "subline_evidence_cost",
-                            "name": "证据与代价线",
-                            "role": "sub",
-                            "purpose": "持续把主角的现实行动转化为证据、代价、通缉、关系裂痕或资源损失。",
-                            "description": core_promise or central_conflict,
-                            "merge_chapter": max(6, int(target_chapters * 0.22)),
-                            "guard": "不能变成单纯跑图、打怪或收集设定。支线每次推进都要回到主轴锁。",
-                        },
-                        "conspiracy": {
-                            "id": "subline_black_box_chain",
-                            "name": "黑箱证据链",
-                            "role": "sub",
-                            "purpose": "把高层信息差、伪证和被抹除记录收束成可验证证据链。",
-                            "description": true_mystery or central_conflict or core_promise,
-                            "merge_chapter": max(8, int(target_chapters * 0.3)),
-                            "guard": "不能让主角长期只替强势阵营执行任务，调查必须反向咬住主轴。",
-                        },
-                        "anomaly": {
-                            "id": "subline_false_mystery",
-                            "name": "表层谜团误导线",
-                            "role": "dark",
-                            "purpose": "把异常、误判或错误答案作为误导，反衬并保护真正第一主线的后续反转。",
-                            "description": false_mystery or core_promise or central_conflict,
-                            "merge_chapter": max(8, int(target_chapters * 0.26)),
-                            "guard": "表层谜团不能成为第一主线或最终解释，必须回流到主轴锁。",
-                        },
-                    }
-                    item["sublines"] = [subline_by_mode[mode]]
-                else:
-                    item["sublines"] = [{
-                        "id": "subline_cost_chain",
-                        "name": "代价回收线",
-                        "role": "sub",
-                        "purpose": "让主角每次推进主线都付出可见代价，并在中段汇流回核心冲突。",
-                        "description": "围绕证据、关系、资源或身份风险展开，服务主线而不另开新书。",
-                        "merge_chapter": max(5, int(target_chapters * 0.25)),
-                        "guard": "不能连续抢走主线目标。",
-                    }]
             completed.append(item)
         return completed
 
@@ -370,7 +331,10 @@ class SetupMainPlotSuggestionService:
                     if extracted is None:
                         break
                     raw_item, buf = extracted
-                    norm = self._normalize_options([raw_item])
+                    norm = self._normalize_options(
+                        [raw_item],
+                        target_chapters=int(target_chapters or DEFAULT_TARGET_CHAPTERS),
+                    )
                     norm = self._complete_option_architecture(ctx, norm)
                     if not norm:
                         continue
@@ -384,7 +348,13 @@ class SetupMainPlotSuggestionService:
             if len(parsed_options) < 3:
                 try:
                     raw_list = self._parse_plot_json(full_buf)
-                    for item in self._complete_option_architecture(ctx, self._normalize_options(raw_list)):
+                    for item in self._complete_option_architecture(
+                        ctx,
+                        self._normalize_options(
+                            raw_list,
+                            target_chapters=int(target_chapters or DEFAULT_TARGET_CHAPTERS),
+                        ),
+                    ):
                         if item["id"] in emitted_ids:
                             continue
                         emitted_ids.add(item["id"])
