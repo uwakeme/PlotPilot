@@ -270,10 +270,14 @@ class FactLockBuilder:
             if char.public_profile:
                 identity_parts.append(char.public_profile)
 
-            # 如果到了 reveal 章节，追加隐藏面
-            if (char.hidden_profile and
-                char.reveal_chapter is not None and
-                current_chapter >= char.reveal_chapter):
+            # reveal_chapter 为 None 表示「总是可见」（见 bible_dto.CharacterDTO
+            # 「reveal_chapter: 揭示章节号，None 表示总是可见」）。
+            # 此前这里额外要求 `reveal_chapter is not None`，于是 None 的角色
+            # 隐藏面永远不出现 —— 与 context_builder、context_budget_allocator、
+            # entities.character、character_narrative_kernel 及字段文档**相反**，
+            # 同一章里 AI 会拿到两套互相矛盾的角色设定。
+            reveal = char.reveal_chapter
+            if char.hidden_profile and (reveal is None or current_chapter >= int(reveal)):
                 identity_parts.append(f"[已揭露] {char.hidden_profile}")
 
             # 心理状态

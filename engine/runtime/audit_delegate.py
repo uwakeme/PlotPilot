@@ -18,6 +18,58 @@ from engine.runtime.target_reached_gate import (
 
 logger = logging.getLogger(__name__)
 
+# Anti-AI 审计「本次没跑成」的显式取值。
+# 反 AI 审计正常返回时的 overall_assessment 取值域是中文档位（"良好"/"轻微"/"中等"/"严重"），
+# 用一个不在该取值域里的字符串表示「未评估」，下游就能把它与「评估过、结论不严重」
+# 分开，而不必靠 None 的同形歧义去猜。
+ANTI_AI_UNASSESSED = "未评估"
+
+
+def _resolve_audit_pause_gate(
+    *,
+    auto: bool,
+    prefs: GenerationPreferences,
+    hard_narrative: bool,
+    hard_voice: bool,
+    hard_tension: bool,
+    anti_evaluated: bool,
+    anti_assessment: str | None,
+) -> tuple[bool, bool, bool, str]:
+    """章末审阅闸门的纯判定。
+
+    返回 ``(pause_gate, hard_fail, anti_ai_gate_triggered, anti_reason)``。
+
+    核心约束：**「没测出来」不能与「测出来不严重」同形**。
+    - ``anti_evaluated=False`` 表示反 AI 闸门本身没跑成（而非跑了且没问题）。
+      用户显式开启 ``audit_pause_on_anti_ai_severe`` 的语义是「这道闸要真的
+      拦住我」，闸门跑不起来却静默放行，等于该开关形同虚设。
+    - 与 ``hard_tension`` 保持同向：张力未评估按硬伤处理（fail-closed），
+      两处对「没测出来」的处理不应分裂。
+    - ``PAUSED_FOR_REVIEW`` 是可恢复状态（下一 tick 继续），不会像自动停书
+      那样把书写死，因此未评估触发暂停是可控的。
+    - ``anti_reason`` 必须与真实触发原因一致：因未评估而停时不得写成「严重」，
+      那等于把「没测出来」记成「测出严重」。
+    """
+    hard_fail = hard_narrative or hard_voice or hard_tension
+    anti_ai_severe = anti_assessment == "严重"
+    anti_ai_gate_triggered = bool(getattr(prefs, "audit_pause_on_anti_ai_severe", False)) and (
+        anti_ai_severe or not anti_evaluated
+    )
+
+    if not anti_evaluated:
+        anti_reason = "Anti-AI审计未评估（闸门跑不起来，非结论）"
+    elif anti_ai_severe:
+        anti_reason = "Anti-AI严重"
+    else:
+        anti_reason = "Anti-AI未触发"
+
+    pause_gate = (not auto) and (
+        bool(getattr(prefs, "pause_after_each_chapter_audit", False))
+        or (bool(getattr(prefs, "audit_pause_on_hard_fail", False)) and hard_fail)
+        or anti_ai_gate_triggered
+    )
+    return pause_gate, hard_fail, anti_ai_gate_triggered, anti_reason
+
 
 def _read_shared_state(novel_id: str) -> dict[str, Any]:
     from application.ai_invocation.autopilot.shared_state import read_autopilot_shared_state
@@ -604,25 +656,27 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     hard_narrative = not bool(drift_result.get("narrative_sync_ok", True))
     hard_voice = drift_too_high and similarity_below_threshold
     hard_tension = not bool(drift_result.get("tension_evaluated", False))
-    hard_fail = hard_narrative or hard_voice or hard_tension
 
-    anti_assessment = None
-    if anti_report is not None:
-        anti_assessment = getattr(
-            getattr(anti_report, "metrics", None), "overall_assessment", None
-        )
-    anti_ai_severe = anti_assessment == "严重"
-
-    pause_gate = (not auto) and (
-        bool(getattr(prefs, "pause_after_each_chapter_audit", False))
-        or (
-            bool(getattr(prefs, "audit_pause_on_hard_fail", False))
-            and hard_fail
-        )
-        or (
-            bool(getattr(prefs, "audit_pause_on_anti_ai_severe", False))
-            and anti_ai_severe
-        )
+    # `_run_anti_ai_audit` 失败时按其 docstring 约定返回 None。
+    # 此前 `anti_assessment = None` 与「评估完成且结论不严重」在下游完全同形 ——
+    # `None == "严重"` 为 False，于是审计崩了会被当成「没问题」，
+    # 用户显式开启的 audit_pause_on_anti_ai_severe 静默失效。
+    # 同一函数上一行的 hard_tension 走的是相反方向（未评估即视为硬伤），
+    # 两处对「没测出来」的处理不该分裂。故未评估用显式可见值承载。
+    anti_evaluated = anti_report is not None
+    anti_assessment = (
+        getattr(getattr(anti_report, "metrics", None), "overall_assessment", None)
+        if anti_evaluated
+        else ANTI_AI_UNASSESSED
+    )
+    pause_gate, hard_fail, anti_ai_gate_triggered, anti_reason = _resolve_audit_pause_gate(
+        auto=auto,
+        prefs=prefs,
+        hard_narrative=hard_narrative,
+        hard_voice=hard_voice,
+        hard_tension=hard_tension,
+        anti_evaluated=anti_evaluated,
+        anti_assessment=anti_assessment,
     )
 
     novel.audit_progress = None  # 审计完成，清除进度标记
@@ -635,14 +689,21 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
 
     if pause_gate:
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+        # 措辞必须与实际触发原因一致：因「审计未评估」而停时，日志不能写成
+        # 「Anti-AI严重」—— 那等于把「没测出来」记成「测出严重」。
+        if not anti_evaluated:
+            anti_reason = "Anti-AI审计未评估（闸门跑不起来，非结论）"
+        elif anti_ai_severe:
+            anti_reason = "Anti-AI严重"
+        else:
+            anti_reason = "Anti-AI未触发"
         logger.info(
-            "[%s] 章末审阅闸门：进入 paused_for_review（每章一停=%s，硬伤停机=%s，Anti-AI严重=%s；"
+            "[%s] 章末审阅闸门：进入 paused_for_review（每章一停=%s，硬伤停机=%s，%s；"
             "narrative_ok=%s hard_voice=%s tension_evaluated=%s assessment=%s）",
             novel.novel_id.value,
             getattr(prefs, "pause_after_each_chapter_audit", False),
             bool(getattr(prefs, "audit_pause_on_hard_fail", False)) and hard_fail,
-            bool(getattr(prefs, "audit_pause_on_anti_ai_severe", False))
-            and anti_ai_severe,
+            anti_reason,
             drift_result.get("narrative_sync_ok", True),
             hard_voice,
             drift_result.get("tension_evaluated", False),
