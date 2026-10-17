@@ -645,6 +645,9 @@ const syncOptions = [
   { label: '草稿', value: 'draft' },
   { label: '已对齐', value: 'synced' },
   { label: '待更新', value: 'stale' },
+  // 章后 LLM bundle 提取失败：摘要/关键事件没有可信内容，别读成「草稿」
+  // （登记表 G-06）。SYNC_STATUS_EXTRACTION_FAILED 的前端镜像。
+  { label: '提取失败', value: 'extraction_failed' },
 ]
 
 const sortedChapters = computed(() =>
@@ -684,7 +687,9 @@ const load = async () => {
         beat_sections: Array.isArray(c.beat_sections) ? [...c.beat_sections] : [],
         sync_status: (() => {
           const s = String(c.sync_status || 'draft').toLowerCase()
-          return ['draft', 'synced', 'stale'].includes(s) ? s : 'draft'
+          // 与 syncOptions 保持同一份白名单：漏一个值，这里会把它压成 'draft'，
+          // 随保存回写把后端记下的「提取失败」抹掉。
+          return ['draft', 'synced', 'stale', 'extraction_failed'].includes(s) ? s : 'draft'
         })(),
       })),
       facts: (k.facts || []).map((f: any) => ({

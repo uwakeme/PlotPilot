@@ -32,6 +32,72 @@ from application.world.services.storyline_normalization import (
 
 logger = logging.getLogger(__name__)
 
+# 章末 bundle 的同步状态取值。
+# `stale`（已过时）在全仓从未被写入过，语义也不是「从未提取出来」，不要挪用；
+# 「LLM 调用崩溃」与「LLM 跑完返回空」此前都塌成 `draft`，这里给崩溃一个专属值。
+SYNC_STATUS_EXTRACTION_FAILED = "extraction_failed"
+
+
+class NormalizedBundle:
+    """章末 bundle 的归一化视图。
+
+    LLM 没给出的字段是 ``None``，**不是**占位词 —— ``"（未提取）"`` / ``"无"``
+    会被下游 vector-first 检索真的向量化，读起来像一条真实的关键事件。
+    持久化边界负责把 ``None`` 收敛成 ``""``（空串是诚实的「什么都不知道」）。
+    """
+
+    __slots__ = ("summary", "key_events", "open_threads", "extraction_failed")
+
+    def __init__(
+        self,
+        summary: Optional[str] = None,
+        key_events: Optional[str] = None,
+        open_threads: Optional[str] = None,
+        extraction_failed: bool = False,
+    ) -> None:
+        self.summary = summary
+        self.key_events = key_events
+        self.open_threads = open_threads
+        self.extraction_failed = extraction_failed
+
+    @property
+    def ok(self) -> bool:
+        """只有真的提取到内容才算成功；「跑了但空」与「崩了」都不是。"""
+        if self.extraction_failed:
+            return False
+        return bool(self.summary or self.key_events or self.open_threads)
+
+    def __repr__(self) -> str:
+        return (
+            f"<NormalizedBundle ok={self.ok} "
+            f"extraction_failed={self.extraction_failed}>"
+        )
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    """把「没有内容」统一成 None；非空文本原样透传。"""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    return text if text.strip() else None
+
+
+def normalize_chapter_bundle(
+    raw: dict, *, extraction_failed: bool = False
+) -> NormalizedBundle:
+    """把章末 bundle 归一化成 :class:`NormalizedBundle`。
+
+    ``extraction_failed=True`` 表示 LLM 调用本身崩了，与「跑了但返回空」区分开
+    —— 二者在库里必须可分辨，否则章后失败会被读成「还没同步」。
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    return NormalizedBundle(
+        summary=_optional_text(raw.get("summary")),
+        key_events=_optional_text(raw.get("key_events")),
+        open_threads=_optional_text(raw.get("open_threads")),
+        extraction_failed=bool(extraction_failed),
+    )
+
 
 def _stable_artifact_id(prefix: str, novel_id: str, chapter_number: int, *parts: Any) -> str:
     """Build a deterministic artifact id for chapter aftermath idempotency."""
@@ -2294,19 +2360,24 @@ async def sync_chapter_narrative_after_save(
             # 同类取数一致用 warning——降级可以，静默不行。
             logger.warning("取待闭环因果边失败，本章不做闭环判定: %s", e)
 
+    extraction_failed = False
     try:
         bundle = await llm_chapter_extract_bundle(
             llm_service, content, chapter_number,
             pending_foreshadows=pending_foreshadow_descs if pending_foreshadow_descs else None,
             pending_causal_edges=pending_causal_edges,
         )
-        summary = bundle.get("summary") or ""
-        key_events = bundle.get("key_events") or ""
-        open_threads = bundle.get("open_threads") or ""
+        normalized = normalize_chapter_bundle(bundle)
     except Exception as e:
         logger.warning("LLM 章末 bundle 失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
-        summary, key_events, open_threads = "", "", ""
+        # LLM 崩了 ≠ LLM 跑完返回空：两者必须能被 sync_status 区分开。
+        extraction_failed = True
+        normalized = normalize_chapter_bundle({}, extraction_failed=True)
         bundle = {"relation_triples": [], "foreshadow_hints": []}
+
+    summary = normalized.summary
+    key_events = normalized.key_events
+    open_threads = normalized.open_threads
 
     # --- 独立多维张力评分 ---
     from application.analyst.services.tension_scoring_service import TensionScoringService
@@ -2379,6 +2450,14 @@ async def sync_chapter_narrative_after_save(
         if not open_threads:
             open_threads = existing.open_threads or ""
 
+    # --- 持久化边界收敛：Optional[str] → str ---
+    # 空串是诚实的「什么都没提取到」；**绝不**写成「（未提取）」「无」这类
+    # 会被下游向量检索当正文嵌入的占位词。落库本身不能跳过：下面的
+    # beat_sections / micro_beats 以及上面的 existing 兜底都来自非 LLM 来源。
+    summary = summary or ""
+    key_events = key_events or ""
+    open_threads = open_threads or ""
+
     beat_sections = _resolve_beat_sections(novel_id, chapter_number, existing_beats)
 
     mb_out: List[Any] = []
@@ -2396,12 +2475,16 @@ async def sync_chapter_narrative_after_save(
         novel_id=novel_id,
         chapter_id=chapter_number,
         summary=summary,
-        key_events=key_events or "（未提取）",
-        open_threads=open_threads or "无",
+        key_events=key_events,
+        open_threads=open_threads,
         consistency_note=consistency_note,
         beat_sections=beat_sections,
         micro_beats=mb_out if mb_out else None,
-        sync_status="synced" if summary else "draft",
+        sync_status=(
+            SYNC_STATUS_EXTRACTION_FAILED
+            if extraction_failed
+            else ("synced" if summary else "draft")
+        ),
     )
 
     if triple_repository is not None or foreshadowing_repo is not None:
