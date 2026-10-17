@@ -57,6 +57,11 @@ _RUNTIME_STATUS_KEYS: tuple[str, ...] = (
     "story_pipeline_wave_label",
     "story_pipeline_wave_entered_at",
     "story_pipeline_events",
+    # 策略校验三态（登记表 F-01）。validation_score 为 None 表示「本次未评估」，
+    # 不得当作 0 分；与 writing_substep_label 的人可读标签配套，供程序消费。
+    "validation_state",
+    "validation_score",
+    "validation_passed",
     "active_invocation_session_id",
     "active_invocation_operation",
     "active_invocation_node_key",

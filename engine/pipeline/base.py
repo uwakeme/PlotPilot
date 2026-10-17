@@ -809,6 +809,7 @@ class BaseStoryPipeline(ABC):
                         "策略验证未评估（UNASSESSED），缺输入不影响管线推进；"
                         f"各维度分（None 即该维未评估）: {ctx.validation_dimensions}"
                     )
+                    self._publish_validation_progress(ctx)
                     return StepResult(
                         passed=True,  # 不阻断
                         message="策略验证未评估（护栏未跑成，本次无结论）",
@@ -816,6 +817,7 @@ class BaseStoryPipeline(ABC):
                         violations=report.all_violations,
                         metadata={"validation_state": report_state.value},
                     )
+                self._publish_validation_progress(ctx)
                 return StepResult.ok() if report.passed else StepResult(
                     passed=True,  # 不阻断
                     message=f"验证未通过 (score={report.overall_score:.2f})",
@@ -830,6 +832,7 @@ class BaseStoryPipeline(ABC):
                 ctx.validation_passed = None
                 ctx.validation_score = None
                 ctx.validation_dimensions = {}
+                self._publish_validation_progress(ctx)
         else:
             # 无 PolicyValidator：无结论，显式标记（登记表 F-03）。
             # 这里曾经伪造 overall_score=0.85 + passed=True，而 validation_state
@@ -838,8 +841,48 @@ class BaseStoryPipeline(ABC):
             ctx.validation_passed = None
             ctx.validation_score = None
             ctx.validation_dimensions = {}
+            self._publish_validation_progress(ctx)
 
         return StepResult.ok()
+
+    @staticmethod
+    def _publish_validation_progress(ctx: PipelineContext) -> None:
+        """把护栏结论推到既有可观测通道（登记表 F-01）。
+
+        ``validation_score`` 此前只写不读：一章得 0.1 与得 1.0，护栏之后的
+        待遇完全相同，分数既不上报也不告警，等于没有评估过。
+
+        这里**只让它被看见**，不让它改变行为 —— 依据本轮核心原则
+        「AI 决定『是什么』，代码只保证『不越界』」：护栏分数不该自动决定
+        章节生死。落到具体机制上：
+
+        * 走 ``_writing_progress``：管线本来就用它推每一步进度，``/status``
+          已经透出 ``writing_substep_label``，所以分数不需要新通道、新接口
+          或新字段就能被运维和前端读到。
+        * 分数同时进 payload 与人可读 label：payload 供程序消费，label 供人看。
+        * UNASSESSED 时只带 state 不带 score：``_writing_progress`` 会滤掉
+          None 值，所以"没评估"在通道上表现为**没有分数**，而不是分数 0。
+
+        反向守卫：DECIDED 且分数正常时，除了这条记录之外不产生任何动作
+        —— 不阻断、不告警、不改写正文（由 ``test_healthy_decided_path_
+        produces_no_extra_action`` 钉住）。
+        """
+        score = ctx.validation_score
+        state = ctx.validation_state
+        if score is None:
+            label = f"策略校验 · 未评估（{getattr(state, 'value', state)}）"
+        else:
+            verdict = "通过" if ctx.validation_passed else "未通过"
+            label = f"策略校验 · {score:.2f}（{verdict}）"
+        _writing_progress(
+            ctx,
+            "policy_validate_result",
+            label,
+            pipeline_wave_index=5,
+            validation_state=getattr(state, "value", state),
+            validation_score=score,
+            validation_passed=ctx.validation_passed,
+        )
 
     async def _step_save_chapter(self, ctx: PipelineContext) -> StepResult:
         """步骤6：保存章节（独立短连接写库）

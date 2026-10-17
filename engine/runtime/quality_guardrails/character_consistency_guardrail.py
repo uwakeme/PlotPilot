@@ -93,6 +93,20 @@ class CharacterConsistencyGuardrail:
         "遇害": ["遇害", "被杀", "被害", "身亡", "死亡", "死"],
     }
 
+    # 禁忌的禁令外壳：moral_taboos 天然写成「绝不X / 禁止X / 不X」，
+    # 而违规的表现是「做了 X」。比对前必须剥掉，否则永远检不出。
+    # 必须按长度降序排列，保证「绝不」先于「不」被剥掉（否则「绝不滥杀」
+    # 会先被剥成「绝滥杀」，壳没剥干净）。单字前缀放在最后。
+    _TABOO_NEGATION_PREFIXES = (
+        "绝不", "永不", "从不", "不会", "不得", "不准", "不许",
+        "不可", "不宜", "不能", "禁止", "切勿", "杜绝",
+        "不", "勿", "莫", "忌",
+    )
+
+    # 词根下限。单字（杀/死/偷/变）在正文里几乎必然出现，
+    # 拿它们当禁忌证据等于乱报 —— 这条是「宁可漏报不误报」的落地点。
+    _TABOO_MIN_ROOT_LEN = 2
+
     # 创伤反应关键词
     _REACTION_KEYWORDS = [
         "紧", "僵", "颤", "避", "缩", "握紧", "偏", "闪",
@@ -325,30 +339,106 @@ class CharacterConsistencyGuardrail:
         return violations
 
     def _detect_taboo_violation(self, text: str, name: str, taboo: str) -> bool:
-        """检测是否违反了禁忌（粗略）"""
-        # 这是一个简化实现，实际需要更复杂的语义理解
-        return False  # 默认不报违规，避免误报
+        """检测正文是否触碰了角色的绝对禁忌。
 
-    def _semantic_match_trigger(self, trigger: str, text: str) -> bool:
-        """语义匹配触发条件
+        【已知局限 —— 这条注释本身就是交付的一部分】
+        本检查是**表层词面匹配**，不是语义判断。它只问「禁忌的词根有没有
+        出现在正文里」，不追问「出现它的语境是不是真的违规」：
 
-        将触发条件拆解为关键词组，在文本中查找满足条件的片段。
-        例如 "看到女性遇险" -> 需要 (看到/看见/面前) + (女性/女人) + (遇险/被打)
-        例如 "有人靠近左后方" -> 需要 (有人/人/某人) + (靠近/在/站) + (左后方/左后)
+        * **未命中不等于没有违规**，只等于没有检测到词面证据。角色用反话、
+          隐喻或完全不同的措辞犯下同一件事，本检查一律看不见。
+        * 命中也不等于真的违规：「他发誓绝不滥杀无辜」这类立誓/转述同样
+          含词根，会误报。我们宁可在这一侧承担噪音，也不让检查保持沉默 ——
+          沉默会让「最重的底线从未被执法过」这件事完全不可见。
+
+        【为什么是这套规则】
+        沿用同文件 ``_semantic_match_trigger`` 的既有机制（同一套分隔符拆词
+        → 同义词兜底 → 二字子串兜底），不另起炉灶。差异只有两处，且都朝
+        「宁可漏报不误报」收紧 —— 因为道德底线一旦冤判角色，代价高于漏报：
+
+        1. 剥掉禁令外壳（"绝不/禁止/不…"）。违规的表现是「做了那件事」，
+           而不是「声明绝不那件事」；不剥的话 "禁止滥杀无辜" 会因为要求
+           正文同时出现「禁止」而永远检不出。
+        2. 要求**全部**词根同时命中，并丢弃单字词根。``_semantic_match_trigger``
+           用的是「过半即算」，那对创伤触发合适，对 severity=0.9 的道德底线
+           太松 —— "滥杀无辜" 只因正文出现「无辜」二字就被判违规，是冤判。
+
+        不调用 LLM、不查向量：这是同步护栏，不能因此变成阻塞调用。
         """
-        # 第一步：用分隔符拆分
-        trigger_words = [w for w in re.split(r'[的了吗着了过在]', trigger) if len(w) >= 1]
+        if not taboo or not text:
+            return False
 
-        # 第二步：如果拆分后只有一个长词，尝试按动词+名词边界进一步拆分
-        if len(trigger_words) == 1 and len(trigger_words[0]) > 2:
-            word = trigger_words[0]
-            # 尝试将长词拆分为更小的语义单元
-            sub_words = []
-            # 使用同义词表的键作为拆分锚点
+        phrase = self._strip_taboo_negation(taboo)
+        # 短于词根下限的禁忌无从判别（单字在正文里几乎必然出现）。
+        if len(phrase) < self._TABOO_MIN_ROOT_LEN:
+            return False
+
+        # 整条禁忌原样出现 —— 最高置信的直接证据
+        if phrase in text:
+            return True
+
+        roots = [
+            w for w in self._split_match_words(phrase)
+            if len(w) >= self._TABOO_MIN_ROOT_LEN
+        ]
+        if not roots:
+            return False
+
+        # 全中才算命中。半中就报会把「无辜的百姓」这种共现当成「滥杀」。
+        return all(self._root_present(root, text) for root in roots)
+
+    def _strip_taboo_negation(self, taboo: str) -> str:
+        """剥掉禁忌的禁令外壳，返回「被禁止的那件事」本身。
+
+        moral_taboos 天然以禁令句式书写（提示词模板即 ``"绝不做的事1"``），
+        而违规的表现恰恰是去做了那件事，所以比对前必须先剥掉这层外壳。
+        """
+        phrase = (taboo or "").strip()
+        stripped = True
+        while stripped and phrase:
+            stripped = False
+            for prefix in self._TABOO_NEGATION_PREFIXES:
+                # len 判断兼作兜底：剥到空串就停，绝不返回空。
+                if len(phrase) > len(prefix) and phrase.startswith(prefix):
+                    phrase = phrase[len(prefix):].strip()
+                    stripped = True
+                    break
+        return phrase
+
+    def _root_present(self, root: str, text: str) -> bool:
+        """词根是否出现在正文：直接命中 → 同义词 → 二字子串兜底。
+
+        与 ``_semantic_match_trigger`` 的三级匹配同构，唯一差别是同义词
+        同样受词根下限约束：``_TRIGGER_SYNONYMS`` 里「遇害」的同义词含单字
+        「死」，放它进来等于把泛化字重新引回禁忌证据，而泛化字正是这条检查
+        要防的东西。
+        """
+        if root in text:
+            return True
+        for syn in self._TRIGGER_SYNONYMS.get(root, []):
+            if len(syn) >= self._TABOO_MIN_ROOT_LEN and syn in text:
+                return True
+        for i in range(len(root) - 1):
+            if root[i:i + 2] in text:
+                return True
+        return False
+
+    def _split_match_words(self, phrase: str) -> List[str]:
+        """把短语拆成关键词组（``_semantic_match_trigger`` 与禁忌检测共用）。
+
+        拆词口径必须只有一处：两处各拆各的，迟早会在边界用例上分叉，
+        而分叉出来的差异会伪装成「护栏结果不同」。
+        """
+        words = [w for w in re.split(r'[的了吗着了过在]', phrase) if len(w) >= 1]
+
+        # 拆出来仍是一个长词时：先用同义词表的键当语义锚点切，锚不上再按 2 字切
+        if len(words) == 1 and len(words[0]) > 2:
+            word = words[0]
+            sub_words: List[str] = []
             all_trigger_keys = list(self._TRIGGER_SYNONYMS.keys())
             # 按长度降序排列，优先匹配长词
             all_trigger_keys.sort(key=len, reverse=True)
-            
+
             remaining = word
             while remaining:
                 matched = False
@@ -366,9 +456,20 @@ class CharacterConsistencyGuardrail:
                     else:
                         sub_words.append(remaining)
                         remaining = ""
-            
+
             if len(sub_words) > 1:
-                trigger_words = sub_words
+                words = sub_words
+
+        return words
+
+    def _semantic_match_trigger(self, trigger: str, text: str) -> bool:
+        """语义匹配触发条件
+
+        将触发条件拆解为关键词组，在文本中查找满足条件的片段。
+        例如 "看到女性遇险" -> 需要 (看到/看见/面前) + (女性/女人) + (遇险/被打)
+        例如 "有人靠近左后方" -> 需要 (有人/人/某人) + (靠近/在/站) + (左后方/左后)
+        """
+        trigger_words = self._split_match_words(trigger)
 
         if not trigger_words:
             return False
