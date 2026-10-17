@@ -12,6 +12,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from application.audit.services.anti_ai_thresholds import (  # noqa: E402
+    ASSESSMENT_THRESHOLDS as _ASSESSMENT_THRESHOLDS,
+    SEVERITY_WEIGHTS as _SEVERITY_WEIGHTS,
+    classify_assessment,
+    normalize_severity_score,
+    raw_severity_score,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,16 +101,11 @@ class MetricsTrend:
 class AntiAIMetricsService:
     """Anti-AI 指标服务。"""
 
-    # 严重性权重
-    SEVERITY_WEIGHTS = {"critical": 3.0, "warning": 1.0, "info": 0.3}
-
-    # 评估阈值
-    ASSESSMENT_THRESHOLDS: List[Tuple[float, str]] = [
-        (5.0, "严重"),
-        (3.0, "中等"),
-        (1.0, "轻微"),
-        (0.0, "纯净"),
-    ]
+    # 单一事实源（anti_ai_thresholds）——
+    # 本类属性**指向同一对象**，不是副本；改一处即两处生效。
+    # 身份断言见 tests/unit/application/audit/test_anti_ai_thresholds_single_source.py
+    SEVERITY_WEIGHTS = _SEVERITY_WEIGHTS
+    ASSESSMENT_THRESHOLDS = _ASSESSMENT_THRESHOLDS
 
     def compute_snapshot(
         self,
@@ -133,11 +136,8 @@ class AntiAIMetricsService:
         critical_density = critical_count / chars_per_k
 
         # 加权严重性分数
-        raw_score = sum(
-            self.SEVERITY_WEIGHTS.get(getattr(h, 'severity', ''), 0.5)
-            for h in hits
-        )
-        severity_score = min(100.0, (raw_score / chars_per_k) * 10)
+        raw_score = raw_severity_score(getattr(h, 'severity', '') for h in hits)
+        severity_score = normalize_severity_score(raw_score, total_chars)
 
         # 分类分布
         category_dist: Dict[str, int] = {}
@@ -154,11 +154,7 @@ class AntiAIMetricsService:
         top_patterns = sorted(pattern_counts, key=pattern_counts.get, reverse=True)[:5]
 
         # 评估
-        assessment = "纯净"
-        for threshold, label in self.ASSESSMENT_THRESHOLDS:
-            if severity_score >= threshold:
-                assessment = label
-                break
+        assessment = classify_assessment(severity_score)
 
         return ChapterMetricsSnapshot(
             chapter_id=chapter_id,

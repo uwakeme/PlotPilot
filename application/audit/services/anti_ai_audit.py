@@ -14,6 +14,14 @@ from typing import Any, Dict, List, Optional
 
 from application.audit.services.cliche_scanner import ClicheHit, ClicheScanner
 
+from application.audit.services.anti_ai_thresholds import (  # noqa: E402
+    ASSESSMENT_THRESHOLDS as _ASSESSMENT_THRESHOLDS,
+    SEVERITY_WEIGHTS as _SEVERITY_WEIGHTS,
+    classify_assessment,
+    normalize_severity_score,
+    raw_severity_score,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,8 +52,11 @@ class AntiAIAuditReport:
 class AntiAIAuditor:
     """Anti-AI 审计服务。"""
 
-    SEVERITY_WEIGHTS = {"critical": 3.0, "warning": 1.0, "info": 0.3}
-    ASSESSMENT_THRESHOLDS = [(5.0, "严重"), (3.0, "中等"), (1.0, "轻微"), (0.0, "纯净")]
+    # 单一事实源（anti_ai_thresholds）——
+    # 本类属性**指向同一对象**，不是副本；改一处即两处生效。
+    # 身份断言见 tests/unit/application/audit/test_anti_ai_thresholds_single_source.py
+    SEVERITY_WEIGHTS = _SEVERITY_WEIGHTS
+    ASSESSMENT_THRESHOLDS = _ASSESSMENT_THRESHOLDS
 
     def scan_chapter(self, chapter_id: str, content: str) -> AntiAIAuditReport:
         """对章节进行 Anti-AI 审计。"""
@@ -69,8 +80,8 @@ class AntiAIAuditor:
         info_count = sum(1 for h in hits if h.severity == "info")
 
         char_count = max(len(content), 1)
-        raw_score = sum(self.SEVERITY_WEIGHTS.get(h.severity, 0.5) for h in hits)
-        normalized_score = min(100.0, (raw_score / char_count) * 1000 * 10)
+        raw_score = raw_severity_score(h.severity for h in hits)
+        normalized_score = normalize_severity_score(raw_score, char_count)
 
         category_dist: Dict[str, int] = {}
         for h in hits:
@@ -82,11 +93,7 @@ class AntiAIAuditor:
             pattern_counts[h.pattern] = pattern_counts.get(h.pattern, 0) + 1
         top_patterns = sorted(pattern_counts, key=pattern_counts.get, reverse=True)[:5]
 
-        assessment = "纯净"
-        for threshold, label in self.ASSESSMENT_THRESHOLDS:
-            if normalized_score >= threshold:
-                assessment = label
-                break
+        assessment = classify_assessment(normalized_score)
 
         return AntiAIMetrics(
             chapter_id=chapter_id, total_hits=len(hits),
