@@ -321,6 +321,37 @@ def _try_parse_parts_from_llm_buffer(raw: str) -> Optional[List[Dict]]:
     return None
 
 
+# 结构占位检测（B-10）：只如实回答「这里本来就没有内容」。
+# 刻意保持朴素 —— 标题形如「第1部」「第2卷」「第3幕」说明它只由序号拼成，
+# 从来没人真正写过它；简介为空同理。除此之外一概不判：标题好不好是创作
+# 判断，代码不替模型做，也不引入相似度/关键词之类的启发式。
+
+
+def _looks_like_placeholder_title(title: object) -> bool:
+    """标题是否只是序号占位：`第` + 数字 + 层级词（部/卷/幕）。"""
+    text = str(title or "").strip()
+    if not text.startswith("第"):
+        return False
+    rest = text[1:]
+    for suffix in ("部", "卷", "幕"):
+        if rest.endswith(suffix):
+            rest = rest[: -len(suffix)]
+            break
+    return rest.isdigit()
+
+
+def _placeholder_structure_gaps(node: object) -> List[str]:
+    """列出这个节点「本来就没有内容」的字段名；返回空列表表示内容齐备。"""
+    if not isinstance(node, dict):
+        return ["node"]
+    gaps = []
+    if _looks_like_placeholder_title(node.get("title")):
+        gaps.append("title")
+    if not str(node.get("description") or "").strip():
+        gaps.append("description")
+    return gaps
+
+
 def _repair_json_string(text: str) -> str:
     text = text.strip()
     if not text:
@@ -414,6 +445,7 @@ def get_macro_plan_progress(novel_id: str) -> Dict:
         "message": "",
         "llm_stream_text": "",
         "preview_parts": None,
+        "preview_parts_incomplete": False,
     }
     shared = _get_cross_process_shared_dict()
     if shared is not None:
@@ -517,13 +549,20 @@ class ContinuousPlanningService:
             if isinstance(structure, list):
                 structure = {"parts": structure}
 
+            # 「这次规划没跑完」必须显式带出去（显式 False 好过没有这个键）：
+            # 降级路径不允许产出看起来与一次正常规划无差别的结果。
+            structure_incomplete = (
+                bool(structure.get("incomplete")) if isinstance(structure, dict) else False
+            )
+
             parts_n = len(structure.get("parts", [])) if isinstance(structure, dict) else 0
             logger.debug(
-                "[MacroPlan] novel=%s generate_done parts=%d target_chapters=%s pref=%s",
+                "[MacroPlan] novel=%s generate_done parts=%d target_chapters=%s pref=%s incomplete=%s",
                 novel_id,
                 parts_n,
                 target_chapters,
                 "free" if structure_preference is None else "precise",
+                structure_incomplete,
             )
 
             # 评估规划质量
@@ -536,18 +575,23 @@ class ContinuousPlanningService:
             )
 
             logger.info(f"[MacroPlanQuality] novel={novel_id}, time={elapsed_time:.2f}s, metrics={quality_metrics}")
-            self._set_macro_preview_parts(novel_id, structure.get("parts", []) or [])
+            self._set_macro_preview_parts(
+                novel_id,
+                structure.get("parts", []) or [],
+                incomplete=structure_incomplete,
+            )
             self._update_macro_progress(
                 novel_id,
                 status="completed",
                 current=self._get_total_volumes(structure_preference),
                 total=self._get_total_volumes(structure_preference),
-                message="结构规划生成完成",
+                message="结构规划生成完成" if not structure_incomplete else "结构规划不完整，部分节点仍是占位",
             )
 
             return {
                 "success": True,
                 "structure": structure.get("parts", []),
+                "incomplete": structure_incomplete,
                 "quality_metrics": quality_metrics,
                 "generation_time": elapsed_time
             }
@@ -603,17 +647,17 @@ class ContinuousPlanningService:
             message="正在检查并补全缺失字段",
         )
 
-        incomplete_acts = self._find_incomplete_precise_acts(skeleton)
-        if incomplete_acts:
+        incomplete_nodes = self._find_incomplete_precise_nodes(skeleton)
+        if incomplete_nodes:
             repair_prompt = self._build_precise_repair_prompt(
                 bible_context=bible_context,
                 target_chapters=target_chapters,
                 structure_preference=structure_preference,
-                incomplete_acts=incomplete_acts,
+                incomplete_nodes=incomplete_nodes,
             )
             repair_config = generation_config_from_profile(
                 "planning_repair",
-                max_tokens=self._calculate_precise_repair_max_tokens(incomplete_acts),
+                max_tokens=self._calculate_precise_repair_max_tokens(incomplete_nodes),
             )
             self._clear_macro_llm_stream(novel_id)
             self._update_macro_progress(
@@ -637,6 +681,18 @@ class ContinuousPlanningService:
             for act in volume.get("acts", [])
         ]
         self._rebalance_act_chapters(all_acts, target_chapters)
+
+        remaining_nodes = self._find_incomplete_precise_nodes(skeleton)
+        if remaining_nodes:
+            # 补全跑完仍有空壳节点：`success=True` + 一串 `第N部` 与一次正常规划
+            # 毫无区别。把「不完整」这个事实随结构一起带出去，交给消费方决定
+            # 是提示用户还是重新生成 —— 这里不自行中止，也不替用户下判断。
+            logger.warning(
+                "[MacroPlan] novel=%s 补全后仍有 %d 个空壳节点，结果标记为不完整",
+                novel_id,
+                len(remaining_nodes),
+            )
+            skeleton["incomplete"] = True
         return skeleton
 
     def _build_precise_structure_skeleton(
@@ -788,31 +844,55 @@ class ContinuousPlanningService:
         )
         return min(12_000, max(3_072, 2_048 + total_volumes * 400 + total_acts * 120))
 
-    def _calculate_precise_repair_max_tokens(self, incomplete_acts: List[Dict]) -> int:
-        return min(6_000, max(1_536, 768 + len(incomplete_acts) * 320))
+    def _calculate_precise_repair_max_tokens(self, incomplete_nodes: List[Dict]) -> int:
+        return min(6_000, max(1_536, 768 + len(incomplete_nodes) * 320))
 
-    def _find_incomplete_precise_acts(self, skeleton: Dict) -> List[Dict]:
+    def _find_incomplete_precise_nodes(self, skeleton: Dict) -> List[Dict]:
+        """列出仍需模型补写的部/卷/幕节点。
+
+        部和卷以前不在检查范围内，它们的 `description` 会一直空着落库，
+        看起来像一次部部有简介的正常规划。这里只报「内容缺失」，
+        不评价标题与简介写得好不好。
+        """
         required_text_fields = ("narrative_goal", "emotional_arc")
         required_list_fields = ("plot_points", "key_characters", "key_locations")
         incomplete = []
+
+        def _entry(node: Dict, level: str, missing_fields: List[str]) -> Dict:
+            return {
+                "node_id": node.get("node_id", ""),
+                "level": level,
+                "title": node.get("title", ""),
+                "description": node.get("description", ""),
+                "missing_fields": missing_fields,
+            }
+
         for part in skeleton.get("parts", []):
+            if not isinstance(part, dict):
+                continue
+            part_gaps = _placeholder_structure_gaps(part)
+            if part_gaps:
+                incomplete.append(_entry(part, "part", part_gaps))
             for volume in part.get("volumes", []):
+                if not isinstance(volume, dict):
+                    continue
+                volume_gaps = _placeholder_structure_gaps(volume)
+                if volume_gaps:
+                    incomplete.append(_entry(volume, "volume", volume_gaps))
                 for act in volume.get("acts", []):
-                    missing_fields = [
+                    if not isinstance(act, dict):
+                        continue
+                    missing_fields = _placeholder_structure_gaps(act)
+                    missing_fields.extend(
                         field for field in required_text_fields
                         if not str(act.get(field) or "").strip()
-                    ]
+                    )
                     missing_fields.extend(
                         field for field in required_list_fields
                         if not isinstance(act.get(field), list) or not act.get(field)
                     )
                     if missing_fields:
-                        incomplete.append({
-                            "node_id": act["node_id"],
-                            "title": act.get("title", ""),
-                            "description": act.get("description", ""),
-                            "missing_fields": missing_fields,
-                        })
+                        incomplete.append(_entry(act, "act", missing_fields))
         return incomplete
 
     def _get_total_volumes(self, structure_preference: Optional[Dict[str, int]]) -> int:
@@ -861,6 +941,7 @@ class ContinuousPlanningService:
         prog = prog.copy()
         prog["llm_stream_text"] = ""
         prog["preview_parts"] = None
+        prog["preview_parts_incomplete"] = False
         _macro_plan_progress_store[novel_id] = prog
         _mirror_macro_plan_progress_to_shared(novel_id)
 
@@ -881,8 +962,18 @@ class ContinuousPlanningService:
         _mirror_macro_plan_progress_to_shared(novel_id)
         self._maybe_incremental_macro_preview_from_stream(novel_id)
 
-    def _set_macro_preview_parts(self, novel_id: str, parts: List[Dict]) -> None:
-        """解析完成后暂存部/卷/幕列表，供全托管 SSE 旁路监听端逐节点推送。"""
+    def _set_macro_preview_parts(
+        self,
+        novel_id: str,
+        parts: List[Dict],
+        *,
+        incomplete: bool = False,
+    ) -> None:
+        """解析完成后暂存部/卷/幕列表，供全托管 SSE 旁路监听端逐节点推送。
+
+        `incomplete=True` 表示这份列表来自被中断/占位的降级路径，不是一份完整结构；
+        该标记随预览快照一起镜像出去，供 SSE 与轮询端判断要不要提示用户。
+        """
         prog = _macro_plan_progress_store.get(novel_id, {
             "status": "idle",
             "current": 0,
@@ -891,8 +982,10 @@ class ContinuousPlanningService:
             "message": "",
             "llm_stream_text": "",
             "preview_parts": None,
+            "preview_parts_incomplete": False,
         }).copy()
         prog["preview_parts"] = parts
+        prog["preview_parts_incomplete"] = bool(incomplete)
         _macro_plan_progress_store[novel_id] = prog
         _mirror_macro_plan_progress_to_shared(novel_id)
 
@@ -985,8 +1078,16 @@ class ContinuousPlanningService:
                             len(joined),
                             exc,
                         )
-                        self._set_macro_preview_parts(novel_id, preview_parts)
-                        return json.dumps({"parts": preview_parts}, ensure_ascii=False)
+                        self._set_macro_preview_parts(novel_id, preview_parts, incomplete=True)
+                        # 半截规划有可用价值，丢掉它不对；但它不是一次完整生成，
+                        # 所以「这是半截」这个事实随结果一起传下去 —— 下游
+                        # （预览 / 保存 / 继续生成）据此自行决定提示用户还是重来。
+                        # 精密模式下这份载荷只有 parts、没有 node_updates，合并
+                        # 不进去，于是那一轮的成果会由骨架上的占位节点如实体现。
+                        return json.dumps(
+                            {"parts": preview_parts, "incomplete": True},
+                            ensure_ascii=False,
+                        )
                 except Exception:
                     logger.debug(
                         "[MacroLLMStream] novel=%s partial repair failed after upstream error",
@@ -1048,6 +1149,7 @@ class ContinuousPlanningService:
         prog = _macro_plan_progress_store.setdefault(novel_id, {})
         prog["llm_stream_text"] = ""
         prog["preview_parts"] = None
+        prog["preview_parts_incomplete"] = False
         _mirror_macro_plan_progress_to_shared(novel_id)
 
     def store_macro_plan_result(self, novel_id: str, result: Dict) -> None:
@@ -2607,20 +2709,22 @@ class ContinuousPlanningService:
         bible_context: Dict,
         target_chapters: int,
         structure_preference: Dict,
-        incomplete_acts: List[Dict],
+        incomplete_nodes: List[Dict],
     ) -> Prompt:
-        """只为缺字段的幕生成补丁。"""
+        """只为缺内容的部/卷/幕生成补丁。"""
         parts = structure_preference.get("parts", 3)
         volumes_per_part = structure_preference.get("volumes_per_part", 3)
         acts_per_volume = structure_preference.get("acts_per_volume", 3)
         total_acts = max(parts * volumes_per_part * acts_per_volume, 1)
         avg_chapters_per_act = max(target_chapters // total_acts, 1)
 
-        act_lines = []
-        for act in incomplete_acts:
-            missing = ", ".join(act.get("missing_fields", []))
-            act_lines.append(
-                f'- {act.get("node_id", "")}: 标题《{act.get("title", "")}》；简介《{act.get("description", "")}》；缺失字段：{missing}'
+        level_labels = {"part": "部", "volume": "卷", "act": "幕"}
+        node_lines = []
+        for node in incomplete_nodes:
+            missing = ", ".join(node.get("missing_fields", []))
+            label = level_labels.get(node.get("level"), "节点")
+            node_lines.append(
+                f'- [{label}] {node.get("node_id", "")}: 标题《{node.get("title", "")}》；简介《{node.get("description", "")}》；缺失字段：{missing}'
             )
 
         return self._render_contract_prompt(
@@ -2638,7 +2742,7 @@ class ContinuousPlanningService:
                 "volumes_per_part": volumes_per_part,
                 "acts_per_volume": acts_per_volume,
                 "avg_chapters_per_act": avg_chapters_per_act,
-                "incomplete_acts_block": "\n".join(act_lines),
+                "incomplete_acts_block": "\n".join(node_lines),
             },
         )
 
