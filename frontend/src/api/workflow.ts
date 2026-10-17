@@ -107,7 +107,19 @@ export interface SuggestMainPlotOptionsResponse {
 }
 
 export interface PlotOutlineStageDTO {
-  phase: 'opening' | 'development' | 'deepening' | 'climax' | 'ending'
+  /**
+   * 阶段标识。
+   *
+   * J-03：原先这里写死成
+   * `'opening' | 'development' | 'deepening' | 'climax' | 'ending'` ——
+   * 也就是说「只能有 5 个阶段且名字固定」这件事被编进了**类型契约**，
+   * 即使运行时放宽了阶段数，类型检查也会把它挡回去。
+   *
+   * 现在阶段数（∈ [3, 8]）与阶段名都由 AI 决定、后端规范化，
+   * 前端只做渲染，故放开为 `string`。那 5 个名字仍作为常见取值使用，
+   * 由 `canonicalPhase` 做别名归一，但不再是对取值的限制。
+   */
+  phase: string
   label: string
   range_percent: string
   chapter_start?: number

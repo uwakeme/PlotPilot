@@ -35,15 +35,26 @@ const LEGACY_STAGE_KEY_ALIASES = [
   ['stage_end_90_100', 'stage_end', 'stage_ending', 'ending'],
 ] as const
 
-const STAGE_PHASE_META = [
-  { phase: 'opening', label: '开篇阶段', range_percent: '1-15%' },
-  { phase: 'development', label: '发展阶段', range_percent: '15-40%' },
-  { phase: 'deepening', label: '深化阶段', range_percent: '40-70%' },
-  { phase: 'climax', label: '高潮阶段', range_percent: '70-90%' },
-  { phase: 'ending', label: '收尾阶段', range_percent: '90-100%' },
+/**
+ * 阶段兜底标签（**按位置取，不是固定 5 段表**）。
+ *
+ * J-03：本文件原先有一份自己的 5 段表（`STAGE_PHASE_META`）并按下标
+ * `STAGE_PHASE_META[index]` 强制回贴 `phase` / `label`。那意味着后端刚放开的
+ * 阶段数与阶段名，一到前端又被改回固定 5 个名字 —— 两处真相源必然漂移。
+ *
+ * 现在阶段名与阶段数都由后端决定（见
+ * `application/blueprint/services/stage_plan_invariants.py`）：
+ * 阶段数 ∈ [3, 8]，断点首尾相接，phase / label 来自 AI。
+ * 前端只做**渲染**：自己的值优先，缺失时才按位置兜底。
+ */
+const STAGE_FALLBACK_LABELS = [
+  '起始', '展开', '推进', '深化', '高潮', '收束', '过渡', '尾声',
 ] as const
 
-const STAGE_RANGE_RATIOS = [0.15, 0.40, 0.70, 0.90, 1.0] as const
+function stageFallback(index: number): { phase: string; label: string } {
+  const label = STAGE_FALLBACK_LABELS[index] ?? `阶段${index + 1}`
+  return { phase: `stage_${index + 1}`, label: `${label}阶段` }
+}
 
 const PHASE_ALIASES: Record<string, string> = {
   opening: 'opening',
@@ -106,57 +117,78 @@ function canonicalPhase(value: unknown): string {
   return PHASE_ALIASES[text] || ''
 }
 
-export function buildStageChapterRanges(totalChapters: number): Array<{ chapter_start: number; chapter_end: number }> {
-  const total = Math.max(STAGE_RANGE_RATIOS.length, Math.floor(Number(totalChapters) || 0) || 100)
-  const ends: number[] = []
+/**
+ * 按**实际段数**均分 1..totalChapters。
+ *
+ * J-03：原先这是前端自己那份 `STAGE_RANGE_RATIOS = [0.15, 0.40, 0.70, 0.90, 1.0]`，
+ * 于是前后端各切各的、必然漂移。现在阶段数与断点由后端决定
+ * （见 `application/blueprint/services/stage_plan_invariants.py`），
+ * 这里只在前端本地编辑、后端区间缺失时兜底，均分即可 —— 不再承担创作判断。
+ */
+export function buildStageChapterRanges(
+  totalChapters: number,
+  stageCount: number,
+): Array<{ chapter_start: number; chapter_end: number }> {
+  const total = Math.max(1, Math.floor(Number(totalChapters)) || 100)
+  const n = Math.max(1, Math.min(Math.floor(Number(stageCount)) || 1, total))
+  const ranges: Array<{ chapter_start: number; chapter_end: number }> = []
   let previous = 0
-  STAGE_RANGE_RATIOS.forEach((ratio, index) => {
-    let end: number
-    if (index === STAGE_RANGE_RATIOS.length - 1) {
-      end = total
-    } else {
-      end = Math.max(previous + 1, Math.round(total * ratio))
-      const remainingMin = STAGE_RANGE_RATIOS.length - index - 1
-      end = Math.min(end, total - remainingMin)
-    }
-    ends.push(end)
-    previous = end
-  })
-  return ends.map((end, index) => ({
-    chapter_start: index === 0 ? 1 : ends[index - 1] + 1,
-    chapter_end: end,
-  }))
+  for (let index = 0; index < n; index += 1) {
+    const remaining = n - index - 1
+    const end = index === remaining
+      ? total
+      : Math.min(
+        Math.max(previous + 1, Math.round((total * (index + 1)) / n)),
+        total - remaining,
+      )
+    const bounded = Math.max(previous + 1, end)
+    ranges.push({ chapter_start: previous + 1, chapter_end: bounded })
+    previous = bounded
+  }
+  return ranges
 }
 
+/**
+ * 规范化阶段列表 —— J-03 后，前端只渲染，不改写。
+ *
+ * 后端已保证：阶段数 ∈ [3, 8]、断点首尾相接、phase / label 来自 AI。
+ * 因此这里**不再按下标回贴**任何东西，只在字段缺失时按位置兜底。
+ */
+/**
+ * 规范化阶段列表 —— J-03 后，前端只渲染，不改写。
+ *
+ * 后端已保证：阶段数 ∈ [3, 8]、断点首尾相接、phase / label 来自 AI。
+ * 因此这里**不再按下标回贴**任何东西，只在字段缺失时按位置兜底。
+ */
 function normalizeStagePlanRanges(
   stagePlan: PlotOutlineDTO['stage_plan'],
   totalChapters: number,
 ): PlotOutlineDTO['stage_plan'] {
-  const ranges = buildStageChapterRanges(totalChapters)
+  const ranges = buildStageChapterRanges(totalChapters, stagePlan.length)
   return stagePlan.map((stage, index) => {
-    const meta = STAGE_PHASE_META[index]
+    const fallbackStage = stageFallback(index)
     const fallback = ranges[index] || {
       chapter_start: index + 1,
-      chapter_end: Math.max(index + 1, Math.floor(Number(totalChapters) || 100)),
+      chapter_end: Math.max(index + 1, Math.floor(Number(totalChapters)) || 100),
     }
     const rawStart = coerceChapterNumber(stage.chapter_start)
     const rawEnd = coerceChapterNumber(stage.chapter_end)
     const keepManualRange = rawStart !== undefined && rawEnd !== undefined && rawStart <= rawEnd
     const next = {
       ...stage,
-      phase: meta?.phase || stage.phase,
-      label: stage.label || meta?.label || '',
+      // **不改写** —— 阶段名与阶段数由后端 / AI 决定
+      phase: stage.phase || fallbackStage.phase,
+      label: stage.label || fallbackStage.label,
       chapter_start: keepManualRange ? rawStart : fallback.chapter_start,
       chapter_end: keepManualRange ? rawEnd : fallback.chapter_end,
     }
-    const sourcePhase = canonicalPhase(stage.phase) || canonicalPhase(stage.label)
     return {
       ...next,
-      ...(sourcePhase && meta && sourcePhase !== meta.phase ? { source_phase: stage.phase || stage.label } : {}),
       range_percent: buildStageRangePercentLabel(next, Math.max(totalChapters, next.chapter_end || 0)) || stage.range_percent,
     }
   })
 }
+
 
 export function parsePlotLabeledSections(text: string): Record<string, string> {
   const source = String(text || '').trim()
@@ -306,28 +338,55 @@ function pickPlotValue(record: Record<string, unknown>, keys: string[]): unknown
   return undefined
 }
 
+/**
+ * 旧格式 `{opening:..., development:...}` → 阶段数组。
+ *
+ * J-03：原先这里也用 `STAGE_PHASE_META[index]` 按下标取名。旧格式的**键本身
+ * 就是阶段名**，所以正确的做法是从**匹配到的那个键**推导，而不是查一张位置表 ——
+ * 这样既去掉了镜像，语义也更准（原先第 3 个键无论叫什么都会被叫成「深化阶段」）。
+ */
 function normalizeLegacyStagePlan(stagePlan: unknown): PlotOutlineDTO['stage_plan'] {
   if (!stagePlan || typeof stagePlan !== 'object' || Array.isArray(stagePlan)) return []
   const record = stagePlan as Record<string, unknown>
-  return LEGACY_STAGE_KEY_ALIASES.map((aliases, index) => {
-    const meta = STAGE_PHASE_META[index]
-    const value = aliases.map(key => record[key]).find(item => item !== undefined && item !== null && item !== '')
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return {
-        ...(value as PlotOutlineDTO['stage_plan'][number]),
-        phase: meta.phase,
-        label: String((value as Record<string, unknown>).label || meta.label),
-        range_percent: String((value as Record<string, unknown>).range_percent || meta.range_percent),
+  const stages: PlotOutlineDTO['stage_plan'] = []
+  LEGACY_STAGE_KEY_ALIASES.forEach((aliases) => {
+    let matchedKey = ''
+    let value: unknown
+    for (const key of aliases) {
+      const candidate = record[key]
+      if (candidate !== undefined && candidate !== null && candidate !== '') {
+        matchedKey = key
+        value = candidate
+        break
       }
     }
-    return {
-      phase: meta.phase,
-      label: meta.label,
-      range_percent: meta.range_percent,
-      summary: value ? String(value).trim() : '',
-      key_goals: [],
+    if (!matchedKey) return
+
+    // 阶段名来自**匹配到的旧键**，别名表只做归一，不做「按下标套名」
+    const phase = canonicalPhase(matchedKey) || matchedKey
+    const fallback = stageFallback(stages.length)
+    const source = (value && typeof value === 'object' && !Array.isArray(value))
+      ? (value as Record<string, unknown>)
+      : null
+
+    if (source) {
+      stages.push({
+        ...(source as unknown as PlotOutlineDTO['stage_plan'][number]),
+        phase: String(source.phase || phase),
+        label: String(source.label || fallback.label),
+        range_percent: String(source.range_percent || ''),
+      })
+    } else {
+      stages.push({
+        phase,
+        label: fallback.label,
+        range_percent: '',
+        summary: String(value).trim(),
+        key_goals: [],
+      })
     }
-  }).filter(stage => String(stage.summary || '').trim())
+  })
+  return stages.filter(stage => String(stage.summary || '').trim())
 }
 
 export function normalizePlotOutlineShape(value: unknown, totalChapters = 100): PlotOutlineDTO | null {
