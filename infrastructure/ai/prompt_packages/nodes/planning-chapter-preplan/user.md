@@ -21,9 +21,12 @@
    - payoff_reversals：爽点/反转设计，说明预期、反转、读者正反馈。
    - protagonist_state_change：主角状态变化，包含位置、实力、新获得、身体状况、重大变化。
 6. 正文模型会按 event_chain 顺序扩写，所以上下文交接、人物位置、关键动作、对话作用必须具体可执行。
+7. target_words：本章正文的字数目标（整数）。按本章实际分量给出，
+   可在全书基线上下浮动，但不要偏离过大。判不出来就写 null，不要编一个平均值。
 
 请输出 JSON：
 {
+  "target_words": 2600,
   "detail_title": "细纲标题",
   "key_plot_points": [
     "本章必须落地的关键情节点"

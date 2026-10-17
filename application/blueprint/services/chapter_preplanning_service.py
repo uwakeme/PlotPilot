@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from application.blueprint.services.chapter_continuity_ledger import ChapterContinuityLedgerService
@@ -25,6 +26,18 @@ from infrastructure.ai.prompt_gateway import get_prompt_gateway
 from infrastructure.ai.prompt_keys import PLANNING_CHAPTER_PREPLAN
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ChapterPreplanResult:
+    """章前执行剧本的结果。
+
+    ``proposed_target_words`` 是 AI 对本章字数的提议（D-05 新增的输出通道）。
+    ``None`` 表示 AI 没给、或给了解析不了 —— 调用方据此知道这不是 AI 的判断。
+    """
+
+    text: str
+    proposed_target_words: Optional[int] = None
 
 
 class ChapterPreplanningService:
@@ -54,7 +67,7 @@ class ChapterPreplanningService:
         chapter_node: Any = None,
         current_outline: str = "",
         target_words: int | None = None,
-    ) -> str:
+    ) -> ChapterPreplanResult:
         """Return a seven-section execution plan, generating it when needed."""
         outline = (current_outline or "").strip()
         if has_rendered_chapter_execution_plan(outline):
@@ -65,7 +78,7 @@ class ChapterPreplanningService:
                 outline,
                 continuity_context=continuity_context,
             )
-            return outline
+            return ChapterPreplanResult(text=outline)
 
         node = chapter_node or self._get_chapter_node(novel_id, chapter_number)
         act_plan = self._extract_act_plan(node, outline)
@@ -82,7 +95,7 @@ class ChapterPreplanningService:
                 legacy_plan,
                 continuity_context=continuity_context,
             )
-            return rendered
+            return ChapterPreplanResult(text=rendered)
 
         title = str(getattr(node, "title", "") or f"第{chapter_number}章")
         prompt = get_prompt_gateway().render(
@@ -106,6 +119,8 @@ class ChapterPreplanningService:
         rendered = render_chapter_execution_plan(chapter_plan)
         if not has_rendered_chapter_execution_plan(rendered):
             raise ValueError("chapter_preplan_requires_seven_section_execution_plan")
+
+        proposed_target_words = self._extract_proposed_target_words(data)
 
         key_plot_points = self._normalize_string_list(
             data.get("key_plot_points")
@@ -136,8 +151,11 @@ class ChapterPreplanningService:
             chapter_number,
             len(rendered),
             target_words,
+            proposed_target_words,
         )
-        return rendered
+        return ChapterPreplanResult(
+            text=rendered, proposed_target_words=proposed_target_words
+        )
 
     def build_continuity_context(self, novel_id: str, chapter_number: int) -> str:
         return self.ledger_service.build_for_chapter(novel_id, chapter_number).to_planning_context_text()
@@ -309,6 +327,22 @@ class ChapterPreplanningService:
             logger.debug("[ChapterPreplan] variable hub persist failed: %s", exc)
 
     @staticmethod
+    @staticmethod
+    def _extract_proposed_target_words(data: dict) -> Optional[int]:
+        """从 preplan 输出里取 AI 的 target_words 提议。
+
+        缺字段 / null / 非数值 一律返回 ``None``（= AI 没给），
+        绝不用「全书基线」或任何默认值代替。
+        """
+        raw = data.get("target_words")
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
     def _normalize_string_list(value: Any) -> list[str]:
         if value is None:
             return []

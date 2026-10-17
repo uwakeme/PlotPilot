@@ -456,6 +456,44 @@ class BaseStoryPipeline(ABC):
                 ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
             )
 
+    async def _apply_chapter_target_words(
+        self, ctx: PipelineContext, proposed: Optional[int]
+    ) -> None:
+        """D-05：把 AI 提议的每章字数经护栏裁决后落到 ctx。
+
+        三条不变量（见 ``chapter_target_resolver``）：500-20000 钳制、
+        偏离用户设定不得超过上限、卷/部总量由上层规划负责。
+        开关默认关闭 ⇒ 完全不动 ``ctx.target_word_count``。
+        """
+        try:
+            from application.engine.services.chapter_target_resolver import (
+                resolve_chapter_target_words,
+            )
+            from application.engine.services.chapter_target_settings import (
+                get_chapter_target_runtime_settings,
+            )
+
+            settings = get_chapter_target_runtime_settings()
+            if not settings.enabled:
+                return
+
+            resolved, note = resolve_chapter_target_words(
+                ctx.target_word_count, proposed,
+                max_deviation_ratio=settings.max_deviation_ratio,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] 每章字数裁决失败，沿用原值 ch=%s: %s",
+                ctx.novel_id, ctx.chapter_number, exc,
+            )
+            return
+
+        ctx.metadata["chapter_target_words_note"] = note
+        if resolved != ctx.target_word_count:
+            logger.info("[%s] 每章字数 %s → %s（%s）",
+                        ctx.novel_id, ctx.target_word_count, resolved, note)
+            ctx.target_word_count = resolved
+
     async def _step_prepare_governance(self, ctx: PipelineContext) -> StepResult:
         """步骤1b：从叙事治理层领取本章预算。
 
@@ -705,7 +743,7 @@ class BaseStoryPipeline(ABC):
                     story_node_repo=ctx.story_node_repo,
                 )
             try:
-                outline = await preplanning_service.ensure_execution_plan(
+                preplan = await preplanning_service.ensure_execution_plan(
                     novel_id=ctx.novel_id,
                     chapter_number=ctx.chapter_number,
                     chapter_node=ctx.chapter_node,
@@ -714,7 +752,8 @@ class BaseStoryPipeline(ABC):
                 )
             except Exception as exc:
                 return StepResult.fail(f"章前执行剧本生成失败: {exc}")
-            ctx.outline = outline
+            ctx.outline = preplan.text
+            await self._apply_chapter_target_words(ctx, preplan.proposed_target_words)
             ctx.metadata["chapter_plan_mode"] = "chapter_preplan"
             ctx.metadata["outline_plan_mode"] = "chapter_preplan"
 
