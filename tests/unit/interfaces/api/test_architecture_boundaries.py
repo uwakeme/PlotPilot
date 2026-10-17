@@ -94,13 +94,6 @@ def test_application_model_services_use_environment_settings_object():
     assert offenders == []
 
 
-def test_engine_selector_uses_environment_settings_object():
-    source = Path("application/engine/dag/daemon_runner.py").read_text(encoding="utf-8")
-
-    assert "os.getenv(" not in source
-    assert "DAGEnvironmentSettings" in source
-
-
 def test_streaming_bus_uses_environment_settings_object():
     source = Path("application/engine/services/streaming_bus.py").read_text(encoding="utf-8")
 

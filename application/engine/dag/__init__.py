@@ -1,17 +1,32 @@
-"""DAG 工作流引擎 — 节点化 DAG 编排系统
+"""DAG 词汇表 —— 画布节点定义、节点类型注册表、规划数据契约。
 
-核心模块：
-- models: DAG 定义、节点/边模型、执行结果
-- registry: 节点类型注册表（工厂模式）
-- engine: DAG 执行引擎（LangGraph 编排 + 拓扑并行）
-- validator: DAG 校验引擎（环检测、端口兼容性、可达性分析）
-- version_manager: DAG 版本管理（保存/回滚/对比）
-- daemon_runner: DAG 守护进程运行器（替代 AutopilotDaemon 隐式状态机）
-- ipc_adapter: LangGraph 节点与现有 IPC 通道的适配器
-- event_aggregator: SSE 节点事件聚合器（节流 + 批量推送）
-- error_classifier: 节点错误分类器
-- prompt_validator: Prompt 模板安全校验器
-- nodes: V1 首批 19 个节点实现
+这一层曾经是**第二套执行引擎**（LangGraph 编排 + 拓扑并行 + 事件聚合 + IPC +
+守护进程）。那段执行面从未真正投入使用：2026-10-17 连同 8 个模块
+（``daemon_runner`` / ``engine`` / ``event_aggregator`` / ``ipc_adapter`` /
+``error_classifier`` / ``version_manager`` / ``validator`` /
+``prompt_validator``）与 9 个只覆盖它们的测试一并删除。
+
+留下的是三样**仍被生产代码使用**的东西：
+
+1. **models** —— 默认 DAG 的节点 id 与顺序，是前端画布与运行时状态投影的
+   单一数据源（``application/engine/narrative_projection/linkage_kernel.py``）。
+2. **registry** —— ``node_type`` → CPMS 提示词键的权威映射，提示词广场返回的
+   ``dag_bindings`` 直接用它（``interfaces/api/v1/workbench/llm_control.py``）。
+3. **plan** —— 章前执行计划的 schema 与生成函数。``context_builder.py``、
+   ``beat_projection.py``、``engine/runtime/legacy_writing_delegate.py``
+   把它们当**数据契约**用，不是当执行能力用。
+
+历史
+----
+``DAGDaemonRunner`` 与 ``POST /dag/{id}/run`` 曾有真实实现，2026-05-16
+00:08:55 引入（``d037b657``），7 秒后被同一次批量导入里的下一个 commit
+（``fc5de029``「后端路由精简为纯展示层」）拆掉。生产写作路径自 2026-05-21
+（``52aa0d20``，引入 ``PLOTPILOT_USE_STORY_PIPELINE``）起统一走
+``engine/runtime`` 的 ``EngineDaemon`` → ``StoryPipelineRunner`` →
+``BaseStoryPipeline``。
+
+``nodes/`` 下各节点的 ``execute()`` 同样从未被执行过；节点模块现在只为
+``@NodeRegistry.register`` 的注册副作用与 ``meta`` 元数据而存在。
 """
 
 # 核心模型
@@ -35,16 +50,8 @@ from application.engine.dag.models import (
     get_default_dag,
 )
 
-# 核心组件
+# 节点类型注册表
 from application.engine.dag.registry import BaseNode, NodeRegistry
-from application.engine.dag.engine import DAGEngine, DAGExecutionError
-from application.engine.dag.validator import DAGValidator, ValidationResult
-from application.engine.dag.version_manager import DAGVersionManager
-from application.engine.dag.event_aggregator import NodeEventAggregator
-from application.engine.dag.error_classifier import NodeErrorClassifier, ErrorClassification, ErrorLevel, RetryStrategy
-from application.engine.dag.ipc_adapter import IPCAdapter
-from application.engine.dag.daemon_runner import DAGDaemonRunner, EngineSelector
-from application.engine.dag.prompt_validator import PromptTemplateValidator
 
 __all__ = [
     # 模型
@@ -65,21 +72,7 @@ __all__ = [
     "NovelWorkflowState",
     "PortDataType",
     "get_default_dag",
-    # 核心组件
+    # 注册表
     "BaseNode",
     "NodeRegistry",
-    "DAGEngine",
-    "DAGExecutionError",
-    "DAGValidator",
-    "ValidationResult",
-    "DAGVersionManager",
-    "NodeEventAggregator",
-    "NodeErrorClassifier",
-    "ErrorClassification",
-    "ErrorLevel",
-    "RetryStrategy",
-    "IPCAdapter",
-    "DAGDaemonRunner",
-    "EngineSelector",
-    "PromptTemplateValidator",
 ]

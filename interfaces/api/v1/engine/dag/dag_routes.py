@@ -48,7 +48,10 @@ from application.engine.narrative_projection.dag_runtime_projection import (
     project_node_states,
     snapshot_from_shared,
 )
-from application.engine.narrative_projection.linkage_kernel import linkage_bundle
+from application.engine.narrative_projection.linkage_kernel import (
+    default_dag_registry_gaps,
+    linkage_bundle,
+)
 from interfaces.api.v1.engine.dag.dag_runtime_settings import get_dag_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -118,27 +121,49 @@ class DAGStatusResponse(BaseModel):
 
 @router.get("/health/dag")
 async def dag_health_check():
-    """DAG 引擎健康检查"""
-    checks = {}
+    """DAG 层健康检查 —— 如实区分「展示/词汇表」与「执行」两段能力。
 
-    # 节点注册表
-    checks["node_registry"] = {
-        "registered_types": len(NodeRegistry.all_types()),
-        "types": sorted(NodeRegistry.all_types()),
+    旧实现恒返回 ok：两个 check 字典都不带 status 字段，于是
+    `all(c.get("status") != "error" ...)` 恒真，degraded 分支不可达 ——
+    这是一个算出来的空转，不是写死的常量，但效果一样：本端点永远不会报警。
+
+    现在每个 check 都带 status，总体判定也只对**会失败的**两项生效。
+    执行面不是「坏了」，而是「不存在」：它从未投入使用，已于 2026-10-17 连同
+    其模块删除。因此它不参与总体判定，而是作为显式的能力缺口单列 ——
+    混进 rollup 会让整体永久 degraded，而混掉会让读者以为执行可用。
+    """
+    registered = sorted(NodeRegistry.all_types())
+    gaps = default_dag_registry_gaps()
+
+    node_registry = {
+        "status": "ok" if registered and gaps["complete"] else "error",
+        "registered_types": len(registered),
+        "types": registered,
+        "unregistered_in_default_dag": gaps["missing"],
     }
 
-    # SSE 订阅者统计
-    total_subscribers = sum(len(qs) for qs in _sse_subscribers.values())
-    checks["sse"] = {
+    sse = {
+        "status": "ok",
         "active_novels": len(_sse_subscribers),
-        "total_subscribers": total_subscribers,
+        "total_subscribers": sum(len(qs) for qs in _sse_subscribers.values()),
     }
 
-    overall = "ok" if all(
-        c.get("status") != "error" for c in checks.values()
-    ) else "degraded"
+    execution = {
+        "status": "unavailable",
+        "detail": (
+            "DAG 执行引擎未启用，本层仅提供节点词汇表、CPMS 联动映射与状态投影。"
+            "生产写作走 engine/runtime 的 StoryPipelineRunner。"
+        ),
+    }
 
-    return {"status": overall, "checks": checks}
+    # 只对真正可能失败的两项做 rollup；execution 是能力缺口，不是故障。
+    rollup = {"node_registry": node_registry, "sse": sse}
+    overall = "ok" if all(c["status"] == "ok" for c in rollup.values()) else "degraded"
+
+    return {
+        "status": overall,
+        "checks": {**rollup, "execution": execution},
+    }
 
 
 # ─── 节点类型注册表 ───
@@ -457,13 +482,26 @@ async def update_node_config(novel_id: str, node_id: str, request: UpdateNodeCon
 # ─── DAG 运行控制（dagRunStore 使用） ───
 
 
-@router.post("/{novel_id}/run")
+_DAG_EXEC_UNAVAILABLE = (
+    "DAG 执行引擎未启用。本层只提供节点词汇表、CPMS 联动映射与运行时状态投影，不执行任何节点 —— 生产写作走 engine/runtime 的 StoryPipelineRunner。"
+)
+
+
+@router.post("/{novel_id}/run", status_code=501)
 async def run_dag(novel_id: str):
-    """启动 DAG 运行"""
-    return {"status": "started", "novel_id": novel_id}
+    """启动 DAG 运行 —— **未实现**，如实返回 501。
+
+    旧实现直接 `return {"status": "started"}`，什么都没启动。任何调用方都会
+    得到一个「已启动」的假象。该端点曾有真实实现（d037b657），在 7 秒后被
+    fc5de029 连同执行面一起移除，此后再未恢复。
+
+    前端 dagRunStore.startRun 会把返回值当作成功并置 runStatus='running'，
+    所以这里必须用 501 让它走 catch 分支 —— 宁可报错也不能谎称成功。
+    """
+    raise HTTPException(status_code=501, detail=_DAG_EXEC_UNAVAILABLE)
 
 
-@router.post("/{novel_id}/stop")
+@router.post("/{novel_id}/stop", status_code=501)
 async def stop_dag(novel_id: str):
-    """停止 DAG 运行"""
-    return {"status": "stopped", "novel_id": novel_id}
+    """停止 DAG 运行 —— **未实现**（没有在运行的东西可停）。"""
+    raise HTTPException(status_code=501, detail=_DAG_EXEC_UNAVAILABLE)
