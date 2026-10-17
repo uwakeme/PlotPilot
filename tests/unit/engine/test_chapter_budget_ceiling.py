@@ -242,9 +242,13 @@ def test_flatten_carries_act_budget_and_content():
     assert first["narrative_arc"] == "紧张→爆发"
     assert first["conflicts"] == ["身份暴露"]
 
-    # 最后一幕必须带收束标记
-    assert first["metadata"]["is_final_act"] is False
-    assert acts[1]["metadata"]["is_final_act"] is True
+    # 原此处断言 metadata["is_final_act"]，那是登记表 C-04 登记的死通道：
+    # 该键写进 metadata 后全仓无任何读取方，幕级规划并不据此判断收束——
+    # 它走 _act_budget_context 的「幕号 vs 结构总幕数」统一重算
+    # （continuous_planning_service.py 的 is_final = act_number >= total_acts）。
+    # 断言它等于把死通道钉死在测试里，故随该键一并移除；
+    # 收束判定的覆盖已由 test_dead_channels.py 的
+    # test_act_budget_context_ignores_stale_metadata_final_flag 承担。
 
 
 def test_flatten_act_budget_absent_leaves_none():

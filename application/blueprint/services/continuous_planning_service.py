@@ -180,15 +180,6 @@ def _first_text(*candidates) -> Optional[str]:
     return None
 
 
-def _count_total_acts(structure: List[Dict]) -> int:
-    """统计嵌套结构里规划出的幕总数（用于标记收束幕）。"""
-    total = 0
-    for part_data in structure or []:
-        for volume_data in part_data.get("volumes") or []:
-            total += len(volume_data.get("acts") or [])
-    return total
-
-
 def _sanitize_llm_json_output(raw: str) -> str:
     content = (raw or "").strip()
     content = re.sub(r"\x1b\[[0-9;]*m", "", content)
@@ -1916,7 +1907,6 @@ class ContinuousPlanningService:
         part_number = 0
         volume_number = 0
         act_number = 0
-        total_acts = _count_total_acts(structure)
 
         for part_data in structure:
             part_number += 1
@@ -1990,12 +1980,13 @@ class ContinuousPlanningService:
                         "conflicts": _as_str_list(
                             act_data.get("conflicts") or act_data.get("core_conflict")
                         ),
-                        # 最后一幕标记为收束幕：幕级规划据此把预算倾倒向结局
-                        "metadata": {
-                            "is_final_act": act_number >= total_acts,
-                            "planned_act_index": act_number,
-                            "planned_total_acts": total_acts,
-                        },
+                        # metadata 只保留仍有读取方的键。
+                        # 曾经写入的 is_final_act / planned_act_index /
+                        # planned_total_acts 没有任何消费方：收束幕判定统一走
+                        # _act_budget_context 的「幕号 vs 结构总幕数」重算口径
+                        # （动态补出的幕根本没有这些键），写进来只会让人误以为
+                        # 下游在读它们，故删除。
+                        "metadata": {},
                     }
                     nodes.append(node)
                     order_index += 1
@@ -2711,9 +2702,11 @@ class ContinuousPlanningService:
     def _act_budget_context(self, novel_id: str, act_number: int) -> Dict[str, object]:
         """判断某一幕在全书里的位置，并给出收束指令。
 
-        幕节点可能来自宏观规划（带 metadata.is_final_act），也可能是写作途中
-        动态补出来的（无该标记），因此统一按「幕号 vs 结构总幕数」重新判定，
-        两个来源口径一致。
+        收束幕判定统一按「幕号 vs 结构总幕数」**重算**，不读节点 metadata：
+        幕节点既可能来自宏观规划，也可能是写作途中动态补出来的，后者没有
+        任何规划期标记，两条来源必须走同一口径，否则会重新出现
+        「宏观规划建的幕和补出来的幕给出不同答案」的老问题。
+        （规划期曾写入 metadata.is_final_act，该键已无读取方、已删除。）
 
         「结构总幕数」优先取**已落库的幕节点数**（LLM 依据剧情容量自行决定层数，
         公式网格预测值不再作为依据）；读不到时才退回公式估算。
@@ -2839,9 +2832,144 @@ class ContinuousPlanningService:
             return None
         return getattr(novel, "generation_prefs", None) if novel is not None else None
 
+    # 前情提要（供幕级章节规划阅读的情报汇编）控长策略
+    _PREVIOUS_ACTS_LIMIT = 3          # 展开全部字段的最近幕数
+    _PREVIOUS_ACT_TITLE_LIMIT = 30   # 更早的幕只保留幕名时的条目上限
+    _PREVIOUS_CHAPTERS_PER_ACT = 5   # 每幕带出的章节标题上限
+    _PREVIOUS_ACT_TITLE_MAX = 60     # 单个幕名的字符上限
+    _PREVIOUS_FIELD_MAX = 300        # 单个字段的字符上限
+    _PREVIOUS_ACTS_MAX_CHARS = 4000  # 整段硬上限
+
+    @staticmethod
+    def _clip_previous_text(value: object, limit: int) -> str:
+        """裁剪单个情报字段；截断用省略号，不写成「（未提取）」这类占位词。"""
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + "…"
+
+    def _render_previous_act_block(
+        self,
+        node: StoryNode,
+        detail_index: int,
+        chapter_titles: Dict[str, List[str]],
+    ) -> str:
+        """渲染一幕的前情条目。
+
+        detail_index == 0 表示这是紧邻当前幕的那一幕，展开全部已落库字段；
+        更早的幕只留幕名一行 —— 幕名是 LLM 自己规划的，保留它是为了让模型
+        看见整体形状，而不是让代码去判断哪一幕「更重要」。
+        """
+        try:
+            number = int(getattr(node, "number", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        title = str(getattr(node, "title", "") or "").strip()
+        header = f"第{number}幕《{title}》" if title else f"第{number}幕"
+        if detail_index >= self._PREVIOUS_ACTS_LIMIT:
+            return header
+
+        lines = [header]
+        content = str(getattr(node, "content", "") or "").strip()
+        if content:
+            lines.append("  叙事目标：" + self._clip_previous_text(content, self._PREVIOUS_FIELD_MAX))
+        for label, raw in (
+            ("关键事件", _as_str_list(getattr(node, "key_events", None))),
+            ("核心冲突", _as_str_list(getattr(node, "conflicts", None))),
+        ):
+            if raw:
+                lines.append(
+                    f"  {label}："
+                    + self._clip_previous_text("；".join(raw), self._PREVIOUS_FIELD_MAX)
+                )
+        arc = str(getattr(node, "narrative_arc", "") or "").strip()
+        if arc:
+            lines.append("  情绪弧：" + self._clip_previous_text(arc, self._PREVIOUS_FIELD_MAX))
+        # VolumeSummaryService 写入的幕摘要是 LLM 自己写的结论，优先带进来；
+        # 没生成过就没有这一行，不编造。
+        act_summary = str((getattr(node, "metadata", None) or {}).get("summary") or "").strip()
+        if act_summary:
+            lines.append("  幕摘要：" + self._clip_previous_text(act_summary, self._PREVIOUS_FIELD_MAX))
+        titles = chapter_titles.get(str(getattr(node, "id", "") or ""), [])[
+            : self._PREVIOUS_CHAPTERS_PER_ACT
+        ]
+        if titles:
+            lines.append(
+                "  章节："
+                + "、".join(f"《{self._clip_previous_text(t, self._PREVIOUS_ACT_TITLE_MAX)}》" for t in titles)
+            )
+        return "\n".join(lines)
+
     async def _get_previous_acts_summary(self, act_node: StoryNode) -> Optional[str]:
-        """获取前面幕的摘要"""
-        return None
+        """汇集前序幕的既成事实，供幕级章节规划提示词阅读。
+
+        这里**不生成摘要**：按「AI 决定是什么，代码只保证不越界」，代码负责如实
+        罗列已经落库的字段（幕名 / 叙事目标 / 关键事件 / 核心冲突 / 情绪弧 /
+        LLM 写入的幕摘要 / 章节标题），怎么理解这些事实由 LLM 决定。
+        缺失的字段整行不写，不填占位词。
+
+        第 1 幕没有前序幕时返回 None —— 那是正确行为，不是缺陷。
+
+        控长取舍：从最新一幕往回填充预算，超限时先被舍掉的是最早、最不影响
+        当前规划的内容；最近一幕永远保留。
+        """
+        try:
+            tree = self.story_node_repo.get_tree_sync(act_node.novel_id)
+        except Exception as exc:
+            logger.debug(
+                "[ActPlanning] 读取前序幕结构失败 novel=%s: %s", act_node.novel_id, exc
+            )
+            return None
+
+        nodes = list(getattr(tree, "nodes", None) or [])
+
+        def _node_type(node) -> str:
+            return getattr(getattr(node, "node_type", None), "value", "")
+
+        def _number(node) -> int:
+            try:
+                return int(getattr(node, "number", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        try:
+            current_number = int(getattr(act_node, "number", 0) or 0)
+        except (TypeError, ValueError):
+            current_number = 0
+
+        previous = sorted(
+            [n for n in nodes if _node_type(n) == "act" and _number(n) < current_number],
+            key=_number,
+        )
+        if not previous:
+            return None
+
+        chapter_titles: Dict[str, List[str]] = {}
+        for child in sorted(
+            [n for n in nodes if _node_type(n) == "chapter"], key=_number
+        ):
+            parent_id = str(getattr(child, "parent_id", "") or "")
+            child_title = str(getattr(child, "title", "") or "").strip()
+            if parent_id and child_title:
+                chapter_titles.setdefault(parent_id, []).append(child_title)
+
+        budget = self._PREVIOUS_ACTS_MAX_CHARS
+        blocks: List[str] = []
+        used = 0
+        for detail_index, node in enumerate(reversed(previous)):
+            if detail_index >= self._PREVIOUS_ACT_TITLE_LIMIT:
+                break
+            block = self._render_previous_act_block(node, detail_index, chapter_titles)
+            cost = len(block) + 1
+            if blocks and used + cost > budget:
+                break
+            if cost > budget:
+                block = block[: max(budget - 1, 0)]
+            blocks.append(block)
+            used += len(block) + 1
+        if not blocks:
+            return None
+        return "\n".join(reversed(blocks))
 
     async def _find_act_for_chapter(self, novel_id: str, chapter_number: int) -> Optional[StoryNode]:
         """查找章节所属的幕"""
