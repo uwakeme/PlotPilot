@@ -77,6 +77,8 @@ PLANNING_ACT = "planning-act"
 PLANNING_CHAPTER_PREPLAN = "planning-chapter-preplan"
 # D-02：上下文槽位权重规划（AI 决定「本章需要什么记忆」）
 PLANNING_CONTEXT_WEIGHTS = "planning-context-weights"
+# D-01：本章节奏模式判定（是否余韵章）
+PLANNING_CHAPTER_MODE = "planning-chapter-mode"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
 BEAT_COT_BRIDGE = "beat-cot-bridge"
@@ -171,6 +173,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     MACRO_PLANNING, PLANNING_QUICK_MACRO, PLANNING_PRECISE_MACRO,
     PLANNING_PRECISE_VOLUME, PLANNING_PRECISE_REPAIR, PLANNING_ACT,
     PLANNING_CHAPTER_PREPLAN, PLANNING_CONTEXT_WEIGHTS,
+    PLANNING_CHAPTER_MODE,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
     # Style

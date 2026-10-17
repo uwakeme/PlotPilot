@@ -375,11 +375,86 @@ class BaseStoryPipeline(ABC):
                         ctx.start_beat_index = int(getattr(novel, "current_beat_index", 0) or 0) if novel else 0
                     except Exception:
                         ctx.start_beat_index = 0
+
+                    await self._decide_chapter_mode(ctx, novel)
                     return StepResult.ok(f"定位到第 {node.number} 章")
 
             return StepResult.fail("所有章节已写完，无需继续")
         except Exception as e:
             return StepResult.fail(f"章节定位失败: {e}")
+
+    async def _decide_chapter_mode(self, ctx: PipelineContext, novel) -> None:
+        """D-01：判定本章是余韵章还是正常推进，并把结果落到 ``ctx``。
+
+        这两个字段（``needs_buffer`` / ``buffer_reason``）自 ``context.py`` 声明
+        以来**全仓无赋值** —— legacy 路径另有自己的一套硬阈值
+        （``legacy_writing_delegate.py:202`` ``tension_100 >= 80``），
+        StoryPipeline 这边等于「永远不会有余韵章」。
+
+        三条规则：
+
+        1. 开关默认关闭 ⇒ 直接写入 ``(False, "")``，即保持原行为。
+        2. 判不出来（``None``）⇒ 同样保持 ``False``，但 ``buffer_reason``
+           写明「未判定 + 原因」。**不得**把 None 当成 AI 的 ``False`` 结论。
+        3. 判定为余韵章 ⇒ 把节奏指令拼进 ``ctx.outline``，让这一章真按余韵写。
+        """
+        ctx.needs_buffer = False
+        ctx.buffer_reason = ""
+
+        try:
+            from application.engine.services.chapter_mode_settings import (
+                buffer_chapter_directive,
+                get_chapter_mode_runtime_settings,
+            )
+
+            settings = get_chapter_mode_runtime_settings()
+            if not settings.enabled:
+                return
+
+            from interfaces.api.dependencies import get_chapter_mode_planner
+
+            last_tension = None
+            if novel is not None:
+                raw = getattr(novel, "last_chapter_tension", None)
+                if raw is not None:
+                    last_tension = float(raw) * 10 if float(raw) <= 10 else float(raw)
+
+            decision = await get_chapter_mode_planner().decide(
+                novel_id=ctx.novel_id,
+                chapter_number=ctx.chapter_number,
+                outline=ctx.outline or "",
+                last_tension=last_tension,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] 章节节奏判定失败，保持常规推进 ch=%s: %s",
+                ctx.novel_id, ctx.chapter_number, exc,
+            )
+            return
+
+        if decision is None:
+            ctx.buffer_reason = "节奏模式未判定（信息不足或调用失败），按常规推进处理"
+            logger.info(
+                "[%s] 章节节奏未判定 ch=%s，按常规推进",
+                ctx.novel_id, ctx.chapter_number,
+            )
+            return
+
+        ctx.needs_buffer = bool(decision["needs_buffer"])
+        ctx.buffer_reason = str(decision.get("reason") or "")
+
+        if ctx.needs_buffer:
+            if not settings.apply:
+                logger.info(
+                    "[%s] 判定为余韵章（未施加）ch=%s reason=%s",
+                    ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
+                )
+                return
+            ctx.outline = buffer_chapter_directive() + ctx.outline
+            logger.info(
+                "[%s] 判定为余韵章并已施加 ch=%s reason=%s",
+                ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
+            )
 
     async def _step_prepare_governance(self, ctx: PipelineContext) -> StepResult:
         """步骤1b：从叙事治理层领取本章预算。

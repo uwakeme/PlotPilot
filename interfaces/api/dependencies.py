@@ -1032,6 +1032,13 @@ def get_context_weight_planner():
     return ContextWeightPlanner(get_llm_service())
 
 
+def get_chapter_mode_planner():
+    """D-01：章节节奏判定器（长生命周期，复用同一 LLM 服务）"""
+    from application.engine.services.chapter_mode_planner import ChapterModePlanner
+
+    return ChapterModePlanner(get_llm_service())
+
+
 def get_macro_refactor_scanner():
     """获取宏观重构扫描器
 

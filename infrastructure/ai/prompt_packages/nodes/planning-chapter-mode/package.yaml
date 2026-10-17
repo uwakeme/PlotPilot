@@ -1,0 +1,41 @@
+name: 本章节奏模式判定
+category: planning
+source: application/engine/services/chapter_mode_planner.py::decide
+description: 判断下一章应当是余韵章（消化上章冲击）还是正常推进
+builtin: true
+tags:
+- 节奏
+- 余韵
+- 规划
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: chapter_number
+  desc: 即将创作的章节号
+  type: integer
+  required: true
+- name: outline
+  desc: 本章大纲
+  type: string
+  default: ''
+- name: last_tension
+  desc: 上一章张力（0-100）
+  type: string
+  default: （无数据）
+- name: stage_hint
+  desc: 当前叙事阶段
+  type: string
+  default: 未知
+- name: due_debts
+  desc: 到期叙事债务
+  type: string
+  default: （无）
+- name: due_foreshadowings
+  desc: 到期该回收的伏笔
+  type: string
+  default: （无）
+id: planning-chapter-mode
+sort_order: 41
