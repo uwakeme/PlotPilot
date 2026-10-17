@@ -399,6 +399,13 @@ class BackendLifecycle:
             self._logger.warning("Startup: AOF recovery failed: %s", exc)
 
     def init_dag_node_registry(self) -> None:
+        """侧载节点模块以触发 ``@NodeRegistry.register``，填充节点类型注册表。
+
+        这里只是**收集节点元数据**（node_type → CPMS 提示词键），供提示词广场
+        的 ``dag_bindings`` 与 DAG 画布的联动映射使用。DAG 执行引擎已于
+        2026-10-17 移除（它从未真正投入使用），所以这里初始化失败的后果不是
+        「引擎不可用」，而是联动映射缺项。
+        """
         try:
             from application.engine.dag.nodes import (  # noqa: F401
                 anti_ai_nodes,
@@ -416,4 +423,7 @@ class BackendLifecycle:
 
             self._logger.info("DAG 节点注册表已初始化: %s", sorted(NodeRegistry.all_types()))
         except Exception as exc:
-            self._logger.warning("DAG 节点注册表初始化失败（DAG 引擎将不可用）: %s", exc)
+            self._logger.warning(
+                "DAG 节点注册表初始化失败，节点类型 ↔ CPMS 联动映射将缺项"
+                "（提示词广场的 dag_bindings 与 DAG 画布会受影响）: %s", exc
+            )

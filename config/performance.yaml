@@ -176,13 +176,9 @@ backend:
     force_exit_watchdog_poll_seconds: 0.5
 
 # ─── DAG 引擎配置 ───
+# DAG 执行引擎已于 2026-10-17 移除（从未投入使用）。本段现在只剩展示/推送面
+# 的调参，由 interfaces/api/v1/engine/dag/dag_runtime_settings.py 读取。
 dag_engine:
-  use_langgraph: false  # 是否使用 LangGraph
-  checkpoint_enabled: true
-  max_parallel_nodes: 5
-  event_aggregator:
-    flush_interval_seconds: 0.5
-    stop_join_timeout_seconds: 2.0
   sse:
     queue_size: 100
     idle_poll_seconds: 1.0
