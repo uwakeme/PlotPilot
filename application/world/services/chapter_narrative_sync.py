@@ -30,6 +30,14 @@ from application.world.services.storyline_normalization import (
     get_storyline_normalization_profile,
 )
 
+from application.world.services.foreshadow_pacing import (  # noqa: E402
+    DEFAULT_RESOLVE_OFFSET,
+    SOURCE_FALLBACK,
+    check_resolve_after_plant,
+    resolve_offset as resolve_offset_from_ai,
+    resolve_storyline_end,
+)
+
 logger = logging.getLogger(__name__)
 
 # 章末 bundle 的同步状态取值。
@@ -344,13 +352,23 @@ def _make_storyline_from_progress_item(
         storyline_type=stype,
         status=StorylineStatus.ACTIVE,
         estimated_chapter_start=chapter_number,
-        estimated_chapter_end=chapter_number + 12,
+        estimated_chapter_end=_storyline_end(chapter_number, description_ai_end),
         name=name,
         description=(description or "")[:800],
         role=role,
         chapter_weight=1.0,
         progress_summary=f"在第{chapter_number}章引入",
     )
+
+
+def _storyline_end(chapter_number: int, ai_end: Any = None) -> int:
+    """G-03：故事线预估收尾章。
+
+    模型给就用模型的（并校验越界）；没给才走兜底。
+    详见 ``foreshadow_pacing.resolve_storyline_end``。
+    """
+    end, _source, _note = resolve_storyline_end(chapter_number, ai_end)
+    return end
 
 
 async def llm_chapter_extract_bundle(
@@ -573,6 +591,8 @@ def persist_bundle_triples_and_foreshadows(
             MAX_NEW_PER_CHAPTER = 2   # 每章最多种 2 条新伏笔
             MAX_TOTAL_PENDING = 15    # 总 pending 上限 15 条
             planted_count = 0
+            # G-01：记录有多少条伏笔的回收节奏用了兜底（而不是模型的判断）
+            offset_fallbacks = 0
             current_pending = len(registry.get_unresolved())
 
             # ★ Phase 2: TTL 自动降级（每 10 章执行一次）
@@ -594,20 +614,25 @@ def persist_bundle_triples_and_foreshadows(
                     h = h["data"]
                 if not isinstance(h, dict):
                     desc = str(h).strip()
-                    resolve_offset = 5  # 默认 5 章后回收
+                    resolve_offset = DEFAULT_RESOLVE_OFFSET
+                    offset_source, offset_note = "fallback", "非结构化提示词"
                     importance_val = "medium"
                     resolve_hint = None
                     emotional_weight = 0.5
                     binding_level = 1
                 else:
                     desc = str(h.get("description", "")).strip()
-                    # 获取预期回收章节偏移量
-                    resolve_offset = h.get("suggested_resolve_offset", 5)
-                    try:
-                        resolve_offset = int(resolve_offset)
-                        resolve_offset = max(2, min(30, resolve_offset))  # 限制在 2-30 章
-                    except (ValueError, TypeError):
-                        resolve_offset = 5
+                    # G-01：模型给的优先；没给才走兜底。
+                    # 兜底时 source=fallback，与「模型说就是 5」可区分。
+                    resolve_offset, offset_source, offset_note = resolve_offset_from_ai(
+                        h.get("suggested_resolve_offset")
+                    )
+                    if offset_source == "fallback":
+                        offset_fallbacks += 1
+                        logger.info(
+                            "伏笔回收节奏兜底 novel=%s ch=%s: %s",
+                            novel_id, chapter_number, offset_note,
+                        )
                     # 获取重要性
                     importance_val = str(h.get("importance", "medium")).strip().lower()
                     if importance_val not in ("low", "medium", "high", "critical"):
@@ -1898,7 +1923,7 @@ def _initialize_first_chapter_storyline(
             storyline_type=StorylineType.MAIN_PLOT,
             status=StorylineStatus.ACTIVE,
             estimated_chapter_start=chapter_number,
-            estimated_chapter_end=chapter_number + 20,  # 预估20章
+            estimated_chapter_end=_storyline_end(chapter_number),  # G-03
             name=storyline_name,
             description=storyline_desc,
             progress_summary=summary  # 将首章摘要作为初始进展
