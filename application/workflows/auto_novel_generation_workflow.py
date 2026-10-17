@@ -338,6 +338,7 @@ class AutoNovelGenerationWorkflow:
         scene_director: Optional[SceneDirectorAnalysis] = None,
         max_tokens: int = 35000,
         allow_evolution_gate_bypass: bool = False,
+        slot_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
 
@@ -452,6 +453,7 @@ class AutoNovelGenerationWorkflow:
         *,
         scene_director: Optional[SceneDirectorAnalysis] = None,
         max_tokens: int = 20000,
+        slot_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """prepare_chapter_generation 失败时的降级：仍用三层洋葱 + 同段名拼接；叙事/文风各步独立容错。
 
@@ -463,6 +465,7 @@ class AutoNovelGenerationWorkflow:
             outline=outline,
             max_tokens=max_tokens,
             scene_director=scene_director,
+            slot_weights=slot_weights,
         )
         context = assemble_chapter_bundle_context_text(payload)
         context_tokens = payload["token_usage"]["total"]

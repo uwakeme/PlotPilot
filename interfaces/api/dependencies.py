@@ -1023,6 +1023,15 @@ def get_voice_drift_service() -> VoiceDriftService:
     return VoiceDriftService(score_repo, get_voice_fingerprint_repository())
 
 
+def get_context_weight_planner():
+    """D-02：上下文槽位权重规划器（长生命周期，复用同一 LLM 服务）"""
+    from application.engine.services.context_weight_planner import (
+        ContextWeightPlanner,
+    )
+
+    return ContextWeightPlanner(get_llm_service())
+
+
 def get_macro_refactor_scanner():
     """获取宏观重构扫描器
 

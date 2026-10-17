@@ -442,6 +442,56 @@ class BaseStoryPipeline(ABC):
             logger.warning("[%s] 叙事治理预算准备失败: %s", ctx.novel_id, e)
             return StepResult.skip_step(f"叙事治理预算准备失败: {e}")
 
+    async def _plan_slot_weights(self, ctx: PipelineContext):
+        """D-02：规划本章的上下文槽位权重。返回 ``None`` 表示「不施加权重」。
+
+        三条硬规则：
+
+        1. 开关默认**关闭** ⇒ 直接返回 None，行为与改造前逐位一致。
+        2. shadow 模式（默认）⇒ 只记录 AI 会怎么调，**不施加**。观察期用。
+        3. 任何失败/未评估 ⇒ 返回 None。**绝不用默认权重兜底** ——
+           默认权重会被读成「AI 判断各槽位同等重要」，那与「没问过」不是一回事。
+        """
+        try:
+            from application.engine.services.context_weight_settings import (
+                get_context_weight_runtime_settings,
+            )
+
+            settings = get_context_weight_runtime_settings()
+            if not settings.enabled:
+                return None
+
+            from interfaces.api.dependencies import get_context_weight_planner
+
+            planner = get_context_weight_planner()
+            weights = await planner.plan_weights(
+                novel_id=ctx.novel_id,
+                chapter_number=ctx.chapter_number,
+                chapter_outline=ctx.outline or "",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] 槽位权重规划失败，按未施加处理 ch=%s: %s",
+                ctx.novel_id, ctx.chapter_number, exc,
+            )
+            return None
+
+        if not weights:
+            return None
+
+        if settings.shadow:
+            logger.info(
+                "[%s] 槽位权重（shadow，未施加）ch=%s weights=%s",
+                ctx.novel_id, ctx.chapter_number, weights,
+            )
+            return None
+
+        logger.info(
+            "[%s] 槽位权重已施加 ch=%s weights=%s",
+            ctx.novel_id, ctx.chapter_number, weights,
+        )
+        return weights
+
     async def _step_build_context(self, ctx: PipelineContext) -> StepResult:
         """步骤2：组装上下文（四层洋葱挤压）
 
@@ -456,12 +506,14 @@ class BaseStoryPipeline(ABC):
         self._log_step("build_context", f"组装上下文，目标 {ctx.target_word_count} 字")
 
         bundle = None
+        slot_weights = await self._plan_slot_weights(ctx)
 
         # 优先使用 chapter_workflow（完整 bundle）
         if ctx.chapter_workflow is not None:
             try:
                 bundle = ctx.chapter_workflow.prepare_chapter_generation(
-                    ctx.novel_id, ctx.chapter_number, ctx.outline, scene_director=None
+                    ctx.novel_id, ctx.chapter_number, ctx.outline, scene_director=None,
+                    slot_weights=slot_weights,
                 )
                 ctx.context_text = bundle.get("context", "")
                 ctx.context_tokens = bundle.get("context_tokens", 0)
@@ -483,6 +535,7 @@ class BaseStoryPipeline(ABC):
                     chapter_number=ctx.chapter_number,
                     outline=ctx.outline,
                     max_tokens=20000,
+                    slot_weights=slot_weights,
                 )
                 logger.info(f"[{ctx.novel_id}] 上下文（builder）: {len(ctx.context_text)} 字符")
             except Exception as e:

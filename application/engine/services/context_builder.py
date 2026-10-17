@@ -166,6 +166,14 @@ class ContextBuilder:
         """Bible 角色声线/小动作锚点"""
         return self.bible_service.build_character_voice_anchor_section(novel_id)
 
+    def _apply_slot_weights(self, slot_weights: Optional[Dict[str, float]]) -> None:
+        """把本章权重交给分配器；**没传就必须显式清空**。
+
+        分配器是长生命周期对象，若只在「有权重时」赋值，上一章的权重会
+        泄漏到下一章 —— 那是最难查的一类串味。
+        """
+        self.budget_allocator.slot_weights = dict(slot_weights) if slot_weights else None
+
     def build_context(
         self,
         novel_id: str,
@@ -173,19 +181,22 @@ class ContextBuilder:
         outline: str,
         max_tokens: int = 35000,
         scene_director: SceneDirectorInput = None,
+        slot_weights: Optional[Dict[str, float]] = None,
     ) -> str:
         """构建上下文（使用预算分配器）
-        
+
         Args:
             novel_id: 小说 ID
             chapter_number: 章节号
             outline: 章节大纲
             max_tokens: 最大 token 数
             scene_director: 场记（模型或 dict；allocator 内统一为 dict）
-        
+            slot_weights: D-02 槽位权重；None/空 ⇒ 无权重（改造前行为）
+
         Returns:
             组装好的上下文字符串
         """
+        self._apply_slot_weights(slot_weights)
         allocation = self.budget_allocator.allocate(
             novel_id=novel_id,
             chapter_number=chapter_number,
@@ -193,7 +204,7 @@ class ContextBuilder:
             total_budget=max_tokens,
             scene_director=scene_director,
         )
-        
+
         return allocation.get_final_context()
 
     def build_structured_context(
@@ -203,6 +214,7 @@ class ContextBuilder:
         outline: str,
         max_tokens: int = 35000,
         scene_director: SceneDirectorInput = None,
+        slot_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """构建结构化上下文，返回详细信息
         
@@ -219,6 +231,7 @@ class ContextBuilder:
                 },
             }
         """
+        self._apply_slot_weights(slot_weights)
         allocation = self.budget_allocator.allocate(
             novel_id=novel_id,
             chapter_number=chapter_number,
