@@ -2476,26 +2476,25 @@ class ContinuousPlanningService:
         part_chapters = distribution["part_chapters"]
         avg_chapters_per_act = max(target_chapters // total_acts, 1)
 
+        # 各部的戏剧功能与整体节奏由 AI 自己判断（登记表 B-01）。
+        # 代码只给**事实**：每部分到多少章、总幕数、平均每幕多少章 —— 这三项
+        # 是不变量；「这一部是起源还是决战」「前中后三段怎么走」是创作判断，
+        # 写进各节点的 description / narrative_goal，代码不预设。
+        #
+        # 改造前这里按 index/parts 硬编码「起源 / 决战 / 发展-深渊」三档
+        # role + demand，外加「前 1/3 铺垫、中 1/3 发展、后 1/3 爆发收束」，
+        # 而这些文字是渲染进 **system prompt** 的（system.md:11），被放在
+        # 「精密推演铁律」标题下 —— 等于用最高优先级告诉模型必须按三段式走。
         pacing_lines = ["<PACING_GUIDE>"]
         for index, chapters in enumerate(part_chapters, 1):
-            if index == 1:
-                role = "起源"
-                demand = "紧凑、抛出核心悬念、建立主角目标"
-            elif index == parts:
-                role = "决战"
-                demand = "收束主线、终极对决、完成情绪兑现"
-            else:
-                role = "发展/深渊"
-                demand = "扩大容量、多线叙事、推动主角重大转变"
-            pacing_lines.append(f"- 第{index}部（{role}）：分配 {chapters} 章；情节要求：{demand}。")
+            pacing_lines.append(f"- 第{index}部：分配 {chapters} 章")
         pacing_lines.extend([
-            "</PACING_GUIDE>",
-            "<ACT_PACING>",
             f"- 总幕数：{total_acts} 幕",
             f"- 平均每幕：约 {avg_chapters_per_act} 章",
-            "- 节奏建议：前 1/3 铺垫，中 1/3 发展并设置小高潮，后 1/3 爆发并收束。",
-            "</ACT_PACING>",
+            "- 上面只是章数预算。每一部分承担什么戏剧功能、整体节奏怎么分配，"
+            "由你依据剧情自行判断并写进对应节点的 description / narrative_goal。",
         ])
+        pacing_lines.append("</PACING_GUIDE>")
 
         skeleton_lines = ["【固定结构骨架】"]
         for part_index, part in enumerate(skeleton.get("parts", []), 1):
