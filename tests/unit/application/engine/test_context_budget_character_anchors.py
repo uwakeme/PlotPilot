@@ -27,7 +27,7 @@ def test_character_anchors_kernel_branch_uses_module_novel_id(monkeypatch):
     monkeypatch.setattr(
         allocator,
         "_projection_locks_for_plan",
-        lambda novel_id, plan, tier: "",
+        lambda novel_id, plan, tier, chapter_number=0: "",
     )
 
     anchors = allocator._get_character_anchors("novel-1", 3, outline="阿止入场")

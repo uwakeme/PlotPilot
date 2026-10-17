@@ -1057,7 +1057,7 @@ class ContextBudgetAllocator:
                 )
                 # Generation is allowed to auto-materialize the cast contract.
                 kernel.apply_cast_plan(plan)
-                locks = self._projection_locks_for_plan(novel_id, plan, tier="t0")
+                locks = self._projection_locks_for_plan(novel_id, plan, tier="t0", chapter_number=chapter_number)
                 if not locks:
                     locks = kernel.build_context_locks(novel_id, chapter_number, plan=plan).t0.strip()
                 parts = []
@@ -1974,7 +1974,9 @@ class ContextBudgetAllocator:
         if kernel:
             try:
                 plan = kernel.plan_cast(novel_id, chapter_number)
-                projected = self._projection_locks_for_plan(novel_id, plan, tier="support")
+                projected = self._projection_locks_for_plan(
+                    novel_id, plan, tier="support", chapter_number=chapter_number
+                )
                 if projected:
                     return projected
                 locks = kernel.build_context_locks(novel_id, chapter_number, plan=plan)
@@ -2029,8 +2031,20 @@ class ContextBudgetAllocator:
 
         return ""
 
-    def _projection_locks_for_plan(self, novel_id: str, plan: Any, *, tier: str) -> str:
-        """Prefer unified character projections for prompt locks; fallback callers handle empty."""
+    def _projection_locks_for_plan(
+        self,
+        novel_id: str,
+        plan: Any,
+        *,
+        tier: str,
+        chapter_number: int = 0,
+    ) -> str:
+        """Prefer unified character projections for prompt locks; fallback callers handle empty.
+
+        ``chapter_number`` 只用于隐藏面（POV 防火墙）门控，编译器本身保持章号无关，
+        这样缓存的 projection 不会烤进某一章的判断。
+        缺省 0 = 无章号上下文的调用方，一律按「未揭示」处理（fail closed）。
+        """
         try:
             service = self._get_character_projection_service()
             if not service:
@@ -2040,15 +2054,35 @@ class ContextBudgetAllocator:
                 projection = service.get_projection(novel_id, slot.character_id)
                 locks = projection.get("context_locks") or {}
                 if tier == "t0" and slot.importance == "major" and locks.get("t0"):
-                    lines.append(str(locks["t0"]))
+                    lines.append(self._merge_hidden_profile(locks, str(locks["t0"]), chapter_number))
                 elif tier == "support":
                     key = "t1" if slot.importance == "normal" else "t2"
                     if locks.get(key):
-                        lines.append(str(locks[key]))
+                        lines.append(self._merge_hidden_profile(locks, str(locks[key]), chapter_number))
             return "\n".join(lines)
         except Exception as e:
             logger.debug("角色 Projection 锁构建失败: %s", e)
             return ""
+
+    @staticmethod
+    def _merge_hidden_profile(locks: Dict[str, Any], base: str, chapter_number: int) -> str:
+        """把隐藏面并进锁行，门控口径与既有 POV 防火墙保持一致。
+
+        ``reveal_chapter`` 为 None 表示**总是可见**（见 CharacterDTO 的字段说明）；
+        取值无法解析时按未揭示处理（fail closed，隐藏）。
+        """
+        hidden = locks.get("t0_hidden")
+        if not hidden or not base:
+            return base
+        reveal = locks.get("t0_hidden_reveal_chapter")
+        if reveal is not None:
+            try:
+                reveal_number = int(reveal)
+            except (TypeError, ValueError):
+                return base
+            if chapter_number < reveal_number:
+                return base
+        return f"{base} | {hidden}"
 
     def _get_character_projection_service(self):
         if self.character_projection_service is not None:
