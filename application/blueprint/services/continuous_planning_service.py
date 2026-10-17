@@ -69,6 +69,21 @@ _macro_plan_result_store = BoundedStore(max_size=64, ttl_seconds=6 * 3600)
 _act_chapters_llm_stream_store = BoundedStore(max_size=128, ttl_seconds=6 * 3600)
 
 
+class ActPlanningGenerationError(RuntimeError):
+    """LLM 没给出可用的幕级创作内容。
+
+    幕的标题与描述是创作判断，代码无权代写——写出来会被
+    `_create_node_from_data` 盖上 `planning_source=AI_MACRO` /
+    `planning_status=CONFIRMED` 落库，等于把代码的占位文案冒充成
+    模型的决策，且读端无从分辨（登记表 C-06）。
+
+    与「幕号单调」「章数预算」这类代码可以自行决定的不变量区分开：
+    那些由代码保证，这里只管创作内容。调用方
+    （`engine/runtime/act_planning_delegate.py`）捕获后会回退到宏观
+    规划重试，因此这条路径不会静默落库。
+    """
+
+
 def _macro_plan_progress_shared_key(novel_id: str) -> str:
     """与 novel:xxx 隔离，避免与共享内存里小说载荷键冲突。"""
     return f"macro_plan_progress:{novel_id}"
@@ -1442,60 +1457,6 @@ class ContinuousPlanningService:
             )
             return await self.confirm_macro_plan(novel_id=novel_id, structure=structure)
 
-    def build_minimal_macro_structure(
-        self,
-        target_chapters: int,
-        *,
-        placeholder_description: str = (
-            "系统生成的占位结构（可在审阅后于结构树中调整）"
-        ),
-    ) -> List[Dict]:
-        """LLM 无有效输出时的最小部–卷–幕骨架（左侧规划与全托管共用）。
-
-        不再硬编码 3 幕！改用 calculate_structure_params 动态计算。
-        """
-        target = max(int(target_chapters or 30), 1)
-        params = calculate_structure_params(target)
-        parts_count = params["parts"]
-        volumes_per_part = params["volumes_per_part"]
-        acts_per_volume = params["acts_per_volume"]
-        chapters_per_act = params["chapters_per_act"]
-
-        logger.info(
-            f"[MinimalFallback] target={target} → "
-            f"{parts_count}部×{volumes_per_part}卷×{acts_per_volume}幕, "
-            f"每幕{chapters_per_act}章 ({params['reasoning']})"
-        )
-
-        structure = []
-        for p in range(1, parts_count + 1):
-            part_node = {
-                "title": f"第{p}部",
-                "description": placeholder_description,
-                "volumes": [],
-            }
-            for v in range(1, volumes_per_part + 1):
-                volume_node = {
-                    "title": f"第{v}卷",
-                    "description": "",
-                    "acts": [],
-                }
-                for a in range(1, acts_per_volume + 1):
-                    global_act = (p - 1) * volumes_per_part * acts_per_volume + (v - 1) * acts_per_volume + a
-                    act_titles = ["开端 · 世界建立", "发展 · 冲突升级", "转折 · 陷入深渊",
-                                   "高潮 · 终极对决", "收尾 · 新世界", "过渡 · 力量积蓄",
-                                   "阴谋 · 暗流涌动", "觉醒 · 真相大白", "抉择 · 牺牲与重生",
-                                   "终局 · 一切归零"]
-                    title_prefix = act_titles[a - 1] if a <= len(act_titles) else f"第{a}幕"
-                    volume_node["acts"].append({
-                        "title": f"第{a}幕 · {title_prefix}",
-                        "description": f"第{p}部-第{v}卷-第{a}幕叙事单元",
-                        "suggested_chapter_count": chapters_per_act,
-                    })
-                part_node["volumes"].append(volume_node)
-            structure.append(part_node)
-        return structure
-
     def _validate_macro_structure_completeness(self, structure: List[Dict], target_chapters: int) -> bool:
         """Validate that the macro structure has minimum viable nodes (parts + volumes).
 
@@ -1525,12 +1486,18 @@ class ContinuousPlanningService:
         llm_result: Dict,
         novel_id: str,
         target_chapters: int,
-        *,
-        allow_minimal_placeholder_on_empty: bool = False,
     ) -> Dict:
         """在 `generate_macro_plan` 之后统一落库：有效结构则写入，否则阻塞。
 
         供 POST /novels/{id}/plan 与全托管守护进程共用，避免两处逻辑分叉。
+
+        LLM 没给出可用结构时**直接抛错，不写占位骨架**（登记表 B-11）。
+        此前这里有一条 `allow_minimal_placeholder_on_empty=True` 的兜底，会用
+        代码硬编码的 10 个幕标题（「开端 · 世界建立」…）+ 占位简介拼一整棵
+        部–卷–幕结构落库；两个调用方（`macro_planning_delegate.py` 与
+        `generation.py`）当时都已显式传 False，这条分支实际不可达，
+        但它读起来像一道生效中的保险 —— 现在连同 `build_minimal_macro_structure`
+        一起删掉，避免有人日后把开关翻回来。
         """
         struct = llm_result.get("structure") if isinstance(llm_result, dict) else None
 
@@ -1542,36 +1509,17 @@ class ContinuousPlanningService:
             and self._validate_macro_structure_completeness(struct, target_chapters)
         )
 
-        if is_valid_structure:
-            confirm = await self.persist_macro_structure_with_fallback(
-                novel_id, struct
-            )
-            return {
-                "success": True,
-                "created_nodes": confirm["created_nodes"],
-                "used_minimal_placeholder": False,
-                "message": confirm.get("message", ""),
-            }
-
-        if not allow_minimal_placeholder_on_empty:
+        if not is_valid_structure:
             raise ValueError(
                 "宏观规划未返回有效结构（success 或 structure 无效或缺少卷节点）"
             )
 
-        logger.warning(
-            "宏观规划未返回有效结构（success=%r，有卷=%r），写入最小占位结构 novel_id=%s",
-            llm_result.get("success") if isinstance(llm_result, dict) else None,
-            self._validate_macro_structure_completeness(struct, target_chapters) if struct else False,
-            novel_id,
-        )
-        minimal = self.build_minimal_macro_structure(target_chapters)
         confirm = await self.persist_macro_structure_with_fallback(
-            novel_id, minimal
+            novel_id, struct
         )
         return {
             "success": True,
             "created_nodes": confirm["created_nodes"],
-            "used_minimal_placeholder": True,
             "message": confirm.get("message", ""),
         }
 
@@ -1943,10 +1891,15 @@ class ContinuousPlanningService:
                 "number": current_act.number + 1,
                 "title": next_act_info["title"],
                 "description": next_act_info["description"],
-                "suggested_chapter_count": next_act_info.get("suggested_chapter_count", 5),
+                # 不给静默常数兜底：模型没给就是 None（「没说话」与「说了 0」必须可分辨）
+                "suggested_chapter_count": next_act_info.get("suggested_chapter_count"),
                 "key_events": next_act_info.get("key_events", []),
                 "narrative_arc": next_act_info.get("narrative_arc"),
                 "conflicts": next_act_info.get("conflicts", []),
+                # 章数是代码算的还是模型说的，落库时必须留痕
+                "metadata": {
+                    "chapter_count_source": next_act_info.get("chapter_count_source", "ai"),
+                },
             },
             current_act.order_index + 1
         )
@@ -2002,6 +1955,7 @@ class ContinuousPlanningService:
             key_events=data.get("key_events", []) if node_type == NodeType.ACT else [],
             narrative_arc=data.get("narrative_arc") if node_type == NodeType.ACT else None,
             conflicts=data.get("conflicts", []) if node_type == NodeType.ACT else [],
+            metadata=data.get("metadata", {}),
         )
 
     def _flatten_structure_to_nodes(self, novel_id: str, structure: List[Dict]) -> List[Dict]:
@@ -3145,6 +3099,11 @@ class ContinuousPlanningService:
         - 注入角色当前状态锚点
 
         target_volume：新幕将要挂载的卷（换卷时传入），用于向 LLM 标注卷切换。
+
+        Raises:
+            ActPlanningGenerationError: LLM 调用失败、响应不可解析，或缺少
+                title / description。**不降级**——幕的标题与描述是创作判断，
+                代码代写会被当成模型的决策落库（登记表 C-06）。
         """
         # 每幕章数取自本书真实目标，而不是历史遗留的硬编码 100 章基准
         # （对一部 5 章目标的书，按 100 章算会得出每幕 6 章，直接把预算撑破）。
@@ -3167,23 +3126,51 @@ class ContinuousPlanningService:
                 prompt,
                 generation_config_from_profile("planning_act"),
             )
-            result = self._parse_llm_response(raw)
-            
-            # 确保返回必要的字段
-            if not isinstance(result, dict):
-                result = {}
-            result.setdefault("title", f"第{current_act.number + 1}幕")
-            result.setdefault("description", "继续推进剧情")
-            result.setdefault("suggested_chapter_count", _default_cpa)
-            
-            return result
         except Exception as e:
-            logger.warning(f"生成下一幕信息失败: {e}")
-            return {
-                "title": f"第{current_act.number + 1}幕",
-                "description": "描述",
-                "suggested_chapter_count": _default_cpa
-            }
+            raise ActPlanningGenerationError(
+                f"第 {int(current_act.number or 0) + 1} 幕规划调用失败：{e}"
+            ) from e
+
+        try:
+            result = self._parse_llm_response(raw)
+        except Exception as e:
+            raise ActPlanningGenerationError(
+                f"第 {int(current_act.number or 0) + 1} 幕响应不可解析：{e}"
+            ) from e
+
+        if not isinstance(result, dict):
+            raise ActPlanningGenerationError(
+                f"第 {int(current_act.number or 0) + 1} 幕响应不是 JSON 对象："
+                f"{type(result).__name__}"
+            )
+
+        # 创作内容（标题 / 描述）：缺一不可，缺了就是失败，不拿占位文案顶上。
+        info = dict(result)
+        missing = []
+        for key in ("title", "description"):
+            value = str(info.get(key) or "").strip()
+            if not value:
+                missing.append(key)
+            info[key] = value
+        if missing:
+            raise ActPlanningGenerationError(
+                f"第 {int(current_act.number or 0) + 1} 幕缺少 {'/'.join(missing)}，"
+                "拒绝用占位文案冒充创作内容"
+            )
+
+        info["source"] = "ai"
+
+        # 章数是预算而非创作内容：模型没给（或给了非正数）才退到本书预算，
+        # 并且必须标来源，让读端能分辨「模型说的」与「代码算的」。
+        raw_count = info.get("suggested_chapter_count")
+        if isinstance(raw_count, bool) or not isinstance(raw_count, (int, float)) or raw_count <= 0:
+            info["suggested_chapter_count"] = _default_cpa
+            info["chapter_count_source"] = "fallback"
+        else:
+            info["suggested_chapter_count"] = int(raw_count)
+            info["chapter_count_source"] = "ai"
+
+        return info
     
     async def _collect_dual_track_context(
         self,

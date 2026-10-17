@@ -1410,22 +1410,15 @@ async def plan_novel(
             macro_plan,
             novel_id=novel_id,
             target_chapters=novel.target_chapters,
-            allow_minimal_placeholder_on_empty=False,
         )
 
         logger.info(
-            f"Persisted macro structure: nodes={confirm_result['created_nodes']}, "
-            f"minimal_placeholder={confirm_result.get('used_minimal_placeholder')}"
+            f"Persisted macro structure: nodes={confirm_result['created_nodes']}"
         )
 
-        if confirm_result.get("used_minimal_placeholder"):
-            msg = (
-                f"LLM 未返回有效结构，已写入占位骨架；共 {confirm_result['created_nodes']} 个结构节点"
-            )
-        else:
-            msg = confirm_result.get("message") or (
-                f"成功创建 {confirm_result['created_nodes']} 个结构节点"
-            )
+        msg = confirm_result.get("message") or (
+            f"成功创建 {confirm_result['created_nodes']} 个结构节点"
+        )
 
         return PlanResponse(
             success=True,

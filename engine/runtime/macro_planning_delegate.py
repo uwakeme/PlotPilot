@@ -232,7 +232,6 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
         result,
         novel_id=novel.novel_id.value,
         target_chapters=target_chapters,
-        allow_minimal_placeholder_on_empty=False,
     )
     host._update_shared_state(
         novel.novel_id.value,
