@@ -79,3 +79,8 @@ planning_chapter_preplan:
   extends: base_generation_profile
   max_tokens: 120000
   temperature: 0.65
+
+context_weights:
+  extends: base_generation_profile
+  max_tokens: 4000
+  temperature: 0.2

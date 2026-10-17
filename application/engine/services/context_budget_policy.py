@@ -70,16 +70,20 @@ def allocate_tier(
             reverse=True,
         )
 
-    def _effective_max(slot: ContextSlot) -> Optional[int]:
+    def _effective_max(slot: ContextSlot, slot_key: str) -> Optional[int]:
         """权重只压低硬上限，不抬高。
 
         返回 ``None`` 表示「这个槽位本来就没有硬上限」；
         返回 ``0`` 表示「有权重且权重为 0」—— 两者含义不同，必须区分，
         否则权重 0 会被当成「无上限」而完全失效。
+
+        ⚠️ 查权重的键是 **dict key**（如 ``vector_recall``），不是 ``slot.name``
+        （如 ``向量召回``）。真实槽位里两者**从不相同**，且 name 带括号后缀
+        （``绝对事实边界(FACT_LOCK)``），不适合当 JSON 键。排序与封顶必须用同一个键。
         """
         if not slot.max_tokens or slot.max_tokens <= 0:
             return None
-        raw = (slot_weights or {}).get(slot.name)
+        raw = (slot_weights or {}).get(slot_key)
         if raw is None:
             return int(slot.max_tokens)
         try:
@@ -93,7 +97,7 @@ def allocate_tier(
     for name, slot in sorted_slots:
         # 权重要在「装得下」判断**之前**生效：否则内容装得下时权重不起作用，
         # 权重就只是个排序键而已，压不出任何东西。
-        cap = _effective_max(slot)
+        cap = _effective_max(slot, name)
         if cap is not None and slot.tokens > cap:
             original = slot.tokens
             target_chars = int(cap * chars_per_token_zh)

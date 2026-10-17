@@ -1,0 +1,37 @@
+name: 本章记忆权重规划
+category: planning
+source: application/engine/services/context_weight_planner.py::plan_context_weights
+description: 由 AI 判断本章写作更需要哪几类记忆，给出各上下文槽位的相对权重（0-1）
+builtin: true
+tags:
+- 上下文
+- 预算
+- 规划
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: chapter_number
+  desc: 即将创作的章节号
+  type: integer
+  required: true
+- name: chapter_outline
+  desc: 本章大纲或梗概
+  type: string
+  default: ''
+- name: phase_hint
+  desc: 当前叙事阶段
+  type: string
+  default: 未知
+- name: slot_catalog
+  desc: 可选槽位清单
+  type: string
+  default: ''
+- name: recent_digest
+  desc: 最近章节一句话摘要
+  type: string
+  default: ''
+id: planning-context-weights
+sort_order: 40

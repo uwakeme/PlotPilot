@@ -191,6 +191,44 @@ def test_weight_for_unknown_slot_name_is_ignored():
 
 # ── 接线守卫 ────────────────────────────────────────────────────────────
 
+def test_weight_is_matched_by_dict_key_not_by_slot_name():
+    """**回归守卫**：真实槽位里 dict key ≠ ``ContextSlot.name``。
+
+    例：``slots["vector_recall"]`` 的 ``name`` 是 ``"向量召回"``。
+    早期实现里排序按 dict key 查、封顶按 ``slot.name`` 查 —— 两边查的不是同一个
+    东西，权重只生效一半。本文件的其它用例里 key 与 name 恰好同名，所以照样全绿，
+    这正是「替身形状与真实形状恰好重合」把测试骗过去的典型。
+
+    这里让两者**故意不同**，任何一边查错都会露出来。
+    """
+    slots = {
+        "vector_recall": _slot("向量召回", 800, priority=90, max_tokens=2000),
+    }
+    used, log = _run(slots, budget=100000, weights={"vector_recall": 0.25})
+
+    assert slots["vector_recall"].tokens == 500, (
+        f"权重按 dict key 给的，但封顶似乎没生效（tokens="
+        f"{slots['vector_recall'].tokens}）—— 排序与封顶用了不同的键"
+    )
+    assert used == 500
+    assert any("按权重压缩" in line for line in log), log
+
+
+def test_weight_given_by_display_name_does_not_silently_apply():
+    """反向守卫：用展示名当键必须**不生效**（而不是碰巧命中）。
+
+    展示名带括号后缀（如 ``绝对事实边界(FACT_LOCK)``），不适合当契约键；
+    若哪天有人改成接受展示名，这条会红并指出契约已变。
+    """
+    slots = {
+        "vector_recall": _slot("向量召回", 800, priority=90, max_tokens=2000),
+    }
+    _used, log = _run(slots, budget=100000, weights={"向量召回": 0.25})
+
+    assert slots["vector_recall"].tokens == 800, "展示名不该被当作权重键"
+    assert log == []
+
+
 def test_allocator_exposes_the_slot_weights_injection_point():
     """登记表指控「无任何外部注入权重的入口」—— 这条钉住入口存在。
 
