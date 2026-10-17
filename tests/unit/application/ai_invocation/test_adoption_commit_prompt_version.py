@@ -439,6 +439,7 @@ def test_autopilot_act_plan_continuation_repairs_llm_json_text():
       "main_event": "首次猎杀成功",
       "handoff_from_previous": "承接上章伏击",
       "handoff_to_next": "引出冷焰来历",
+      "foreshadow_action": "plant_and_resolve",
     },
   ],
 }

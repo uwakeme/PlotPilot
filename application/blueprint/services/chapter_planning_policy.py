@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from application.blueprint.services.foreshadow_pairing import (
+    validate_foreshadow_pairing,
+)
+
 
 @dataclass(frozen=True)
 class ChapterPlanningPolicy:
@@ -76,6 +80,12 @@ def validate_lightweight_act_plan(
         for field in policy.required_act_plan_fields:
             if _is_blank(raw.get(field)):
                 errors.append(f"chapter {index} missing required field: {field}")
+
+    # 伏笔节奏（foreshadow_action 必选 + 配对约束）。
+    # 提示词 planning-act/user.md:29,36 早就把这四条写成硬约束，但此前无任何代码
+    # 校验 —— 实测生产库 105 幕全部合规，说明模型一直遵守、代码从不校验。
+    # 这里接上校验器，给 C-01「允许 AI 报『本幕只需 N 章』」预置兜底安全网。
+    errors.extend(validate_foreshadow_pairing(chapters))
 
     return errors
 

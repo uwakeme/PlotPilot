@@ -103,6 +103,10 @@ def _plan_rows(*titles):
             "main_event": f"{t}事件",
             "handoff_from_previous": "承接",
             "handoff_to_next": "引出",
+            # 伏笔动作是 planning-act/user.md 的必填字段，校验链会查。
+            # plant_and_resolve 在任意位置都合法（它既算种也算收），
+            # 且是生产库里最常见的取值（261/586），这里用它保持 fixture 贴近真实。
+            "foreshadow_action": "plant_and_resolve",
         }
         for i, t in enumerate(titles)
     ]
