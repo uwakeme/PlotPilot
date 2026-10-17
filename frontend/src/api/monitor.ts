@@ -32,10 +32,21 @@ export interface TensionCurveResponse {
   stats: TensionCurveStats | null
 }
 
-export interface VoiceDriftApiItem {
-  drift_score?: number
-  status?: string
-  [key: string]: unknown
+/**
+ * 文风漂移。
+ *
+ * `drift_score` 是**漂移度**（0-1，越高越糟），与后端 similarity 相反。
+ * `evaluated=false` 时 `drift_score` 为 `null` —— 这表示「没测过」，
+ * 绝不能当成 0（0 会被读成「测过了，文风完美」）。
+ */
+export interface VoiceDriftApiResponse {
+  novel_id: string
+  drift_score: number | null
+  status: 'unevaluated' | 'normal' | 'warning' | 'critical'
+  evaluated: boolean
+  sample_count: number
+  last_scored_chapter: number | null
+  reason: string
 }
 
 export const monitorApi = {
@@ -46,7 +57,7 @@ export const monitorApi = {
     ) as unknown as Promise<TensionCurveResponse>
   },
 
-  getVoiceDrift(novelId: string): Promise<VoiceDriftApiItem[]> {
-    return fetchJson<VoiceDriftApiItem[]>(apiRoutes.monitor.voiceDrift(novelId))
+  getVoiceDrift(novelId: string): Promise<VoiceDriftApiResponse> {
+    return fetchJson<VoiceDriftApiResponse>(apiRoutes.monitor.voiceDrift(novelId))
   },
 }

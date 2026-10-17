@@ -75,6 +75,25 @@ class SqliteChapterStyleScoreRepository:
         )
         return dict(row) if row else None
 
+    def get_latest_by_novel(self, novel_id: str) -> Optional[dict]:
+        """取最近一次有记录的章节评分（按章号倒序取第一条）。
+
+        ``list_by_novel`` 是 ASC + LIMIT，拿到的总是**最早**的 N 章，
+        无法回答「当前漂移是多少」，所以这里单开一个倒序的只读方法。
+        """
+        row = self.db.fetch_one(
+            """
+            SELECT score_id, novel_id, chapter_number, adjective_density,
+                   avg_sentence_length, sentence_count, similarity_score, computed_at
+            FROM chapter_style_scores
+            WHERE novel_id = ? AND similarity_score IS NOT NULL
+            ORDER BY chapter_number DESC
+            LIMIT 1
+            """,
+            (novel_id,),
+        )
+        return dict(row) if row else None
+
     def list_by_novel(
         self, novel_id: str, limit: int = 50
     ) -> List[dict]:

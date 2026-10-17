@@ -10,10 +10,15 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from domain.novel.value_objects.novel_id import NovelId
+from infrastructure.persistence.database.connection import get_database
+from infrastructure.persistence.database.sqlite_chapter_style_score_repository import (
+    SqliteChapterStyleScoreRepository,
+)
 from interfaces.api.dependencies import (
     get_novel_repository,
     get_chapter_repository,
-    get_foreshadowing_repository
+    get_foreshadowing_repository,
+    get_voice_fingerprint_repository,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,12 +139,28 @@ def _get_tension_curve_sync(novel_id: str) -> TensionCurveResponse:
     return TensionCurveResponse(novel_id=novel_id, points=points, stats=stats)
 
 
+# 文风漂移告警阈值（drift = 1 - similarity，越高越糟）
+DRIFT_WARNING = 0.3
+DRIFT_CRITICAL = 0.5
+
+# 基准样本门槛，与写入侧保持一致（voice_drift_service.py:108）
+FINGERPRINT_MIN_SAMPLES = 10
+
+
 class VoiceDriftResponse(BaseModel):
-    character_id: str
-    character_name: str
-    drift_score: float
-    status: str  # "normal" | "warning" | "critical"
-    sample_count: int
+    """文风漂移。**漂移度越高越糟**，与 similarity 相反。
+
+    三态由 ``evaluated`` 决定 —— 调用方不得只看 ``drift_score``，
+    未评估时它是 ``None``（不是 0）。
+    """
+
+    novel_id: str
+    drift_score: Optional[float]  # None = 未评估
+    status: str  # "unevaluated" | "normal" | "warning" | "critical"
+    evaluated: bool
+    sample_count: int  # 真实的基准样本数
+    last_scored_chapter: Optional[int]
+    reason: str = ""  # 未评估原因；已评估时为空
 
 
 class ForeshadowStatsResponse(BaseModel):
@@ -164,41 +185,76 @@ async def get_tension_curve(novel_id: str):
         raise HTTPException(status_code=500, detail="Failed to fetch tension curve")
 
 
-def _get_voice_drift_sync(novel_id: str) -> Optional[List[VoiceDriftResponse]]:
-    novel_repo = get_novel_repository()
-    novel = novel_repo.get_by_id(NovelId(novel_id))
+def _unevaluated(
+    novel_id: str, sample_count: int, reason: str
+) -> VoiceDriftResponse:
+    """未评估的诚实形态：drift_score 为 None，附原因。
+
+    绝不能回填 0 —— 0 会被读成「测过了，文风完美」。
+    """
+    return VoiceDriftResponse(
+        novel_id=novel_id,
+        drift_score=None,
+        status="unevaluated",
+        evaluated=False,
+        sample_count=sample_count,
+        last_scored_chapter=None,
+        reason=reason,
+    )
+
+
+def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
+    # 0. 小说不存在 → None（端点据此回 404，与原行为一致）
+    novel = get_novel_repository().get_by_id(NovelId(novel_id))
     if not novel:
         return None
 
-    results: List[VoiceDriftResponse] = []
-    characters = getattr(novel, "characters", [])
-    for char in characters[:5]:
-        char_id = getattr(char, "id", str(char))
-        char_name = getattr(char, "name", char_id)
-        drift_score = 0.15
-        st = "normal"
-        if drift_score > 0.5:
-            st = "critical"
-        elif drift_score > 0.3:
-            st = "warning"
-        results.append(
-            VoiceDriftResponse(
-                character_id=char_id,
-                character_name=char_name,
-                drift_score=drift_score,
-                status=st,
-                sample_count=10,
-            )
+    # 1. 有没有合格的作者风格基准？没有就一律未评估。
+    fingerprint = get_voice_fingerprint_repository().get_by_novel(novel_id, None)
+    sample_count = int((fingerprint or {}).get("sample_count") or 0)
+    if fingerprint is None:
+        return _unevaluated(novel_id, 0, "尚无作者风格基准（文风指纹需随章节生成）")
+    if sample_count < FINGERPRINT_MIN_SAMPLES:
+        return _unevaluated(
+            novel_id,
+            sample_count,
+            f"基准样本不足（{sample_count}/{FINGERPRINT_MIN_SAMPLES}）",
         )
-    return results
+
+    # 2. 取最近一次真实评分。similarity 越高越像基准 ⇒ 漂移 = 1 - similarity。
+    latest = (
+        SqliteChapterStyleScoreRepository(get_database()).get_latest_by_novel(novel_id)
+    )
+    if latest is None:
+        return _unevaluated(novel_id, sample_count, "已有基准，但尚无章节评分记录")
+
+    similarity = float(latest["similarity_score"])
+    drift = round(max(0.0, min(1.0, 1.0 - similarity)), 4)
+    if drift >= DRIFT_CRITICAL:
+        status = "critical"
+    elif drift >= DRIFT_WARNING:
+        status = "warning"
+    else:
+        status = "normal"
+
+    return VoiceDriftResponse(
+        novel_id=novel_id,
+        drift_score=drift,
+        status=status,
+        evaluated=True,
+        sample_count=sample_count,
+        last_scored_chapter=int(latest["chapter_number"]),
+        reason="",
+    )
 
 
-@router.get("/{novel_id}/monitor/voice-drift", response_model=List[VoiceDriftResponse])
+@router.get("/{novel_id}/monitor/voice-drift", response_model=VoiceDriftResponse)
 async def get_voice_drift(novel_id: str):
     """
-    获取人声漂移检测数据
+    获取文风漂移检测结果（**漂移度，0-1，越高越糟**，超过 0.3 为异常）
 
-    返回每个角色的语气漂移指数（0-1），超过 0.3 为异常
+    没有基准或没有评分记录时返回 ``evaluated=False`` + ``drift_score=None``，
+    而不是编一个看起来正常的数字。
     """
     try:
         results = await asyncio.to_thread(_get_voice_drift_sync, novel_id)
