@@ -1997,7 +1997,7 @@ class ContinuousPlanningService:
             平面节点列表 [{"id": "part-xxx", "node_type": "PART", ...}]
 
         预算与内容透传（2026-10 修复）：此前本方法只输出 title/description 等 8 个字段，
-        把 LLM 已经规划好的 ``estimated_chapters``（每幕章数）以及叙事目标、情节点、
+        把 LLM 已经规划好的 ``estimated_chapters``（部 / 卷 / 幕各级章数）以及叙事目标、情节点、
         情绪弧、核心冲突**全部丢弃**。后果有二：
           1. 幕级规划拿不到 suggested_chapter_count，只能回落到硬编码默认值；
           2. 幕节点只剩一个标题，没有任何"这一幕要干什么"的内容规划，
@@ -2026,6 +2026,12 @@ class ContinuousPlanningService:
                 "themes": _as_str_list(part_data.get("themes")),
                 "key_events": _as_str_list(part_data.get("key_events")),
                 "order_index": order_index,
+                # 章节预算：LLM 的 estimated_chapters 与兜底骨架的
+                # suggested_chapter_count 是同一个语义的两个来源名。
+                "suggested_chapter_count": _as_positive_int(
+                    part_data.get("estimated_chapters")
+                    or part_data.get("suggested_chapter_count")
+                ),
             })
             order_index += 1
 
@@ -2045,6 +2051,12 @@ class ContinuousPlanningService:
                     "themes": _as_str_list(volume_data.get("themes")),
                     "key_events": _as_str_list(volume_data.get("key_events")),
                     "order_index": order_index,
+                    # 章节预算：LLM 的 estimated_chapters 与兜底骨架的
+                    # suggested_chapter_count 是同一个语义的两个来源名。
+                    "suggested_chapter_count": _as_positive_int(
+                        volume_data.get("estimated_chapters")
+                        or volume_data.get("suggested_chapter_count")
+                    ),
                 })
                 order_index += 1
 

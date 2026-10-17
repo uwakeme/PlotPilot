@@ -27,9 +27,18 @@ def estimate_total_chapters(story_node_repository: Any, novel_id: str) -> int:
             return 100
 
         part_nodes = [node for node in nodes if node.node_type.value == "part"]
-        for part in part_nodes:
-            if part.chapter_end and part.chapter_end > 0:
-                return part.chapter_end
+        # 取「部」的 chapter_end 最大值，而不是第一个有值的部。
+        # 部是顺序接续的：部 1 结束于 56、部 2 结束于 524 时，第一个部的 56
+        # 只覆盖了全书不到十分之一。拿它当总章数，写到第 57 章进度就
+        # 57/56=1.02 越过 finale 阈值（1.01），故事在第二部开头就被判成在写结局，
+        # 此后阶段划分全部失真。全部为空时照旧落到后续兜底分支。
+        part_ends = [
+            part.chapter_end
+            for part in part_nodes
+            if part.chapter_end and part.chapter_end > 0
+        ]
+        if part_ends:
+            return max(part_ends)
 
         total_suggested = sum(
             (part.suggested_chapter_count or 0)
