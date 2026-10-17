@@ -809,6 +809,7 @@ class DaemonHostMixin:
         3. 使用 AntiAIMetricsService 计算指标快照
         4. 使用 AntiAILearningService 学习新模式
         5. 将审计结果持久化到日志
+        6. 结论为「中等/严重」时经共享状态通道送出结论（仅可见，不干预）
 
         此方法为异步包装，实际扫描为同步操作。
         失败不影响主流程，返回 None；成功返回报告对象（供章末闸门判定）。
@@ -842,6 +843,24 @@ class DaemonHostMixin:
                         f"(score={report.metrics.severity_score}, "
                         f"assessment={report.metrics.overall_assessment})，"
                         f"建议：{'; '.join(report.recommendations[:2])}"
+                    )
+                    # 登记表 F-11：此前这里只有一条 warning —— 评估结论除了翻
+                    # 日志之外无处可见，「AI味过重」因此既不会被运维看见，也不会
+                    # 出现在 /status，等于默认无动作。现在把结论经既有共享状态
+                    # 通道送出去（键已补进 query_service._RUNTIME_STATUS_KEYS）。
+                    #
+                    # **只送出，不干预**：不改写正文、不重试、不阻断、不决定章节
+                    # 生死。依据 Task 12 的 F-01 裁定，护栏分数只负责被看见。
+                    # 是否因此暂停，仍由章末闸门按用户显式偏好
+                    # （audit_pause_on_anti_ai_severe，见 audit_delegate）决定。
+                    self._update_shared_state(
+                        novel_id,
+                        anti_ai_assessment=report.metrics.overall_assessment,
+                        anti_ai_severity_score=report.metrics.severity_score,
+                        anti_ai_total_hits=report.metrics.total_hits,
+                        anti_ai_critical_hits=report.metrics.critical_hits,
+                        anti_ai_recommendations=list(report.recommendations)[:2],
+                        anti_ai_chapter_number=chapter_number,
                     )
             return report
 

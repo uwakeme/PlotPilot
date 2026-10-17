@@ -62,6 +62,14 @@ _RUNTIME_STATUS_KEYS: tuple[str, ...] = (
     "validation_state",
     "validation_score",
     "validation_passed",
+    # 反 AI 审计结论（登记表 F-11）。仅可见性通道：这些键**不**驱动任何
+    # 自动改写/重试/阻断，是否暂停由章末闸门按用户显式偏好决定。
+    "anti_ai_assessment",
+    "anti_ai_severity_score",
+    "anti_ai_total_hits",
+    "anti_ai_critical_hits",
+    "anti_ai_recommendations",
+    "anti_ai_chapter_number",
     "active_invocation_session_id",
     "active_invocation_operation",
     "active_invocation_node_key",

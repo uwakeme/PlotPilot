@@ -1336,15 +1336,38 @@ class BaseStoryPipeline(ABC):
         except Exception:
             pass
 
+    # 停止信号链路故障计数（登记表 I-01）。类级默认值保证未调用
+    # super().__init__() 的子类与测试替身同样能读到这两个属性。
+    _stop_signal_failure_count: int = 0
+    _stop_signal_last_error: Optional[str] = None
+
     def _novel_stream_should_stop(self, novel_id: str) -> bool:
-        """与 legacy 写作一致：IPC 停止信号 + 控制队列消费。"""
+        """与 legacy 写作一致：IPC 停止信号 + 控制队列消费。
+
+        登记表 I-01：这里此前有两处静默吞异常（``pass`` / ``return False``）。
+        停止信号存储一旦故障，返回值和「用户没点停止」完全无法区分，运维只能
+        看到「点停止没反应」，看不到链路已经坏了 —— 故障被伪装成了正常。
+
+        本次只让故障**变得可见**，不改变行为方向：
+
+        * 第一段异常 → warning，且仍落到第二段重试（重试成功即瞬时故障）。
+        * 第二段异常 → error 级留痕 + 累加 ``_stop_signal_failure_count`` /
+          ``_stop_signal_last_error``，返回值**仍是** ``False``。
+        * **不改返回值方向**。fail-safe 改成 ``return True`` 意味着：停止信号
+          存储持续故障时，每一章的流式生成立刻中止，整本书一个字都写不出来 ——
+          把「用户偶尔点不到停止」升级成「产品完全不可用」。那属于为了
+          「看起来安全」硬造行为分支，本批禁止。故障该被看见，不该被改写
+          成新的行为；真要改行为方向，那是另一个需要显式决策的议题。
+        """
         try:
             from application.engine.services.novel_stop_signal import is_novel_stopped
 
             if is_novel_stopped(novel_id):
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                f"[{novel_id}] 停止信号首次读取失败，落第二段重试: {type(e).__name__}: {e}"
+            )
         try:
             from application.engine.services.streaming_bus import streaming_bus
 
@@ -1352,7 +1375,13 @@ class BaseStoryPipeline(ABC):
             from application.engine.services.novel_stop_signal import is_novel_stopped
 
             return is_novel_stopped(novel_id)
-        except Exception:
+        except Exception as e:
+            self._stop_signal_failure_count += 1
+            self._stop_signal_last_error = f"{type(e).__name__}: {e}"[:200]
+            logger.error(
+                f"[{novel_id}] 停止信号链路故障（累计 {self._stop_signal_failure_count} 次），"
+                f"本轮按「未请求停止」继续，不改为 fail-safe 中止: {self._stop_signal_last_error}"
+            )
             return False
 
     async def _stream_prose_llm(self, ctx: PipelineContext, prompt: Any, config: Any) -> str:
