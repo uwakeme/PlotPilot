@@ -145,6 +145,10 @@ class ContextBudgetAllocator:
         memory_engine: Optional['MemoryEngine'] = None,
         # Phase 3: 沙漏阶段可配置阈值
         phase_thresholds: Optional[Dict[str, float]] = None,
+        # D-02: 槽位权重（0-1）。此前**没有任何外部注入入口**，权重全是写死的类常量。
+        # 这里先建出入口；上游「本章需要什么记忆」规划调用在后续切片里填。
+        # None / 空 ⇒ 行为与改造前完全一致（纯按静态 priority 分配）。
+        slot_weights: Optional[Dict[str, float]] = None,
         # V8 Feed-forward: 上下文反哺管线（因果图谱 + 人物状态 + 叙事债务）
         context_assembler: Optional[Any] = None,
         storyline_repository=None,
@@ -179,6 +183,9 @@ class ContextBudgetAllocator:
 
         # Phase 3: 沙漏阶段阈值（可由 CPMS 节点 lifecycle-phase-directives 的变量覆盖）
         self._phase_thresholds = phase_thresholds or self._load_phase_thresholds()
+
+        # D-02: 槽位权重（0-1）。None / 空 ⇒ 全走旧行为。
+        self.slot_weights = dict(slot_weights) if slot_weights else None
 
         # 向量检索门面
         self.vector_facade = None
@@ -785,9 +792,9 @@ class ContextBudgetAllocator:
         compression_log: List[str],
     ) -> int:
         """分配某一层级的预算
-        
+
         策略：
-        1. 按优先级排序
+        1. 按优先级排序（**若提供了 `slot_weights` 则改按权重**）
         2. 高优先级的尽量保留
         3. 超出预算的低优先级内容按比例压缩
         """
@@ -796,6 +803,7 @@ class ContextBudgetAllocator:
             budget,
             compression_log,
             chars_per_token_zh=self.CHARS_PER_TOKEN_ZH,
+            slot_weights=self.slot_weights,
         )
     
     # ==================== 内容收集方法 ====================
