@@ -58,6 +58,14 @@ from application.blueprint.services.act_chapter_budget import (  # noqa: E402
     check_act_chapter_budget,
     read_act_chapters,
 )
+from application.blueprint.services.bible_context_budget import (  # noqa: E402
+    MACRO_PLANNING as _BIBLE_BUDGET_MACRO,
+    SCENE_PLANNING as _BIBLE_BUDGET_SCENE,
+    VOLUME_PLANNING as _BIBLE_BUDGET_VOLUME,
+    format_bible_context as _format_bible_context_budgeted,
+    format_locations_context as _format_locations_context_budgeted,
+    format_worldbuilding_context as _format_worldbuilding_context_budgeted,
+)
 
 logger = logging.getLogger(__name__)
 # 有界存储（容量 LRU + TTL）：替换裸 dict，根治长跑内存泄漏。
@@ -2380,129 +2388,6 @@ class ContinuousPlanningService:
         part_ratios = [c / total_chapters for c in part_chapters]
         return {"part_chapters": part_chapters, "part_ratios": part_ratios}
 
-    def _format_bible_context(
-        self,
-        bible_context: Dict,
-        *,
-        character_limit: int = 5,
-        location_limit: int = 5,
-        include_ids: bool = False,
-        empty_hint: str = "暂无详细设定，请优先依据作者梗概与题材赛道生成结构；只补全必要因果，不套入无关热门题材。",
-    ) -> str:
-        """把 Bible 结构化数据转为可注入 CPMS 的上下文块。"""
-        blocks: List[str] = []
-
-        worldview = bible_context.get("worldview") or ""
-        if worldview:
-            blocks.append(f"【世界观】\n{worldview}")
-
-        world_settings = bible_context.get("world_settings") or []
-        if world_settings:
-            lines = ["【世界设定】"]
-            for item in world_settings[:location_limit]:
-                name = item.get("name", "未命名设定")
-                desc = item.get("description", "")
-                item_id = f" (ID: {item.get('id', 'N/A')})" if include_ids else ""
-                lines.append(f"- {name}{item_id}: {desc}")
-            blocks.append("\n".join(lines))
-
-        characters = bible_context.get("characters") or []
-        if characters:
-            lines = ["【角色设定】"]
-            for char in characters[:character_limit]:
-                name = char.get("name", "Unknown")
-                desc = char.get("description", "")
-                role = char.get("role", "")
-                arc = char.get("character_arc", "")
-                char_id = f" (ID: {char.get('id', 'N/A')})" if include_ids else ""
-                role_text = f" [{role}]" if role else ""
-                lines.append(f"- {name}{char_id}{role_text}: {desc}")
-                if arc:
-                    lines.append(f"  人物弧光：{arc}")
-            blocks.append("\n".join(lines))
-
-        relationships = bible_context.get("relationships") or []
-        if relationships:
-            lines = ["【角色关系】"]
-            for rel in relationships[:character_limit]:
-                char1 = rel.get("character1", "")
-                char2 = rel.get("character2", "")
-                rel_type = rel.get("relationship_type", "")
-                rel_desc = rel.get("description", "")
-                lines.append(f"- {char1} ↔ {char2} ({rel_type}): {rel_desc}")
-            blocks.append("\n".join(lines))
-
-        locations = bible_context.get("locations") or []
-        if locations:
-            lines = ["【关键地点】"]
-            for loc in locations[:location_limit]:
-                name = loc.get("name", "Unknown")
-                desc = loc.get("description", "")
-                significance = loc.get("significance", "")
-                loc_id = f" (ID: {loc.get('id', 'N/A')})" if include_ids else ""
-                lines.append(f"- {name}{loc_id}: {desc}")
-                if significance:
-                    lines.append(f"  叙事意义：{significance}")
-            blocks.append("\n".join(lines))
-
-        timeline_notes = bible_context.get("timeline_notes") or []
-        if timeline_notes:
-            lines = ["【时间线事件】"]
-            for note in timeline_notes[:location_limit]:
-                event = note.get("event", "")
-                desc = note.get("description", "")
-                impact = note.get("impact", "")
-                lines.append(f"- {event}: {desc}")
-                if impact:
-                    lines.append(f"  情节影响：{impact}")
-            blocks.append("\n".join(lines))
-
-        return "\n\n".join(blocks) if blocks else f"【世界观与人物】\n{empty_hint}"
-
-    @staticmethod
-    def _format_locations_context(bible_context: Dict, *, limit: int = 5) -> str:
-        locations = bible_context.get("locations") or []
-        if not locations:
-            return ""
-        lines = []
-        for loc in locations[:limit]:
-            name = loc.get("name", "Unknown")
-            desc = loc.get("description", "")
-            significance = loc.get("significance", "")
-            line = f"- {name}: {desc}".strip()
-            if significance:
-                line = f"{line}\n  叙事意义：{significance}"
-            lines.append(line)
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_worldbuilding_context(bible_context: Dict, *, limit: int = 5) -> str:
-        blocks: List[str] = []
-
-        worldview = bible_context.get("worldview") or ""
-        if worldview:
-            blocks.append(str(worldview))
-
-        world_settings = bible_context.get("world_settings") or []
-        if world_settings:
-            lines = []
-            for item in world_settings[:limit]:
-                name = item.get("name", "未命名设定")
-                desc = item.get("description", "")
-                lines.append(f"- {name}: {desc}")
-            blocks.append("\n".join(lines))
-
-        timeline_notes = bible_context.get("timeline_notes") or []
-        if timeline_notes:
-            lines = []
-            for note in timeline_notes[:limit]:
-                event = note.get("event", "")
-                desc = note.get("description", "")
-                lines.append(f"- {event}: {desc}")
-            blocks.append("\n".join(lines))
-
-        return "\n\n".join(block for block in blocks if block.strip())
-
     @staticmethod
     def _pick_premise_from_context(bible_context: Dict) -> str:
         """从 Bible 上下文中提取宏观规划可用的核心梗概。"""
@@ -2543,12 +2428,18 @@ class ContinuousPlanningService:
             planning_depth,
         )
 
-        story_context = self._format_bible_context(bible_context, character_limit=5, location_limit=5)
-        worldbuilding_context = self._format_worldbuilding_context(bible_context, limit=5)
-        locations_context = self._format_locations_context(bible_context, limit=5)
-        character_context = self._format_bible_context(
+        story_context = _format_bible_context_budgeted(
+            bible_context, budget=_BIBLE_BUDGET_MACRO
+        )
+        worldbuilding_context = _format_worldbuilding_context_budgeted(
+            bible_context, budget=_BIBLE_BUDGET_MACRO
+        )
+        locations_context = _format_locations_context_budgeted(
+            bible_context, budget=_BIBLE_BUDGET_MACRO
+        )
+        character_context = _format_bible_context_budgeted(
             {"characters": bible_context.get("characters", []), "relationships": bible_context.get("relationships", [])},
-            character_limit=5,
+            budget=_BIBLE_BUDGET_SCENE,
             empty_hint="暂无角色设定，请不要编造与题材无关的固定示例名词。",
         )
         return {
@@ -2619,10 +2510,9 @@ class ContinuousPlanningService:
         return self._render_contract_prompt(
             PLANNING_PRECISE_MACRO_CONTRACT,
             {
-                "story_context": self._format_bible_context(
+                "story_context": _format_bible_context_budgeted(
                     bible_context,
-                    character_limit=5,
-                    location_limit=5,
+                    budget=_BIBLE_BUDGET_MACRO,
                     include_ids=True,
                     empty_hint="暂无详细设定，请依据作者梗概与题材赛道生成结构框架；只补必要因果，不引入无关题材外壳。",
                 ),
@@ -2671,10 +2561,9 @@ class ContinuousPlanningService:
         return self._render_contract_prompt(
             PLANNING_PRECISE_VOLUME_CONTRACT,
             {
-                "story_context": self._format_bible_context(
+                "story_context": _format_bible_context_budgeted(
                     bible_context,
-                    character_limit=8,
-                    location_limit=8,
+                    budget=_BIBLE_BUDGET_VOLUME,
                     include_ids=True,
                     empty_hint="暂无详细设定，请给出通用但完整的单卷叙事设计。",
                 ),
@@ -2714,10 +2603,9 @@ class ContinuousPlanningService:
         return self._render_contract_prompt(
             PLANNING_PRECISE_REPAIR_CONTRACT,
             {
-                "story_context": self._format_bible_context(
+                "story_context": _format_bible_context_budgeted(
                     bible_context,
-                    character_limit=8,
-                    location_limit=8,
+                    budget=_BIBLE_BUDGET_VOLUME,
                     include_ids=True,
                     empty_hint="暂无详细设定，请补齐通用但完整的叙事字段。",
                 ),
