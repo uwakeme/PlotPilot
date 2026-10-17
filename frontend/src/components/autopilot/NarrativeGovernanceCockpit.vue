@@ -156,7 +156,11 @@ const promiseHitRate = computed(() => {
 const reportSeverity = computed(() => state.value?.latest_report?.severity ?? 'ready')
 const severityClass = computed(() => `ng-status-text--${reportSeverity.value}`)
 const blockReason = computed(() => {
-  if (state.value?.latest_report?.should_pause_autopilot) return '严重结构风险已阻断'
+  const pause = state.value?.latest_report?.should_pause_autopilot
+  if (pause === true) return '严重结构风险已阻断'
+  // null 与 false 必须分开：null 是「本次没能评估」，落到下面的兜底会显示
+  // 「可继续自动驾驶」—— 把「没测出来」说成「没问题」正是这批改造要消灭的那类撒谎。
+  if (pause === null) return '本次未能评估是否需要阻断'
   if (state.value?.latest_report?.issues?.length) return '建议写入下一章预算'
   return '可继续自动驾驶'
 })

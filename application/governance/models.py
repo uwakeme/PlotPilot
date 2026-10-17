@@ -79,10 +79,15 @@ class GovernanceReport:
     novel_id: str
     chapter_number: int
     severity: Severity
-    promise_hit_rate: float
+    # None = 本次没有测出来（无可用锚点 / 正文为空），不是「测了是 0」。
+    # 任何 `or 0` 之类的兜底都会把「没测」重新伪装成「零命中」，
+    # 而生产库 87.6% 的章节正是这种情况。
+    promise_hit_rate: float | None
     issues: list[GovernanceIssue] = field(default_factory=list)
     budget_patch: dict[str, Any] = field(default_factory=dict)
-    should_pause_autopilot: bool = False
+    # 三态：None = 本次未能评估（没有可信证据）/ False = 评估过不建议 / True = 建议暂停。
+    # 默认 None 而不是 False —— 未评估时声称「不需要暂停」是在替治理层撒谎。
+    should_pause_autopilot: bool | None = None
     created_at: str = field(default_factory=utc_now_iso)
     review_status: str = "open"
 

@@ -25,6 +25,21 @@ def _loads(text: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _pause_flag(value: bool | None) -> int | None:
+    """三态 → SQLite 存储值。None 保持 None，不塌成 0（0 会被读回侧读成「评估过、不暂停」）。"""
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
+def _opt_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _opt_bool(value: Any) -> bool | None:
+    return None if value is None else bool(value)
+
+
 class SqliteGovernanceRepository:
     def __init__(self, db: DatabaseConnection):
         self.db = db
@@ -76,10 +91,10 @@ class SqliteGovernanceRepository:
                 novel_id TEXT NOT NULL,
                 chapter_number INTEGER NOT NULL,
                 severity TEXT NOT NULL,
-                promise_hit_rate REAL NOT NULL DEFAULT 0,
+                promise_hit_rate REAL DEFAULT 0,
                 issues_json TEXT NOT NULL DEFAULT '[]',
                 budget_patch_json TEXT NOT NULL DEFAULT '{}',
-                should_pause_autopilot INTEGER NOT NULL DEFAULT 0,
+                should_pause_autopilot INTEGER DEFAULT 0,
                 review_status TEXT NOT NULL DEFAULT 'open',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -225,14 +240,22 @@ class SqliteGovernanceRepository:
                 report.novel_id,
                 report.chapter_number,
                 report.severity,
+                # None 必须原样落 NULL：写成 0 就是把「没测出来」重新伪装成「零命中」
                 report.promise_hit_rate,
                 _json([issue.to_dict() for issue in report.issues]),
                 _json(report.budget_patch),
-                1 if report.should_pause_autopilot else 0,
+                _pause_flag(report.should_pause_autopilot),
                 report.review_status,
                 report.created_at,
             ),
         )
+
+    def get_report(self, novel_id: str, report_id: str) -> GovernanceReport | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM governance_reports WHERE novel_id = ? AND report_id = ?",
+            (novel_id, report_id),
+        )
+        return self._row_to_report(row) if row else None
 
     def latest_report(self, novel_id: str) -> GovernanceReport | None:
         row = self.db.fetch_one(
@@ -309,10 +332,10 @@ class SqliteGovernanceRepository:
             novel_id=row["novel_id"],
             chapter_number=int(row["chapter_number"] or 0),
             severity=row["severity"],
-            promise_hit_rate=float(row["promise_hit_rate"] or 0),
+            promise_hit_rate=_opt_float(row["promise_hit_rate"]),
             issues=issues,
             budget_patch=dict(_loads(row["budget_patch_json"], {})),
-            should_pause_autopilot=bool(row["should_pause_autopilot"]),
+            should_pause_autopilot=_opt_bool(row["should_pause_autopilot"]),
             created_at=row["created_at"],
             review_status=row["review_status"] or "open",
         )

@@ -32,6 +32,10 @@ _EARLY_PAYOFF_TERMS = (
     "终局",
 )
 
+# 揭示档位的收紧顺序：数字越小 = 透露得越少。用于把 budget_patch 的
+# allowed_reveal_level 变成「只收紧、不放松」的约束，而不是直接覆盖。
+_REVEAL_TIGHTNESS = {"hint": 0, "partial": 1, "major": 2, "payoff": 3}
+
 
 class NarrativeGovernanceService:
     """Book-level narrative coordinator.
@@ -230,10 +234,31 @@ class NarrativeGovernanceService:
             max_close = 3
             reveal = "major" if stage == "convergence" else "payoff"
 
-        notes = []
-        if latest_report and latest_report.severity in ("medium", "high", "critical"):
-            notes.append("上一章治理报告要求本章优先修复承诺漂移或叙事债务。")
-            max_new = max(0, max_new - 1)
+        notes: list[str] = []
+        # 消费上一章治理报告的 budget_patch —— 治理层已经把「该修什么」算成
+        # 具体字段了，这里按字段执行，不再用 severity 猜（severity 是给排序看的
+        # 粗粒度标签，拿它推演预算本身就是二次猜测）。patch 形状见
+        # _budget_patch_from_issues：must_retouch_promise / must_reduce_new_storylines
+        # / max_new_storylines_delta / allowed_reveal_level 均为可选请求，
+        # 缺席 = 治理层没提这项要求，不等于默认要满足。
+        patch = latest_report.budget_patch if latest_report else None
+        if patch:
+            if patch.get("must_retouch_promise"):
+                notes.append("上一章治理报告判定承诺漂移：本章必须让行动后果直接命中书名承诺或核心冲突。")
+            if patch.get("must_reduce_new_storylines"):
+                delta = patch.get("max_new_storylines_delta")
+                # 只在治理层给出可量化档位时才动 max_new_storylines；
+                # 缺 delta 不编造减多少，保持原值（宁可少收紧，不假装知道）。
+                if isinstance(delta, int) and not isinstance(delta, bool):
+                    max_new = max(0, max_new + delta)
+                    notes.append(f"上一章治理报告要求压缩新增故事线：{max_new} 条。")
+            cap = patch.get("allowed_reveal_level")
+            cap_rank = _REVEAL_TIGHTNESS.get(cap) if isinstance(cap, str) else None
+            cur_rank = _REVEAL_TIGHTNESS.get(reveal)
+            # 只收紧不放宽；cap 档位无法排序（未知值）时保持不变。
+            if cap_rank is not None and cur_rank is not None and cap_rank < cur_rank:
+                reveal = cap
+                notes.append("上一章治理报告要求把揭示档位收紧到仅给线索。")
         if stage in ("opening", "convergence", "finale"):
             notes.append("默认克制新增故事线；优先让现有线发生因果变化、交汇或回收。")
 
@@ -274,7 +299,19 @@ class NarrativeGovernanceService:
         issues: list[GovernanceIssue] = []
         hit_rate = self._promise_hit_rate(contract, content)
 
-        if hit_rate <= 0:
+        if hit_rate is None:
+            # 没测出来就没有资格说漂移：既不产出 promise_drift，也不暂停。
+            # 产出一条 info 让「本次未测量」在报告里可见，而不是消失在 0 里。
+            issues.append(
+                GovernanceIssue(
+                    code="promise_measurement_unavailable",
+                    severity="info",
+                    title="承诺命中率未测出",
+                    detail="本章未能测出承诺命中率（正文为空，或叙事契约没有可用锚点），本次不对承诺漂移下结论。",
+                    suggestion="为叙事契约补充主题锚点，并确认本章正文已写入。",
+                )
+            )
+        elif hit_rate <= 0:
             issues.append(
                 GovernanceIssue(
                     code="promise_drift",
@@ -333,13 +370,21 @@ class NarrativeGovernanceService:
             )
 
         severity = self._max_severity(issues)
-        should_pause = severity in ("critical",) or (
-            chapter_number <= 12
-            and any(i.code == "promise_drift" and i.severity == "high" for i in issues)
-            and any(i.code == "premature_payoff" for i in issues)
-        )
-        if should_pause and severity != "critical":
-            severity = "critical"
+        # 三态暂停判定（I-03）：
+        # - None：本次未测量，无可信证据，治理层不给建议
+        # - True/False：评估过了，结论如下
+        # 章号闸已删除：原先的 `chapter_number <= 12` 会让任何将来新增的严重度
+        # 检测器在第 12 章后静默失效。过早结清与 high 档承诺漂移各自仍只在前
+        # 12 章产出（开篇问题），所以删闸不会让后段章节突然开始被暂停。
+        if hit_rate is None:
+            should_pause: bool | None = None
+        else:
+            should_pause = severity == "critical" or (
+                any(i.code == "promise_drift" and i.severity == "high" for i in issues)
+                and any(i.code == "premature_payoff" for i in issues)
+            )
+            if should_pause and severity != "critical":
+                severity = "critical"
 
         report = GovernanceReport(
             report_id=f"gov_{uuid.uuid4().hex}",
@@ -354,8 +399,9 @@ class NarrativeGovernanceService:
         self.repository.save_report(report)
         self._emit(novel_id, "GovernanceEvaluatedEvent", chapter_number, report.to_dict())
         if should_pause:
-            self._pause_autopilot(novel_id)
-            self._emit(novel_id, "AutopilotPausedForGovernanceEvent", chapter_number, report.to_dict())
+            # 只出建议、不停书（I-03 改判）：治理指标不是可信证据，自动停书
+            # 且不可恢复。真正的暂停挂在人工 accept 上（见 review_action）。
+            self._emit(novel_id, "GovernancePauseRecommendedEvent", chapter_number, report.to_dict())
         return report
 
     def merge_storylines(self, novel_id: str, payload: dict[str, Any]) -> CanonicalStoryline:
@@ -396,6 +442,13 @@ class NarrativeGovernanceService:
         return target
 
     def review_action(self, novel_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """人工复核通道。治理层只给建议，停书这一动作由人显式 accept 触发。
+
+        暂停建议过去是自动执行的（_pause_autopilot），而支撑它的承诺命中率指标
+        在生产库上有 87.6% 的章节为「零命中」——自动停书等于让一个不可信指标
+        夺走用户的书写权且无法恢复。现在把它交回给人：accept 一条
+        should_pause_autopilot is True 的报告，才真的执行暂停。
+        """
         report_id = str(payload.get("report_id") or "").strip()
         action = str(payload.get("action") or "accepted").strip()
         status = {
@@ -406,10 +459,21 @@ class NarrativeGovernanceService:
             "modify": "modified",
             "modified": "modified",
         }.get(action, action or "accepted")
+        paused = False
         if report_id:
             self.repository.update_report_status(novel_id, report_id, status)
+            report = self.repository.get_report(novel_id, report_id)
+            if status == "accepted" and report is not None and report.should_pause_autopilot is True:
+                self._pause_autopilot(novel_id)
+                paused = True
+                self._emit(
+                    novel_id,
+                    "GovernancePauseAcceptedEvent",
+                    report.chapter_number,
+                    {"report_id": report_id, "status": status, "autopilot_paused": True},
+                )
         self._emit(novel_id, "GovernanceReviewAction", None, {"report_id": report_id, "status": status})
-        return {"report_id": report_id, "status": status}
+        return {"report_id": report_id, "status": status, "autopilot_paused": paused}
 
     def backfill_canonical_storylines(self, novel_id: str) -> None:
         if not self.legacy_storyline_repository:
@@ -481,16 +545,22 @@ class NarrativeGovernanceService:
             return "convergence"
         return "finale"
 
-    def _promise_hit_rate(self, contract: NarrativeContract, content: str) -> float:
+    def _promise_hit_rate(self, contract: NarrativeContract, content: str) -> float | None:
+        """承诺命中率。返回 None = 本次测不出来（不是 0，也不是 1）。
+
+        - 正文为空 → None：没有正文就没有测量对象，写 0.0 等于谎称「测了，是零命中」。
+        - 契约没有任何可用锚点 → None：原先返回 1.0（满分），那是全批最恶劣的
+          伪装——生产库 theme_anchors 全空时每章都拿满分。
+        """
         text = re.sub(r"\s+", "", content or "")
         if not text:
-            return 0.0
+            return None
         anchors = []
         anchors.extend(contract.theme_anchors)
         anchors.extend([contract.title_promise, contract.core_question])
         anchors = [a for a in anchors if a and len(str(a).strip()) >= 2]
         if not anchors:
-            return 1.0
+            return None
         hits = 0
         for anchor in anchors:
             terms = [anchor] if len(anchor) <= 12 else re.split(r"[，,。；;：:\s]+", anchor)

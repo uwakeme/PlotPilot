@@ -50,10 +50,12 @@ export interface GovernanceReportDTO {
   novel_id: string
   chapter_number: number
   severity: string
-  promise_hit_rate: number
+  /** null = 本次未测出（契约无可用锚点 / 正文为空），不是「测了是 0」。 */
+  promise_hit_rate: number | null
   issues: GovernanceIssueDTO[]
   budget_patch: Record<string, unknown>
-  should_pause_autopilot: boolean
+  /** null = 本次未能评估，False = 评估过不建议，True = 建议暂停。 */
+  should_pause_autopilot: boolean | null
   created_at: string
   review_status: string
 }
