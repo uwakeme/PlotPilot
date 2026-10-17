@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 # 连续低分章节数触发告警
 DRIFT_ALERT_CONSECUTIVE = 5
-# 相似度告警阈值
+# 相似度告警阈值（**默认值**）。
+# 实际取值优先读 ``VoiceAnalysisRuntimeSettings.drift_alert_threshold``；
+# 保留本常量是为了不破坏 daemon_host._similarity_below_warning_threshold 的导入。
 DRIFT_ALERT_THRESHOLD = 0.75
 
 # 常见形容词集合（与 VoiceFingerprintService 保持一致）
@@ -285,7 +287,9 @@ class VoiceDriftService:
             "novel_id": novel_id,
             "scores": scores,
             "drift_alert": drift_alert,
-            "alert_threshold": DRIFT_ALERT_THRESHOLD,
+            "alert_threshold": float(
+                getattr(self._runtime_settings, "drift_alert_threshold", DRIFT_ALERT_THRESHOLD)
+            ),
             "alert_consecutive": DRIFT_ALERT_CONSECUTIVE,
             "mode": "llm" if self.use_llm_mode else "statistics",
         }
@@ -352,4 +356,7 @@ class VoiceDriftService:
             return False
 
         recent = valid_scores[-DRIFT_ALERT_CONSECUTIVE:]
-        return all(s["similarity_score"] < DRIFT_ALERT_THRESHOLD for s in recent)
+        threshold = float(
+            getattr(self._runtime_settings, "drift_alert_threshold", DRIFT_ALERT_THRESHOLD)
+        )
+        return all(s["similarity_score"] < threshold for s in recent)

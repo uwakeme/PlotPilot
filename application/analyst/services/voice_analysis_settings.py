@@ -11,6 +11,13 @@ from application.core.config.runtime_settings_utils import (
     section_value,
 )
 
+#: 相似度告警阈值默认值。
+#: 与 ``voice_drift_service.DRIFT_ALERT_THRESHOLD`` 是同一个数值，但**故意各写一份
+#: 字面量** —— 反向 import 会造成循环依赖（voice_drift_service 已 import 本模块）。
+#: 一致性由 ``test_voice_drift_llm_mode.test_default_threshold_matches_module_constant``
+#: 钉住；一旦两边漂移，那条测试会红。
+DRIFT_ALERT_THRESHOLD_DEFAULT = 0.75
+
 
 @dataclass(frozen=True)
 class VoiceAnalysisRuntimeSettings:
@@ -18,6 +25,13 @@ class VoiceAnalysisRuntimeSettings:
     style_cache_max_size: int = 512
     baseline_cache_ttl_seconds: float = 600.0
     baseline_cache_max_size: int = 256
+    #: 文风漂移是否走 LLM 模式。默认 False = 统计模式（0 额外 token）。
+    #: F-04：生产装配原本不传此参数，导致 LLM 模式从未启用。
+    #: 开启后每章多一次 LLM 调用（约 500 token），以抓深层风格特征。
+    use_llm_mode: bool = False
+    #: 相似度告警阈值。模块常量 ``DRIFT_ALERT_THRESHOLD`` 作为默认值保留，
+    #: 保留它是为了不破坏 ``daemon_host._similarity_below_warning_threshold``。
+    drift_alert_threshold: float = DRIFT_ALERT_THRESHOLD_DEFAULT
 
 
 def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
@@ -52,5 +66,14 @@ def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
                 defaults.baseline_cache_max_size,
             ),
             defaults.baseline_cache_max_size,
+        ),
+        use_llm_mode=bool(
+            section_value(section, "use_llm_mode", defaults.use_llm_mode)
+        ),
+        drift_alert_threshold=non_negative_float(
+            section_value(
+                section, "drift_alert_threshold", defaults.drift_alert_threshold
+            ),
+            defaults.drift_alert_threshold,
         ),
     )

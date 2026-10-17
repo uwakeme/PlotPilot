@@ -1019,8 +1019,35 @@ def get_voice_drift_service() -> VoiceDriftService:
     from infrastructure.persistence.database.sqlite_chapter_style_score_repository import (
         SqliteChapterStyleScoreRepository,
     )
+    from application.analyst.services.voice_analysis_settings import (
+        get_voice_analysis_runtime_settings,
+    )
+
     score_repo = SqliteChapterStyleScoreRepository(get_database())
-    return VoiceDriftService(score_repo, get_voice_fingerprint_repository())
+    fingerprint_repo = get_voice_fingerprint_repository()
+
+    # F-04：文风漂移默认走统计模式（约 0 额外 token）。
+    # 开启后每章多一次 LLM 调用（约 500 token），以抓深层风格特征。
+    settings = get_voice_analysis_runtime_settings()
+    if not settings.use_llm_mode:
+        return VoiceDriftService(
+            score_repo, fingerprint_repo, runtime_settings=settings
+        )
+
+    from application.analyst.services.llm_voice_analysis_service import (
+        LLMVoiceAnalysisService,
+    )
+
+    llm_voice_service = LLMVoiceAnalysisService(
+        llm_service=get_llm_service(), runtime_settings=settings
+    )
+    return VoiceDriftService(
+        score_repo,
+        fingerprint_repo,
+        llm_voice_service=llm_voice_service,
+        use_llm_mode=True,
+        runtime_settings=settings,
+    )
 
 
 def get_context_weight_planner():
