@@ -67,19 +67,20 @@ CREATE INDEX IF NOT EXISTS idx_chapter_summaries_knowledge_cover
 ON chapter_summaries(knowledge_id, chapter_number);
 
 -- ========================================
--- 6. 分析查询计划
+-- 6. 分析查询计划（原 EXPLAIN QUERY PLAN 三条已移除）
 -- ========================================
-
--- 验证索引效果
-EXPLAIN QUERY PLAN
-SELECT * FROM novels WHERE autopilot_status = 'running';
-
-EXPLAIN QUERY PLAN
-SELECT * FROM chapters WHERE novel_id = ? ORDER BY number;
-
-EXPLAIN QUERY PLAN
-SELECT * FROM triples WHERE novel_id = ? AND chapter_number = ?;
-
+-- 这三条原本只是人工验证索引效果的诊断语句，没有任何 schema 副作用，
+-- 但迁移执行器是逐条 `conn.execute(statement)` 且不预绑定参数：
+--   * `?` 占位符无绑定 ⇒ sqlite3.ProgrammingError（不是 OperationalError，
+--     走不到 _BENIGN_ERROR_MARKERS 分支）
+--   * 任一语句失败 ⇒ 整个文件被判失败 ⇒ **永不写入 migrations_applied**
+-- 后果：每次启动都重跑整个文件（含末尾的 ANALYZE，全库统计扫描），
+-- 并打一条 ERROR 级汇总日志。全新安装必然中招；既有安装因该文件早已
+-- 被标记而侥幸无事 —— 这正是它长期没被发现的原因。
+--
+-- 要验证索引效果，请在库外单独执行：
+--   sqlite3 data/plotpilot.db "EXPLAIN QUERY PLAN SELECT ..."
+-- 不要把无副作用的诊断语句写进迁移文件。
 -- ========================================
 -- 7. 更新统计信息
 -- ========================================
