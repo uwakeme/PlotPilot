@@ -54,6 +54,11 @@ from application.blueprint.services.chapter_book_structure_sync import (
     collect_structure_chapter_numbers,
 )
 
+from application.blueprint.services.act_chapter_budget import (  # noqa: E402
+    check_act_chapter_budget,
+    read_act_chapters,
+)
+
 logger = logging.getLogger(__name__)
 # 有界存储（容量 LRU + TTL）：替换裸 dict，根治长跑内存泄漏。
 # 进度/结果按 novel_id、LLM 流文本按 act_id 累积，无淘汰时无限增长。
@@ -803,22 +808,34 @@ class ContinuousPlanningService:
                 if isinstance(value, list):
                     node[field] = [str(item).strip() for item in value if str(item).strip()]
 
-    def _rebalance_act_chapters(self, acts: List[Dict], target_chapters: int) -> None:
-        """将各幕 estimated_chapters 归一到目标总章数。"""
+    def _rebalance_act_chapters(
+        self,
+        acts: List[Dict],
+        target_chapters: int,
+        *,
+        normalize: bool = False,
+    ) -> Dict[str, Any]:
+        """核对各幕 estimated_chapters 之和，**默认不改写**（B-03）。
+
+        改造前这里把 LLM 的章数当权重、等比缩放后**直接覆盖**原值，且没有
+        任何告警分支 —— AI 对每幕章数的判断在落库前被静默改写。
+
+        现在：
+        - 默认（``normalize=False``）只做校验 + 告警，**保留 LLM 原值**；
+        - ``normalize=True`` 才退回旧的等比归一行为（供需要严格守恒的场景显式开启）。
+        """
+        report = check_act_chapter_budget(acts, target_chapters)
+        if report["warning"]:
+            logger.warning("[幕级章数预算] %s", report["warning"])
+        if not normalize:
+            return report
         if not acts:
-            return
+            return report
 
         min_each = 1 if target_chapters >= len(acts) else 0
         remaining = max(target_chapters - min_each * len(acts), 0)
 
-        weights = []
-        for act in acts:
-            try:
-                value = int(act.get("estimated_chapters", 0) or 0)
-            except (TypeError, ValueError):
-                value = 0
-            weights.append(max(value, 1))
-
+        weights = [max(read_act_chapters(act), 1) for act in acts]
         total_weight = sum(weights) or len(acts)
         scaled = [weight * remaining / total_weight for weight in weights]
         allocations = [int(value) for value in scaled]
@@ -828,11 +845,12 @@ class ContinuousPlanningService:
             key=lambda item: item[1] - int(item[1]),
             reverse=True,
         )
-        for index, _ in remainders[:leftover]:
+        for index, _r in remainders[:leftover]:
             allocations[index] += 1
 
         for act, extra in zip(acts, allocations):
             act["estimated_chapters"] = min_each + extra
+        return report
 
     def _calculate_precise_max_tokens(self, structure_preference: Dict[str, int]) -> int:
         total_volumes = self._get_total_volumes(structure_preference)

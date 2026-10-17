@@ -237,7 +237,7 @@ async def test_stream_macro_llm_text_repairs_partial_text_when_stream_breaks():
 
 
 @pytest.mark.asyncio
-async def test_generate_macro_plan_precise_mode_repairs_missing_act_fields_and_rebalances_chapters():
+async def test_generate_macro_plan_precise_mode_repairs_missing_act_fields_and_keeps_llm_chapters():
     llm_service = AsyncMock()
     llm_service.generate = AsyncMock(side_effect=[
         """{
@@ -309,8 +309,15 @@ async def test_generate_macro_plan_precise_mode_repairs_missing_act_fields_and_r
     assert first_volume["acts"][0]["key_locations"] == ["京城-漩涡入口"]
     assert first_volume["acts"][0]["emotional_arc"] == "戒备→惊惧"
 
+    # B-03：幕级章数**保留 LLM 原值，不再等比归一到 target**。
+    # 这里断言的正是「不归一」—— 旧实现会把 7/9 按权重缩放到总和 100，
+    # 那等于在落库前静默改写 AI 对每幕章数的判断。
     all_acts = [act for volume in parts[0]["volumes"] for act in volume["acts"]]
-    assert sum(act["estimated_chapters"] for act in all_acts) == 100
+    assert first_volume["acts"][0]["estimated_chapters"] == 7
+    assert first_volume["acts"][1]["estimated_chapters"] == 9
+    budget = check_act_chapter_budget(all_acts, 100)
+    assert budget["ok"] is False, "占位幕未被补足时本就不该守恒"
+    assert budget["warning"]
     assert llm_service.generate.await_count == 2
 
     progress = get_macro_plan_progress("novel-1")
@@ -322,6 +329,7 @@ async def test_generate_macro_plan_precise_mode_repairs_missing_act_fields_and_r
 # ==================== 动态建幕换卷（parent_volume_id）====================
 
 import application.blueprint.services.continuous_planning_service as _cp_module
+from application.blueprint.services.act_chapter_budget import check_act_chapter_budget
 from domain.structure.story_node import NodeType
 
 
