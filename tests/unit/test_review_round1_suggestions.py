@@ -127,6 +127,94 @@ def test_audit_writes_an_explicit_evaluated_flag_for_both_branches():
     assert "last_chapter_tension_evaluated=False" in src
 
 
+def test_audit_flag_is_not_swapped_between_the_two_branches():
+    """⚠ 复审实证：把两个分支的标记**对调**（语义反转）时，上一条全绿。
+
+    上一条只验「两个字符串都出现过」，注释里写一遍就能过。
+    这里改成**结构判定**：标记必须落在对应的 `if/else` 分支里。
+
+    `tension_evaluated=True` 的分支 ⇒ 标记必须是 True；
+    `else`（未评估）分支 ⇒ 标记必须是 False。
+    对调即红线语义反转 —— 未评估会被报成「评估过，张力 0」。
+    """
+    tree = _ast("engine/runtime/audit_delegate.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "run_chapter_audit"
+    )
+
+    def flag_of(nodes) -> str | None:
+        for node in nodes:
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "_update_shared_state"):
+                    for kw in sub.keywords:
+                        if kw.arg == "last_chapter_tension_evaluated":
+                            if isinstance(kw.value, ast.Constant):
+                                return repr(kw.value.value)
+                            return ast.unparse(kw.value)
+        return None
+
+    pairs = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.If):
+            continue
+        if "tension_evaluated" not in ast.unparse(node.test):
+            continue
+        body_flag = flag_of(node.body)
+        else_flag = flag_of(node.orelse) if node.orelse else None
+        if body_flag is not None or else_flag is not None:
+            pairs.append((node.lineno, body_flag, else_flag))
+
+    assert pairs, "没找到写评估标记的 tension_evaluated 分支"
+    # 逐对检查语义方向，而不是只看「两个值都出现过」
+    for lineno, body_flag, else_flag in pairs:
+        assert body_flag != "False", (
+            f"L{lineno}：评估过的分支标记写成了 False —— 未评估会被报成「张力 0」，"
+            f"或评估过的被当成没测过"
+        )
+        assert else_flag != "True", (
+            f"L{lineno}：未评估分支标记写成了 True —— 「没测过」会被当成真实张力"
+        )
+    # 且必须至少有一对是「True + False」的标准形态
+    assert any(b == "True" and e == "False" for _, b, e in pairs), (
+        f"没有任何分支呈现「评估过=True / 未评估=False」的标准形态：{pairs}"
+    )
+
+
+def test_workflow_main_path_forwards_the_actual_slot_weights_value():
+    """⚠ 复审实证：把主路径的 `slot_weights=slot_weights` 改成 `=None`，
+    相关 20+ 条测试全绿 —— 因为守卫只查 AST token 存在，不验转发值。
+
+    这里改成**判定转发的是不是原值**。`prepare_chapter_generation` 的
+    协作依赖太重，不适合在单测里真跑；AST 判 kwarg 的值足够，
+    且比源码子串匹配强（注释里写一遍骗不过去）。
+    """
+    tree = _ast("application/workflows/auto_novel_generation_workflow.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "prepare_chapter_generation"
+    )
+    calls = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "build_structured_context"
+    ]
+    assert calls, "没找到 build_structured_context 调用"
+    for call in calls:
+        forwarded = [kw for kw in call.keywords if kw.arg == "slot_weights"]
+        assert forwarded, "存在不传 slot_weights 的 build_structured_context 调用"
+        for kw in forwarded:
+            assert ast.unparse(kw.value) == "slot_weights", (
+                f"slot_weights 被改成了 {ast.unparse(kw.value)!r} —— "
+                f"权重会算完即丢（生产 daemon 恒走这条主路径）"
+            )
+
+
 def test_decide_chapter_mode_only_trusts_flagged_tension():
     src = _read("engine/pipeline/base.py")
     assert "_last_chapter_tension_evaluated" in src, (
@@ -412,6 +500,105 @@ def test_storyline_end_returns_source_and_is_logged():
     end_fb, source_fb, note_fb = cns._storyline_end(10, None)
     assert end_fb == 22 and source_fb == "fallback" and note_fb
     assert hasattr(cns, "_log_storyline_end_source")
+
+
+def test_storyline_end_call_sites_actually_pass_the_ai_value():
+    """⚠ 复审实证缺口④：把调用点的实参换成 `None`、原表达式留在**注释**里，
+    3 条 G-03 测试全绿 —— `inspect.getsource` 的子串断言被注释骗过。
+
+    这里改成**AST 判定**：注释不在 AST 里。
+    两跳都要查 ——
+      ① 读取侧：`_make_storyline_from_progress_item` 的调用方必须从
+         `progress_item` 里取 `estimated_chapter_end`；
+      ② 转发侧：该函数内部必须把 `ai_end` 传给 `_storyline_end`。
+    只查 ② 会漏掉 ① 的断链（上一版就栽在这）。
+    """
+    tree = _ast("application/world/services/chapter_narrative_sync.py")
+
+    # ① 读取侧
+    maker = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_make_storyline_from_progress_item"
+    )
+    maker_calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Attribute)
+             and n.func.attr == "_make_storyline_from_progress_item")
+            or (isinstance(n.func, ast.Name)
+                and n.func.id == "_make_storyline_from_progress_item")
+        )
+    ]
+    assert maker_calls, "没找到 _make_storyline_from_progress_item 的调用"
+    reads_ai_end = any(
+        any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "get"
+            and sub.args
+            and isinstance(sub.args[0], ast.Constant)
+            and sub.args[0].value == "estimated_chapter_end"
+            for sub in ast.walk(call)
+        )
+        for call in maker_calls
+    )
+    assert reads_ai_end, (
+        "没有任何调用方从 progress_item 里读 estimated_chapter_end —— "
+        "AI 给的收尾章到不了 G-03"
+    )
+
+    # ② 转发侧
+    end_calls = [
+        n for n in ast.walk(maker)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_storyline_end"
+    ]
+    assert end_calls, "没找到 _storyline_end 调用"
+    for call in end_calls:
+        args = [ast.unparse(a) for a in call.args]
+        assert len(args) >= 2, f"_storyline_end 只传了 {args} —— AI 入参不可达"
+        assert args[1] == "ai_end", (
+            f"第二个实参是 {args[1]!r}，不是形参 ai_end"
+        )
+
+
+def test_pacing_directive_block_is_absent_when_the_directive_is_empty():
+    """⚠ 复审实证缺口⑤：删掉模板里的 `{% if pacing_directive %}`（保留占位符）
+    后 3 条 pacing 测试全绿；真实渲染却会让**非余韵章**也出现一个空的
+    「本章节奏指令」头 —— 那是个虚假信号，读者/模型会以为本章有节奏约束。
+
+    这里直接渲染，断言空串时**整段不出现**。
+    """
+    from infrastructure.ai.prompt_template_engine import get_template_engine
+
+    user_tpl = _read(
+        "infrastructure/ai/prompt_packages/nodes/planning-chapter-preplan/user.md"
+    )
+    system_tpl = ""
+    engine = get_template_engine()
+    base_vars = {
+        "chapter_number": 5,
+        "chapter_title": "第五章",
+        "act_chapter_plan": "主线推进",
+        "continuity_context": "承接摘要",
+        "pacing_directive": "",
+    }
+
+    out_empty = engine.render(system_tpl, user_tpl, base_vars).user
+    assert "本章节奏指令" not in out_empty, (
+        "空指令时仍渲染出「本章节奏指令」标题 —— 虚假信号"
+    )
+    assert "余韵" not in out_empty
+
+    out_full = engine.render(
+        system_tpl, user_tpl,
+        {**base_vars, "pacing_directive": "【余韵章：高潮余波】节奏放缓"},
+    ).user
+    assert "本章节奏指令" in out_full
+    assert "【余韵章：高潮余波】节奏放缓" in out_full
 
 
 def test_offset_fallbacks_counter_is_actually_read():

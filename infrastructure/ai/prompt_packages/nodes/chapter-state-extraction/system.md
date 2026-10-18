@@ -15,6 +15,6 @@
 
 【宏观叙事线（第二梯队）】
 8. advanced_storylines: 已有线索的实质性推进（storyline_id/name, progress_summary 必须是一刀见血的1句话）
-9. new_storylines: 新引出的次级或核心冲突线（name, type: main/sub/hidden, description 1句说明主要矛盾）
+9. new_storylines: 新引出的次级或核心冲突线（name, type: main/sub/hidden, description 1句说明主要矛盾, estimated_chapter_end 预计本条线收尾的章节号）。estimated_chapter_end 是整数；**判断不了就写 null，不要给一个看起来合理的数字**——代码会区分「你说了」与「你没说」，填了假数字会直接被当成你的判断
 
 警告：无纯净 JSON 格式（无 markdown，无前后缀）。宁可少提，绝不臆造未发生的事实。

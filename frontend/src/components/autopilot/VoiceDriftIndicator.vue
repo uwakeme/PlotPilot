@@ -22,7 +22,7 @@
         <div class="progress-center">
           <div class="drift-icon">{{ driftIcon }}</div>
           <div class="drift-score">
-            <template v-if="driftScore !== null">{{ driftScore.toFixed(1) }}</template>
+            <template v-if="driftScore !== null">{{ driftScore.toFixed(2) }}</template>
             <template v-else>--</template>
           </div>
         </div>
@@ -59,7 +59,7 @@
               <template v-else>未评估</template>
             </n-text>
           </n-descriptions-item>
-          <n-descriptions-item label="告警阈值">
+          <n-descriptions-item label="告警阈值（0-1）">
             <n-text depth="3">
               警告 ≥ {{ warningThreshold }} / 严重 ≥ {{ criticalThreshold }}
             </n-text>
@@ -108,7 +108,7 @@ import { usePolling } from '@/composables/usePolling'
 import { runtimePerformance } from '@/config/performance'
 
 interface VoiceDriftData {
-  /** 漂移度 0-10（前端刻度），**越高越糟**；未评估时为 null */
+  /** 漂移度 0-1（与后端阈值、与后端 status 同一把尺），**越高越糟**；未评估时为 null */
   drift_score: number | null
   evaluated: boolean
   /** 未评估原因；已评估时为空 */
@@ -144,24 +144,24 @@ const showDetailModal = ref(false)
 const loading = ref(false)
 
 // 告警阈值 —— **由后端下发**，不再由前端另定一套。
-// 后端判定用 0-1 刻度（0.3/0.5）；前端此前用 0-10 刻度（3.0/6.0），
-// drift ∈ [0.5, 0.6) 时两边结论不同，且展示给用户的「安全阈值 3.0」是假信息。
 const warningThreshold = computed(() => driftData.value?.warning_threshold ?? 0.3)
 const criticalThreshold = computed(() => driftData.value?.critical_threshold ?? 0.5)
 
 /** 是否完成过真实评估 —— 未评估时**不得**把 drift_score 当 0 处理 */
 const evaluated = computed(() => driftData.value?.evaluated === true)
 
-// 偏移分数：未评估时保持 null，绝不回填 0
+// 偏移分数：**0-1 刻度**，与后端阈值、与后端 status 判定同一把尺。
+// 此前这里 ×10 转成 0-10 展示，而阈值原样显示 0.3/0.5 —— 同屏两套刻度，
+// 用户看到的「偏移 5.5」和「严重 ≥ 0.5」根本不是同一个量纲。
 const driftScore = computed<number | null>(() => {
   if (!evaluated.value) return null
   return driftData.value?.drift_score ?? null
 })
 
-// 偏移百分比（用于圆形进度条，最大值为 10）；未评估时环为空
+// 偏移百分比（用于圆形进度条，0-1 → 0-100%）；未评估时环为空
 const driftPercentage = computed(() => {
   const s = driftScore.value
-  return s === null ? 0 : Math.min((s / 10) * 100, 100)
+  return s === null ? 0 : Math.min(Math.max(s, 0) * 100, 100)
 })
 
 // 状态 —— **后端 status 是唯一事实源**。
@@ -250,9 +250,9 @@ async function loadDriftData() {
       // 旧实现按「每个角色一条」构造，但 Novel 实体根本没有 characters 属性，
       // 那个数组恒为空，这里只是把「无数据」伪装成「文风稳定 0.0」。
       driftData.value = {
-        // 后端 drift 是 0-1（越高越糟），前端刻度是 0-10
+        // 保持后端的 0-1 刻度，不再 ×10。与阈值、与后端 status 同一把尺。
         drift_score: res.evaluated && typeof res.drift_score === 'number'
-          ? res.drift_score * 10
+          ? res.drift_score
           : null,
         evaluated: res.evaluated,
         reason: res.reason ?? '',
@@ -261,7 +261,7 @@ async function loadDriftData() {
         // 后端给的**真实**评分时刻。此前填 `new Date().toISOString()` ——
         // 那是「前端拉取的时刻」，被当成「检测时刻」展示；
         // 未评估时更会显示「最近检测=现在」，等于凭空造一个检测记录。
-        last_check_time: res.computed_at ?? null,
+        last_check_time: toUtcIsoString(res.computed_at),
         warning_threshold: res.warning_threshold ?? 0.3,
         critical_threshold: res.critical_threshold ?? 0.5,
         status: res.status ?? 'unevaluated',
@@ -284,6 +284,24 @@ async function loadDriftData() {
 // 显示详情
 function showDetail() {
   showDetailModal.value = true
+}
+
+/**
+ * SQLite 的 `utcnow()` 产出的是**无时区后缀的 UTC** 串（如
+ * `2026-10-18T09:30:00`）。JS 的 `new Date()` 对这种串按**本地时区**解析，
+ * 东八区会整整偏 +8 小时 —— 显示的「最近检测」比真实时间晚 8 小时。
+ *
+ * 这里显式补 `Z`（或已有的 `+08:00` 之类偏移保持不变），让解析按 UTC 走。
+ */
+function toUtcIsoString(raw?: string | null): string | null {
+  if (!raw) return null
+  const s = String(raw).trim()
+  if (!s) return null
+  // 已带时区标记（Z 或 ±HH:MM）就原样交给 Date
+  if (/[Zz]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) return s
+  // SQLite 有时给的是空格分隔的 `YYYY-MM-DD HH:MM:SS`
+  const iso = s.replace(' ', 'T')
+  return `${iso}Z`
 }
 
 // 格式化时间

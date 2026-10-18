@@ -28,6 +28,13 @@ from domain.novel.repositories.storyline_repository import StorylineRepository
 from domain.novel.entities.foreshadowing_registry import ForeshadowingRegistry
 from domain.novel.entities.timeline_registry import TimelineRegistry
 
+# G-01 / G-03 的取值裁决。foreshadow_pacing 无第三方 import，不构成循环。
+from application.world.services.foreshadow_pacing import (
+    SOURCE_AI,
+    SOURCE_FALLBACK,
+    resolve_storyline_end,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -257,21 +264,28 @@ class StateUpdater:
                 importance_val = foreshadow_data.get("importance", "medium")
                 importance = _parse_importance(importance_val)
 
-                # 推算 suggested_resolve_chapter：默认 5-15 章后回收
+                # 推算 suggested_resolve_chapter。
+                # G-01：模型给了偏移就用模型的；没给才按 importance 推算，
+                # 并且**标出来源** —— 落库后仍要能分辨「AI 判的回收节奏」
+                # 与「代码按重要性推的 +15/+10/+5」。
                 planted_ch = _safe_chapter_int(
                     foreshadow_data.get("chapter"), chapter_number
                 )
                 resolve_offset = foreshadow_data.get("resolve_offset")
+                offset_source, offset_note = "fallback", "模型未给出回收偏移"
                 if resolve_offset and isinstance(resolve_offset, (int, float)):
                     suggested_resolve = planted_ch + int(resolve_offset)
+                    offset_source = "ai"
+                    offset_note = "采用模型给出的回收偏移"
                 else:
-                    # 根据重要性调整回收周期：关键伏笔 10-20 章，普通 5-10 章
+                    # 根据重要性调整回收周期：关键伏笔 +15，普通 +10，低 +5
                     if importance.value >= ImportanceLevel.HIGH.value:
                         suggested_resolve = planted_ch + 15
                     elif importance.value >= ImportanceLevel.MEDIUM.value:
                         suggested_resolve = planted_ch + 10
                     else:
                         suggested_resolve = planted_ch + 5
+                    offset_note = "模型未给出回收偏移，按重要性推算"
 
                 foreshadowing = Foreshadowing(
                     id=str(uuid.uuid4()),
@@ -286,6 +300,8 @@ class StateUpdater:
                     binding_level=_parse_binding_level(
                         foreshadow_data.get("binding_level")
                     ),
+                    resolve_offset_source=offset_source,
+                    resolve_offset_note=offset_note,
                 )
                 foreshadowing_registry.register(foreshadowing)
                 logger.debug(
@@ -420,13 +436,29 @@ class StateUpdater:
                     # 默认使用 GROWTH 作为支线类型
                     storyline_type = StorylineType.GROWTH
 
+                # G-03：收尾章优先用模型给的；没给才退回代码默认的 +50。
+                # 此前这里是无条件 `chapter_number + 50` —— 登记表 G-03 指向的
+                # 就是这一行，一个创作判断被写成了常数。
+                storyline_end, end_source, end_note = resolve_storyline_end(
+                    chapter_number, new_data.get("estimated_chapter_end")
+                )
+                if end_source == SOURCE_AI:
+                    logger.info(
+                        "故事线收尾章采用模型判断 novel=%s ch=%s end=%s",
+                        novel_id, chapter_number, storyline_end,
+                    )
+                elif end_source == SOURCE_FALLBACK:
+                    logger.info(
+                        "故事线收尾章兜底 novel=%s ch=%s end=%s（%s，未落库标注）",
+                        novel_id, chapter_number, storyline_end, end_note,
+                    )
                 new_storyline = Storyline(
                     id=str(uuid.uuid4()),
                     novel_id=novel_id_obj,
                     storyline_type=storyline_type,
                     status=StorylineStatus.ACTIVE,
                     estimated_chapter_start=chapter_number,
-                    estimated_chapter_end=chapter_number + 50,  # 默认估计50章
+                    estimated_chapter_end=storyline_end,
                     name=new_data.get("name", ""),
                     description=new_data.get("description", ""),
                     last_active_chapter=chapter_number,

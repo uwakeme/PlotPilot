@@ -61,7 +61,12 @@ class ChapterModeLlmPayload(BaseModel):
 
         模型偶尔会混进空串 / null / 数字。单条脏数据不该让**整次判定**
         作废（那会把「模型给了个能用的结论」误降级成「判不出来」），
-        但脏项也绝不能原样流进产物 —— 去空白、剔非字符串、截断、去重。
+        但脏项也绝不能原样流进产物。
+
+        非字符串项是**丢掉**而不是 ``str()`` 转成文本 ——
+        ``str(None)`` 会得到字面量 ``"None"``、``str(123)`` 得到 ``"123"``，
+        那是把「模型没给」伪装成「模型说了 None」。signals 是复盘时要人看的
+        信号，混进这类假文本比少一条更有害。
         """
         if v is None:
             return []
@@ -69,7 +74,9 @@ class ChapterModeLlmPayload(BaseModel):
             return []
         out: list[str] = []
         for item in v:
-            text = str(item).strip()[:60] if not isinstance(item, str) else item.strip()[:60]
+            if not isinstance(item, str):
+                continue
+            text = item.strip()[:60]
             if text and text not in out:
                 out.append(text)
             if len(out) >= 6:

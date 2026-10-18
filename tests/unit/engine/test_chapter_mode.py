@@ -292,6 +292,75 @@ async def test_enabled_without_apply_only_records(monkeypatch):
     await BaseStoryPipeline._decide_chapter_mode(object.__new__(BaseStoryPipeline), ctx, _Novel())
     assert ctx.needs_buffer is True
     assert ctx.outline == "本章大纲", "apply=False 时不得改写 outline"
+    # ⚠ 复审实证：只验 outline 会漏掉「清空 buffer_directive 后全绿」——
+    # 而 buffer_directive 才是真正送进 preplan prompt 的那一条通道。
+    assert ctx.buffer_directive == "", "apply=False 时不得记录待施加指令"
+
+
+@pytest.mark.asyncio
+async def test_enabled_with_apply_records_the_directive(monkeypatch):
+    """⚠ 复审实证缺口③：`_decide_chapter_mode` 把 `ctx.buffer_directive` 清空后
+    全部测试仍绿 —— 没有任何用例断言 apply 路径真的记录了指令。
+
+    `needs_buffer` 只表达「AI 判定是余韵章」；`buffer_directive` 才是
+    「这条指令真的会进 preplan prompt」。后者断了，整条通道静默失效。
+    """
+    import engine.pipeline.base as base_mod
+
+    monkeypatch.setattr(base_mod, "logger", type("L", (), {
+        "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
+    })())
+    monkeypatch.setattr(
+        "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
+        lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+
+    class _Planner:
+        async def decide(self, **kw):
+            return {"needs_buffer": True, "reason": "冲击未落地", "signals": []}
+
+    monkeypatch.setattr(
+        "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
+
+    ctx = _Ctx()
+    await BaseStoryPipeline._decide_chapter_mode(
+        object.__new__(BaseStoryPipeline), ctx, _Novel())
+    assert ctx.needs_buffer is True
+    assert ctx.buffer_directive == BUFFER_CHAPTER_DIRECTIVE, (
+        "apply=True 时 buffer_directive 必须被记录 —— 它是送进 preplan prompt 的通道"
+    )
+    # 且必须非空、含关键内容，否则下游传了个寂寞
+    assert "余韵" in ctx.buffer_directive
+
+
+@pytest.mark.asyncio
+async def test_not_a_buffer_chapter_records_no_directive(monkeypatch):
+    """反向：AI 判定「正常推进」⇒ needs_buffer False 且**无任何待施加指令**。
+
+    两种状态必须可分辨：观察期（apply=false 但判定是余韵）与
+    「压根不是余韵章」在 buffer_directive 上都是空，但 needs_buffer 不同。
+    """
+    import engine.pipeline.base as base_mod
+
+    monkeypatch.setattr(base_mod, "logger", type("L", (), {
+        "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
+    })())
+    monkeypatch.setattr(
+        "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
+        lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+
+    class _Planner:
+        async def decide(self, **kw):
+            return {"needs_buffer": False, "reason": "张力平稳", "signals": []}
+
+    monkeypatch.setattr(
+        "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
+
+    ctx = _Ctx()
+    await BaseStoryPipeline._decide_chapter_mode(
+        object.__new__(BaseStoryPipeline), ctx, _Novel())
+    assert ctx.needs_buffer is False
+    assert ctx.buffer_directive == ""
+    assert ctx.outline == "本章大纲"
 
 
 @pytest.mark.asyncio

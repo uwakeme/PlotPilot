@@ -7,7 +7,6 @@ from typing import Any, Mapping
 from application.blueprint.services.stage_plan_invariants import (  # noqa: E402
     MAX_STAGES,
     MIN_STAGES,
-    _default_phase_name,
     chapter_ranges,
     validate_stage_plan_shape,
 )

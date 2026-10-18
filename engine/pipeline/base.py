@@ -418,7 +418,10 @@ class BaseStoryPipeline(ABC):
         1. 开关默认关闭 ⇒ 直接写入 ``(False, "")``，即保持原行为。
         2. 判不出来（``None``）⇒ 同样保持 ``False``，但 ``buffer_reason``
            写明「未判定 + 原因」。**不得**把 None 当成 AI 的 ``False`` 结论。
-        3. 判定为余韵章 ⇒ 把节奏指令拼进 ``ctx.outline``，让这一章真按余韵写。
+        3. 判定为余韵章 ⇒ 指令写进 ``ctx.buffer_directive``，由步骤 3 作为
+           **独立 prompt 变量**（``pacing_directive``）送进 preplan。
+           同时仍拼一份到 ``ctx.outline``，供「outline 已是七段剧本」那条
+           不重跑 preplan 的旧数据分支使用。
         """
         ctx.needs_buffer = False
         ctx.buffer_reason = ""
