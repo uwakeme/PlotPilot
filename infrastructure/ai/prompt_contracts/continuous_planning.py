@@ -89,6 +89,10 @@ class PlanningChapterPreplanVariables(BaseModel):
     chapter_title: str = Field(min_length=1)
     act_chapter_plan: str = Field(min_length=1)
     continuity_context: str = "暂无近3章承接摘要。"
+    # D-01：AI 判定本章为余韵章时的节奏指令。空串 = 不施加任何节奏约束。
+    # 必须走独立变量而不是拼进 outline —— outline 会被本步骤的返回值覆盖，
+    # 且它本身不是 prompt 变量，指令连模型都进不去。
+    pacing_directive: str = ""
 
 
 class ContinuousPlanningNextActVariables(BaseModel):

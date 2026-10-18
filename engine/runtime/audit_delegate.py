@@ -689,14 +689,11 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
 
     if pause_gate:
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
-        # 措辞必须与实际触发原因一致：因「审计未评估」而停时，日志不能写成
-        # 「Anti-AI严重」—— 那等于把「没测出来」记成「测出严重」。
-        if not anti_evaluated:
-            anti_reason = "Anti-AI审计未评估（闸门跑不起来，非结论）"
-        elif anti_ai_severe:
-            anti_reason = "Anti-AI严重"
-        else:
-            anti_reason = "Anti-AI未触发"
+        # `anti_reason` 由 `_resolve_audit_pause_gate` 统一给出（helper 内 :59-64），
+        # 措辞与真实触发原因一致：因「审计未评估」而停时，日志不会写成「Anti-AI严重」
+        # —— 那等于把「没测出来」记成「测出严重」。
+        # 此前这里曾重抄一遍该分支，用的是只存在于 helper 作用域内的 `anti_ai_severe`，
+        # 走到这条路径必然 NameError。
         logger.info(
             "[%s] 章末审阅闸门：进入 paused_for_review（每章一停=%s，硬伤停机=%s，%s；"
             "narrative_ok=%s hard_voice=%s tension_evaluated=%s assessment=%s）",

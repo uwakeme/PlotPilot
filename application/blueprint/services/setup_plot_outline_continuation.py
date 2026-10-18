@@ -302,24 +302,24 @@ def _range_percent_label(chapter_start: int, chapter_end: int, *, total_chapters
 
 
 def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[str, Any]]:
-    """æ AI ç»çé¶æ®µè§åè§èåï¼å¹¶å®ä½ä¸æ¡ä¸åéã
+    """把 AI 给的阶段规划规范化，并守住三条不变量。
 
-    A-02 æ¹é ç¹ï¼å¯¹æ¯æ¹é åï¼ï¼
+    A-02 改造点（对比改造前）：
 
-    - ``len != 5`` ä¸å raise ââ é¶æ®µæ°ç± AI å®ï¼åªæ ¸éª â [3, 8]ï¼ä¸åé I1ï¼ï¼
-    - åºé´ä¸åä¸è´æ¥èªç¡¬ç¼ç  ``ratios`` ââ AI ç»äºå°±ç¨ AI çï¼
-      æ²¡ç»æèµ° :func:`chapter_ranges` çå¶ä¸­ï¼å¥æ®µä¿æåå æ¯ï¼å¼å®¹æ§æä¸ºï¼ï¼
-    - ``phase`` / ``label`` ä¸åæ**ä¸æ **ä» ``_PHASE_SCHEMA`` å¼ºå¶åè´´ ââ
-      è¿æ­£æ¯ J-03 è¦å¨åç«¯ä¸å¹¶å æçé¨åéåã
+    - ``len != 5`` 不再 raise —— 阶段数由 AI 定，只核验 ∈ [3, 8]（不变量 I1）；
+    - 断点不再一律走代码自己硬编码的 ``ratios`` —— AI 写了就用 AI 的，
+      没写才退 :func:`chapter_ranges` 的其中之一（幕数保持原样）；
+    - ``phase`` / ``label`` 不再按**下标**从 ``_PHASE_SCHEMA`` 强制回贴 ——
+      这正是 J-03 要在前端一并删掉的部分镜像。
     """
     if not isinstance(raw_items, list):
-        raise ValueError("plot_outline.stage_plan å¿é¢æ¯æ°ç»")
+        raise ValueError("plot_outline.stage_plan 必须是数组")
 
     count = len(raw_items)
     if not (MIN_STAGES <= count <= MAX_STAGES):
         raise ValueError(
-            f"plot_outline.stage_plan é¶æ®µæ°å¿é¡»å¨ "
-            f"[{MIN_STAGES}, {MAX_STAGES}] ä¹é´ï¼å®é {count}"
+            f"plot_outline.stage_plan 阶段数必须在 "
+            f"[{MIN_STAGES}, {MAX_STAGES}] 之间，实际 {count}"
         )
 
     total_chapters = max(
@@ -335,8 +335,8 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_items):
         if not isinstance(raw, Mapping):
-            raise ValueError(f"plot_outline.stage_plan[{index}] å¿é¡»æ¯å¯¹è±¡")
-        summary = str(raw.get("summary") or raw.get("é¶æ®µä»»å¡") or raw.get("åå®¹") or "").strip()
+            raise ValueError(f"plot_outline.stage_plan[{index}] 必须是对象")
+        summary = str(raw.get("summary") or raw.get("阶段任务") or raw.get("内容") or "").strip()
         if not summary:
             content_parts = [
                 str(value).strip()
@@ -346,7 +346,7 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
             ]
             summary = "\n".join(content_parts)
         if not summary:
-            raise ValueError(f"plot_outline.stage_plan[{index}] è³å°éè¦ä¸ä¸ªåå®¹å­æ®µ")
+            raise ValueError(f"plot_outline.stage_plan[{index}] 至少需要一个内容字段")
 
         key_goals_raw = raw.get("key_goals")
         key_goals = []
@@ -357,7 +357,7 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
         chapter_start = _coerce_chapter_number(raw.get("chapter_start")) or default_start
         chapter_end = _coerce_chapter_number(raw.get("chapter_end")) or default_end
         if chapter_start > chapter_end:
-            raise ValueError(f"plot_outline.stage_plan[{index}] ç« èèå´ä¸åæ³")
+            raise ValueError(f"plot_outline.stage_plan[{index}] 章节范围不合法")
 
         extra_fields = {
             key: value
@@ -373,15 +373,15 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
             }
         }
 
-        # A-02：phase / label ç¨ AI ç»çï¼åªè§èåå«å；
-        # åªæ AI æ ¹æ¬æ²¡ç»æ¶ææä½ç½®å·å¥ï¼ä¸åæ5æ®µè¡¨å¼ºå¶åè´´ï¼ã
+        # A-02：phase / label 用 AI 写的，只规范占位与开头；
+        # 只有 AI 根本没给时才按位置具套（不再按5段表强制回贴）。
         raw_phase = str(raw.get("phase") or "").strip()
         raw_label = str(raw.get("label") or "").strip()
         phase = _canonical_phase(raw_phase) or _canonical_phase(raw_label) or raw_phase
         if not phase:
             phase = f"stage_{index + 1}"
 
-        label = raw_label or str(raw.get("é¶æ®µ") or "").strip() or phase
+        label = raw_label or str(raw.get("阶段") or "").strip() or phase
 
         normalized.append(
             {
@@ -400,13 +400,13 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
             }
         )
 
-    # ä¸æ¡ä¸åéï¼é¶æ®µæ°å·²å¨å¥å£æ ¸éªï¼è¿éåç¡®è®¤æ­ç¹å½¢ç¶ä¸è¦çèå´
+    # 三条不变量：阶段数已在入口核验，这里再确认断点形状与覆盖范围
     violations = validate_stage_plan_shape(
         normalized, target_chapters=target_chapters
     )
     if violations:
         raise ValueError(
-            "plot_outline.stage_plan è¿åä¸åéï¼" + "ï¼".join(violations)
+            "plot_outline.stage_plan 违反不变量：" + "；".join(violations)
         )
     return normalized
 

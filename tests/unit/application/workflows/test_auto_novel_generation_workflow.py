@@ -168,7 +168,10 @@ class TestGenerateChapter:
             chapter_number=1,
             outline="Chapter 1 outline",
             max_tokens=35000,
-            scene_director=None
+            scene_director=None,
+            # D-02：主路径必须转发 slot_weights。此前该调用点漏传，
+            # 生产 daemon 恒走这条主路径 ⇒ 算好的权重算完即丢。
+            slot_weights=None,
         )
         # 验证 LLM 被调用：至少一次用于生成章节，可能还有一次用于状态提取
         assert mock_llm_service.generate.call_count >= 1
@@ -202,7 +205,8 @@ class TestGenerateChapter:
             chapter_number=1,
             outline="Chapter 1 outline",
             max_tokens=35000,
-            scene_director=scene_director
+            scene_director=scene_director,
+            slot_weights=None,
         )
 
     @pytest.mark.asyncio

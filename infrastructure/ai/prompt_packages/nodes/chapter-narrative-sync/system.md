@@ -14,7 +14,7 @@
   }} ],
   "consumed_foreshadows": [ "被回收的伏笔描述1", "被回收的伏笔描述2" ],
   "closed_causal_edge_ids": [ "把本章已兑现的因果边 id 原样列在这里，没有就写 []" ],
-  "storyline_progress": [ {{"type": "主线|支线|感情线", "arc_label": "本条线的短标签（≤16字，如婚约阴谋 / 印记之谜）", "description": "本章该线进展"}} ],
+  "storyline_progress": [ {{"type": "主线|支线|感情线", "arc_label": "本条线的短标签（≤16字，如婚约阴谋 / 印记之谜）", "description": "本章该线进展", "estimated_chapter_end": 预计本条线收尾的章号（整数；判断不了就写 null，不要猜）}} ],
   "dialogues": [ {{"speaker": "角色名", "content": "对话内容", "context": "对话场景"}} ],
   "timeline_events": [ {{"time_point": "时间描述", "event": "事件摘要", "description": "详细说明"}} ],
   "causal_edges": [ {{
@@ -50,6 +50,7 @@
 - closed_causal_edge_ids：本章已兑现的因果边 id，从待闭环清单中原样照抄；只有本章明确写出该事件结果才算闭环，延续前因或只埋伏笔不算；无则 []。
 - storyline_progress：本章推进的故事线，最多 5 条；无则 []。
   - arc_label：必填（≤16字）。多条同为「主线」时必须用不同 arc_label 区分主题，禁止几条共用同一标签。
+  - estimated_chapter_end：本条线预计在第几章收尾（整数）。**判断不了就写 null，不要给一个看起来合理的数字**——代码会区分「你说了」与「你没说」，填了假数字会直接被当成你的判断。不晚于当前章的值会被抬到下一章。
 - dialogues：重要对话（推动剧情/展现性格），最多 10 条；无则 []。
 - timeline_events：本章发生的时间线事件（世界内历法/相对时间），最多 5 条；无则 []。
 - causal_edges：本章中的因果关系链，最多 3 条；无则 []。

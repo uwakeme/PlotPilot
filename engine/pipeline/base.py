@@ -364,6 +364,11 @@ class BaseStoryPipeline(ABC):
                         if old_draft:
                             ctx.metadata["ignored_existing_draft_chars"] = len(old_draft)
                         ctx.existing_content = ""
+                    # 预置为 None：`novel` 只在下面的 try 内赋值，而
+                    # `_decide_chapter_mode(ctx, novel)` 在 try 之外调用。
+                    # get_by_id 抛错时旧代码会 UnboundLocalError，把一次可恢复的
+                    # 查询失败升级成整步失败。
+                    novel = None
                     try:
                         from domain.novel.value_objects.novel_id import NovelId
 
@@ -400,6 +405,7 @@ class BaseStoryPipeline(ABC):
         """
         ctx.needs_buffer = False
         ctx.buffer_reason = ""
+        ctx.buffer_directive = ""
 
         try:
             from application.engine.services.chapter_mode_settings import (
@@ -450,7 +456,12 @@ class BaseStoryPipeline(ABC):
                     ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
                 )
                 return
-            ctx.outline = buffer_chapter_directive() + ctx.outline
+            directive = buffer_chapter_directive()
+            ctx.outline = directive + ctx.outline
+            # 步骤 3 会用 preplan 的返回值整体覆盖 ctx.outline，而 outline 本身
+            # 不是 preplan 的 prompt 变量 —— 只拼到 outline 上等于指令既进不了
+            # 模型也活不过下一步。因此另存一份，由步骤 3 作为独立变量传入。
+            ctx.buffer_directive = directive
             logger.info(
                 "[%s] 判定为余韵章并已施加 ch=%s reason=%s",
                 ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
@@ -599,8 +610,12 @@ class BaseStoryPipeline(ABC):
             )
             return None
 
+        # 这里只能断言「已决定施加」，不能断言「已生效」—— 权重还要经过
+        # prepare_chapter_generation → build_structured_context 转发才真正落地，
+        # 本函数看不到那一跳。曾经写成「已施加」，而 workflow 主路径恰好没转发，
+        # 于是日志长期宣称成功而权重算完即丢（正是本轮红线「假成功」）。
         logger.info(
-            "[%s] 槽位权重已施加 ch=%s weights=%s",
+            "[%s] 槽位权重已决策（待 build_context 转发后生效）ch=%s weights=%s",
             ctx.novel_id, ctx.chapter_number, weights,
         )
         return weights
@@ -749,6 +764,9 @@ class BaseStoryPipeline(ABC):
                     chapter_node=ctx.chapter_node,
                     current_outline=outline,
                     target_words=ctx.target_word_count,
+                    # D-01：余韵章指令走独立变量，随 prompt 进模型。
+                    # 不传的话，preplan 只会照常输出推进型剧本，节奏判定等于没做。
+                    pacing_directive=ctx.buffer_directive,
                 )
             except Exception as exc:
                 return StepResult.fail(f"章前执行剧本生成失败: {exc}")

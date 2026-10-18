@@ -380,6 +380,10 @@ class AutoNovelGenerationWorkflow:
             outline=outline,
             max_tokens=max_tokens,
             scene_director=scene_director,
+            # D-02：主路径必须转发。生产 daemon 恒注入 chapter_workflow，
+            # 此前只有下面的降级路径转发，导致算好的权重算完即丢，
+            # 而上游日志仍打「槽位权重已施加」—— 正是本轮红线「假成功」。
+            slot_weights=slot_weights,
         )
         context = assemble_chapter_bundle_context_text(payload)
         if evolution_gate_report:

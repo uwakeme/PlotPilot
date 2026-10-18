@@ -66,6 +66,11 @@ class PipelineContext(_ValidationStateContract):
     chapter_node: Optional[Any] = None           # StoryNode 实例
     needs_buffer: bool = False                   # 是否需要余韵章
     buffer_reason: str = ""                      # 余韵章原因
+    # D-01：实际要施加的节奏指令。空串 = 本章不施加任何节奏约束。
+    # 与 needs_buffer 分开：needs_buffer 表达「AI 判定本章是余韵章」，
+    # buffer_directive 表达「这一步真的会把指令送进模型」——
+    # 观察期（apply=false）时前者为 True 而后者为空，两种状态必须可分辨。
+    buffer_directive: str = ""
 
     # ═══ 步骤2产出：上下文 ═══
     context_text: str = ""                       # 组装后的上下文

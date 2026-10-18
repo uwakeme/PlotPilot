@@ -336,8 +336,13 @@ def _make_storyline_from_progress_item(
     line_type: str,
     arc_label: str,
     description: str,
+    ai_end: Any = None,
 ) -> Any:
-    """storyline_repository.save 前构造实体。"""
+    """storyline_repository.save 前构造实体。
+
+    ``ai_end`` 是模型对**本条线**预估的收尾章（G-03）。缺省 ``None`` 表示
+    「模型没说」，由 :func:`_storyline_end` 走显式兜底并标注 ``fallback``。
+    """
     from domain.novel.entities.storyline import Storyline
     from domain.novel.value_objects.storyline_status import StorylineStatus
 
@@ -352,7 +357,7 @@ def _make_storyline_from_progress_item(
         storyline_type=stype,
         status=StorylineStatus.ACTIVE,
         estimated_chapter_start=chapter_number,
-        estimated_chapter_end=_storyline_end(chapter_number, description_ai_end),
+        estimated_chapter_end=_storyline_end(chapter_number, ai_end),
         name=name,
         description=(description or "")[:800],
         role=role,
@@ -2119,7 +2124,14 @@ def persist_bundle_extras(
 
                 if matched is None:
                     matched = _make_storyline_from_progress_item(
-                        novel_id, chapter_number, line_type, arc_label, description
+                        novel_id,
+                        chapter_number,
+                        line_type,
+                        arc_label,
+                        description,
+                        # G-03：模型对本条线预估的收尾章。字段缺失即 None
+                        # （= 模型没说），由 _storyline_end 走显式兜底。
+                        progress_item.get("estimated_chapter_end"),
                     )
                     storyline_repository.save(matched)
                     storylines.append(matched)

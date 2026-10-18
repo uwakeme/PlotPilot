@@ -67,6 +67,7 @@ class ChapterPreplanningService:
         chapter_node: Any = None,
         current_outline: str = "",
         target_words: int | None = None,
+        pacing_directive: str = "",
     ) -> ChapterPreplanResult:
         """Return a seven-section execution plan, generating it when needed."""
         outline = (current_outline or "").strip()
@@ -105,6 +106,9 @@ class ChapterPreplanningService:
                 "chapter_title": title,
                 "act_chapter_plan": json.dumps(act_plan, ensure_ascii=False) if isinstance(act_plan, dict) else str(act_plan),
                 "continuity_context": continuity_context,
+                # D-01：余韵章节奏指令走独立变量。空串时模板整段不渲染，
+                # 因此「没判定为余韵章」与「判定了但未施加」在产物里仍可分辨。
+                "pacing_directive": pacing_directive or "",
             },
         ).prompt
         config = generation_config_from_profile("planning_chapter_preplan")
@@ -327,7 +331,6 @@ class ChapterPreplanningService:
             logger.debug("[ChapterPreplan] variable hub persist failed: %s", exc)
 
     @staticmethod
-    @staticmethod
     def _extract_proposed_target_words(data: dict) -> Optional[int]:
         """从 preplan 输出里取 AI 的 target_words 提议。
 
@@ -343,6 +346,7 @@ class ChapterPreplanningService:
             return None
         return value if value > 0 else None
 
+    @staticmethod
     def _normalize_string_list(value: Any) -> list[str]:
         if value is None:
             return []

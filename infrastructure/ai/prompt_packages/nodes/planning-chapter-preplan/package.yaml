@@ -25,5 +25,9 @@ variables:
   desc: 连续性上下文，使用近3章承接摘要
   type: string
   required: true
+- name: pacing_directive
+  desc: AI 判定本章为余韵章时的节奏指令；空串表示不施加任何节奏约束
+  type: string
+  required: false
 id: planning-chapter-preplan
 sort_order: 25

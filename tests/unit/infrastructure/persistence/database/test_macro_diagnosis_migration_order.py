@@ -59,20 +59,29 @@ def test_macro_diagnosis_table_gets_its_two_columns_on_a_fresh_install(tmp_path)
         db.close_all()
 
 
+def _migrations_dir():
+    """向上找到含 migrations/ 的仓库根。
+
+    原实现写死 `parents[4]` —— 那是 `tests/`，不是仓库根（应为 `parents[5]`），
+    只因后面跟着一个 cwd 兜底才没暴露。cwd 兜底会把「测试从任意目录运行」
+    变成隐性依赖；这里改成向上搜索，与运行目录彻底解耦。
+    """
+    from pathlib import Path
+
+    rel = ("infrastructure", "persistence", "database", "migrations")
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent.joinpath(*rel)
+        if candidate.is_dir():
+            return candidate
+    raise AssertionError(f"从 {Path(__file__)} 向上找不到 {MIGRATIONS_DIR}")
+
+
 def test_column_adding_migration_sorts_after_the_table_creating_one():
     """守卫：文件名排序本身就是缺陷的成因，光断言结果不够 —— 排序也要钉住。
 
     改文件名时这条会红，提醒新名字必须排在 `add_macro_diagnosis_results.sql` 之后。
     """
-    from pathlib import Path
-
-    import pytest as _pytest  # noqa: F401  (仅保证 pytest 已导入)
-
-    mdir = Path(__file__).resolve().parents[4] / "infrastructure" / "persistence" / "database" / "migrations"
-    if not mdir.is_dir():  # 允许从仓库根运行时的兜底
-        import os
-
-        mdir = Path(os.getcwd()) / "infrastructure" / "persistence" / "database" / "migrations"
+    mdir = _migrations_dir()
 
     create_sql = mdir / "add_macro_diagnosis_results.sql"
     alter_sql = mdir / "add_macro_diagnosis_results_context_patch.sql"
@@ -87,6 +96,50 @@ def test_column_adding_migration_sorts_after_the_table_creating_one():
     )
 
 
+def _build_legacy_install_with_patch_columns(target):
+    """造一个「已经把 context_patch 两列补齐」的既有安装。
+
+    **不得**从 `data/plotpilot.db` 拷贝：那是 1.5GB 的本机生产库，被 .gitignore
+    排除，干净 checkout / CI 上根本不存在。原实现把它当必需输入，
+    且守卫写成了 `if not prod:`（`prod` 是非空字面量，恒假）⇒
+    `pytest.skip` 永远不可达 ⇒ CI 上必然 FileNotFoundError。
+    这里只构造本用例真正需要的最小结构：一张带两列的基表 +
+    一条记录旧文件名的 migrations_applied。
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(target)
+    try:
+        # 直接执行建表迁移来还原「老库」：表、索引与真实既有安装一致。
+        # 手写简化 DDL 会被建表迁移里的 CREATE INDEX ... (novel_id, resolved)
+        # 打断 —— 少一列就报 no such column 并计入 ERROR 日志。
+        create_sql = (_migrations_dir() / "add_macro_diagnosis_results.sql").read_text(
+            encoding="utf-8"
+        )
+        conn.executescript(create_sql)
+        # 既有安装已经补过这两列 ⇒ 改名后的迁移重跑会撞 duplicate column
+        conn.execute("ALTER TABLE macro_diagnosis_results ADD COLUMN context_patch TEXT")
+        conn.execute(
+            "ALTER TABLE macro_diagnosis_results ADD COLUMN total_words_at_run INTEGER DEFAULT 0"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS migrations_applied (
+                migration_file TEXT PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        # 模拟既有安装的迁移记录：旧文件名已在 applied 列表里
+        conn.execute(
+            "INSERT OR IGNORE INTO migrations_applied (migration_file) VALUES (?)",
+            ("add_macro_diagnosis_context_patch.sql",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_reapplying_to_an_install_that_already_has_the_columns_is_silent(tmp_path):
     """老库升级：改名后的迁移会重跑一次，撞 duplicate column 必须被静默跳过。
 
@@ -94,30 +147,9 @@ def test_reapplying_to_an_install_that_already_has_the_columns_is_silent(tmp_pat
     不应产生任何 ERROR 日志，也不应因为失败而永远不标记已应用。
     """
     import logging
-    import shutil
-    import sqlite3
-
-    prod = "data/plotpilot.db"
-    if not (tmp_path.parent / prod).exists():
-        import os
-
-        prod = os.path.join(os.getcwd(), "data", "plotpilot.db")
-    if not prod:
-        import os
-
-        if not os.path.exists(prod):
-            pytest.skip("找不到生产库样本，跳过老库升级场景")
 
     target = tmp_path / "existing_install.db"
-    shutil.copy2(prod, target)
-    conn = sqlite3.connect(target)
-    # 模拟既有安装的迁移记录：旧文件名已在 applied 列表里
-    conn.execute(
-        "INSERT OR IGNORE INTO migrations_applied (migration_file) VALUES (?)",
-        ("add_macro_diagnosis_context_patch.sql",),
-    )
-    conn.commit()
-    conn.close()
+    _build_legacy_install_with_patch_columns(target)
 
     records = []
 
