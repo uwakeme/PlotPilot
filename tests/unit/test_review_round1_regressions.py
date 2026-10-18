@@ -233,7 +233,10 @@ def _scope_local_names(fn) -> set[str]:
     if args.kwarg:
         local.add(args.kwarg.arg)
 
-    for node in _own_scope_nodes(fn):
+    # 与 _load_nodes 同一套遍历：跳过嵌套 def/class 的体、但下降进 lambda 体。
+    # 用 _own_scope_nodes（遇 lambda 也止步）会漏收 lambda 形参，
+    # 于是 `key=lambda item: item[0]` 里的 item 被报成未绑定。
+    for node in _load_nodes(fn):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             local.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -246,45 +249,94 @@ def _scope_local_names(fn) -> set[str]:
             # 漏了这一支，`def _replace` / `class _LLM` 会被报成未绑定 —— 探针
             # 立刻对全仓报出一堆假阳性，反而让人开始忽略它的输出。
             local.add(node.name)
+        elif isinstance(node, ast.Lambda):
+            # lambda 的**形参**绑定在外层作用域（lambda 体也在外层求值），
+            # 漏掉这一支会把 `key=lambda item: item[0]` 里的 item 报成未绑定。
+            local |= _params_of(node)
         elif isinstance(node, ast.comprehension):
+            # 推导式有自己的作用域，但目标变量在本作用域可见
             for sub in ast.walk(node.target):
                 if isinstance(sub, ast.Name):
                     local.add(sub.id)
     return local
 
 
-def _unbound_names(rel_path: str) -> list[str]:
-    """找出函数里「只被 Load、在本函数与模块作用域都无绑定」的名字。
+def _load_nodes(fn):
+    """函数体内需要在**该函数作用域**下判定的 Load 节点。
 
-    针对本轮事故的形态：重构时把局部变量搬进 helper，调用方还留着旧引用。
-    不跟跨模块导入 —— 只报模块内可见的未绑定名。
+    语义（Python 作用域规则）：
+    - 嵌套 ``def`` / ``async def`` / ``class`` 的**体**有自己的作用域 ⇒ 跳过，
+      它们会被单独检查；否则会把它们的局部变量算到外头（假阳性）。
+    - 嵌套 ``def`` / ``class`` 的**名字**绑定在外层 ⇒ 由 ``_scope_local_names`` 收录。
+    - ``lambda`` 的体**在外层作用域求值**（闭包）⇒ 必须下降进去，
+      它的形参由 ``_scope_local_names`` 的 Lambda 分支收录。
+
+    第三版把整类嵌套体都跳过了，连 lambda 与类体一起丢 —— 那才是覆盖回归的根因。
     """
-    tree = _module_ast(rel_path)
-    module_bound = _module_scope_names(tree)
+    stack = list(fn.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # 自己的作用域，另外单独检查
+        stack.extend(ast.iter_child_nodes(node))
 
-    # 父链：让每个函数能向外找到所有外层作用域（闭包可见）
+
+def _unbound_in_tree(tree: ast.Module) -> list[str]:
+    """扫一棵树，返回未绑定 Load 列表。**这是探针的唯一实现**。"""
     parent: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parent[id(child)] = node
 
+    module_bound = _module_scope_names(tree)
     unbound: list[str] = []
-    for fn in [n for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
-        # 可见 = 模块作用域 + 本函数 + 逐层外层函数（闭包）
+
+    def _check(label, scope_fn, scope_nodes) -> None:
         visible = set(module_bound)
-        cursor: ast.AST | None = fn
+        cursor = scope_fn
         while cursor is not None:
-            # 上溯会走到 Module，它没有 .args —— 只对函数/lambda 求绑定
             if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                visible |= _params_of(cursor)
                 visible |= _scope_local_names(cursor)
             cursor = parent.get(id(cursor))
-
-        for node in _own_scope_nodes(fn):
+        for node in scope_nodes:
             if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
                     and node.id not in visible):
-                unbound.append(f"{fn.name}:{node.lineno} 引用未绑定的 {node.id!r}")
+                unbound.append(f"{label}:{node.lineno} 引用未绑定的 {node.id!r}")
+
+    # 函数体扫描（含其内 lambda 体、类体；跳过嵌套 def/class 的体 —— 它们另有作用域）
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        _check(fn.name, fn, _load_nodes(fn))
+
+    # 模块级（顶层代码）。
+    # ⚠ 必须用 _load_nodes 而不是 ast.walk(tree)：ast.walk 会把函数体再扫一遍，
+    # 而那次扫描的可见集合只有模块作用域 ⇒ 大批假阳性。
+    # ⚠ 更不能直接传 tree.body：那里面只有语句，没有 ast.Name，
+    # 模块级的未绑定名会被整个漏掉（第四轮复审实证）。
+    _check("<module>", None, _load_nodes(tree))
     return unbound
+
+
+def _unbound_names(rel_path: str) -> list[str]:
+    """找出**模块内**只被 Load、在本函数与所有外层作用域都无绑定的名字。
+
+    针对本轮事故的形态：重构时把局部变量搬进 helper，调用方还留着旧引用。
+    不跟跨模块导入 —— 只报模块内可见的未绑定名。
+    """
+    return _unbound_in_tree(_module_ast(rel_path))
+
+
+def _params_of(fn) -> set[str]:
+    """函数/lambda 的形参名（含 *args / **kwargs）。"""
+    a = fn.args
+    names = {x.arg for x in (list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs))}
+    if a.vararg:
+        names.add(a.vararg.arg)
+    if a.kwarg:
+        names.add(a.kwarg.arg)
+    return names
 
 
 @pytest.mark.parametrize(
@@ -301,6 +353,9 @@ def _unbound_names(rel_path: str) -> list[str]:
         # 本轮反复改动的两个高风险文件
         "engine/pipeline/base.py",
         "application/blueprint/services/chapter_preplanning_service.py",
+        # 第四轮复审：扫描器本身能检出该文件的问题，只是此前
+        # 不在守卫名单里，于是「死方法里的 NameError」长期无人报警。
+        "application/blueprint/services/setup_main_plot_suggestion_service.py",
     ],
 )
 def test_no_unbound_names_in_rewritten_modules(rel_path):
@@ -691,3 +746,85 @@ def test_bundle_changelog_covers_current_version():
     assert version, "读不出 bundle 版本号"
     tag = f"v{version.group(1)}.{version.group(2)}.{version.group(3)}"
     assert f"{tag}:" in text, f"changelog 缺 {tag} 条目"
+
+# ── unbound 探针自身的正向验证 ───────────────────────────────────────────
+#
+# ⚠ 上一版 commit message 写「补 5 组已知用例正向验证」，**树里实际只有 1 条
+# 零件级自测**（只验 `_scope_local_names`，不验 `_unbound_names`）。第四轮复审
+# 抓到了这个过度声称。本节把承诺兑现：5 组正负样本，覆盖探针改过的每一条语义。
+#
+# 为什么必须有：探针返回 [] 时，「没找到问题」与「探针坏了」在断言里长得一模一样。
+# 第四轮我就把探针改成过完全失效（只 yield 语句节点却去找 ast.Name 叶子），
+# 而 `assert not unbound` 依然全绿。
+
+
+def _probe_run(source: str) -> list[str]:
+    """把源码喂给**真实**探针实现，返回问题列表。
+
+    ⚠ 这里刻意调用 `_unbound_in_tree` 而不是复刻一份逻辑。
+    第四轮复审抓到：我最初的版本在自测里**重写了一份同样的扫描逻辑**，
+    于是真实探针退化时自测全绿 —— 替身与真实脱钩，
+    自测测的是替身，不是被测对象。变异 S6 就是这么漏过去的。
+    """
+    return _unbound_in_tree(ast.parse(source))
+
+
+def test_probe_catches_a_plain_unbound_name():
+    """正样本：函数体里直接引用未定义名。"""
+    problems = _probe_run("def f():\n    return undefined_name + 1\n")
+    assert any("undefined_name" in p for p in problems), (
+        f"探针对最基础的未绑定名都没报：{problems}"
+    )
+
+
+def test_probe_does_not_flag_params_or_nested_def():
+    """负样本：形参、嵌套 def 的局部、嵌套 def 的名字，都不算未绑定。"""
+    problems = _probe_run(
+        "def outer(a):\n"
+        "    def inner(b):\n"
+        "        local = b + a\n"
+        "        return local\n"
+        "    return inner(a)\n"
+    )
+    assert problems == [], f"误报：{problems}"
+
+
+def test_probe_still_descends_into_lambda_bodies():
+    """lambda 体在外层作用域求值 ⇒ 里面的未绑定名必须被抓到；形参则不算。"""
+    problems = _probe_run(
+        "def outer():\n"
+        "    return sorted([1], key=lambda captured: missing_global)\n"
+    )
+    assert any("missing_global" in p for p in problems), (
+        f"没抓到 lambda 体里的未绑定名：{problems}"
+    )
+
+    ok = _probe_run(
+        "def outer():\n"
+        "    return sorted([1], key=lambda item: item)\n"
+    )
+    assert ok == [], f"lambda 形参被误报：{ok}"
+
+
+def test_probe_catches_module_level_unbound():
+    """模块级（顶层代码）也要扫 —— 第三版曾把它整个丢掉。"""
+    problems = _probe_run("value = missing_global\n")
+    assert any("missing_global" in p for p in problems), (
+        f"模块级未绑定名没被抓到：{problems}"
+    )
+
+
+def test_probe_would_notice_if_it_went_inert():
+    """哨兵：探针一旦退化成恒返回 []，这条先红。
+
+    它守的是「探针还活着」，不是「探针的结论」。
+    第四轮探针曾完全失效而 `assert not unbound` 依然全绿。
+    """
+    problems = _probe_run(
+        "def f():\n"
+        "    return undefined_name + other_missing\n"
+        "x = undefined_name\n"
+    )
+    assert len(problems) >= 3, (
+        f"探针只报了 {len(problems)} 处，期望 >=3 —— 它可能已失效：{problems}"
+    )

@@ -1086,9 +1086,20 @@ def test_state_updater_does_not_treat_zero_as_missing():
     """模型明说的 0 不算「未给出」——由共享裁决器钳制，而不是走兜底分支。"""
     from application.world.services.foreshadow_pacing import resolve_offset
 
-    _, source_zero, note_zero = resolve_offset(0)
+    from application.world.services.foreshadow_pacing import SOURCE_AI_ADJUSTED
+
+    offset_zero, source_zero, note_zero = resolve_offset(0)
     assert source_zero != "fallback", "0 是合法的（会被钳到 2），不该走兜底"
+    assert source_zero == SOURCE_AI_ADJUSTED, (
+        f"被钳过的取值标成 {source_zero!r} —— 落库后下游会以为「第 2 章是模型说的」，"
+        f"而模型给的是 0"
+    )
+    assert offset_zero == 2
     assert "钳" in note_zero
+
+    # 上界同样
+    _, source_high, _ = resolve_offset(40)
+    assert source_high == SOURCE_AI_ADJUSTED
 
     _, source_none, _ = resolve_offset(None)
     assert source_none == "fallback"
@@ -1096,3 +1107,138 @@ def test_state_updater_does_not_treat_zero_as_missing():
     # 字符串数字也能解析，不该判成缺失
     _, source_str, _ = resolve_offset("7")
     assert source_str != "fallback", "'7' 是可解析的，不该当成模型没给"
+
+
+# ── 第四轮复审 §3.4 的守卫盲区 ───────────────────────────────────────────
+
+
+def test_audit_branch_condition_polarity_is_positive():
+    """⚠ 第四轮复审发现的盲区：只判「值落在哪个分支」时，
+    把 `if tension_evaluated:` 改成 `if not tension_evaluated:`（等价破坏）
+    仍然全绿 —— 因为两个分支体还在，只是判断反了。
+
+    这里断言条件**必须是正向的** `tension_evaluated`。
+    """
+    tree = _ast("engine/runtime/audit_delegate.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "run_chapter_audit"
+    )
+    conds = [
+        ast.unparse(n.test) for n in ast.walk(fn)
+        if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
+    ]
+    assert conds, "没找到按 tension_evaluated 分支的 if"
+    for c in conds:
+        norm = c.replace(" ", "").replace("(", "").replace(")", "")
+        assert norm == "tension_evaluated", (
+            f"条件极性被反转成 {c!r} —— 未评估分支会被当成评估过"
+        )
+        assert "not" not in norm.split("tension_evaluated")[0], (
+            f"条件带否定：{c!r}"
+        )
+
+
+def test_state_updater_uses_the_real_update_function():
+    """⚠ 第四轮复审：旧测试查找的函数名 `update_chapter_state` **不存在**，
+    于是悄悄退化成整模块 substring 扫描 —— 把裁决器调用内联掉仍全绿。
+
+    这里先确认函数真的存在，再在**它自己的作用域**内判定。
+    """
+    tree = _ast("application/analyst/services/state_updater.py")
+    fn = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef)
+         and n.name == "update_from_chapter"),
+        None,
+    )
+    assert fn is not None, (
+        "找不到 update_from_chapter —— 旧测试因函数名不存在而退化成模块级 substring 扫描，"
+        "任何回退都抓不住"
+    )
+    src = ast.unparse(fn)
+    assert "resolve_offset_from_ai" in src, "该函数内没有调用共享裁决器"
+    assert "suggested_resolve_offset" in src, "该函数内没有读对齐后的键名"
+
+
+def test_adjusted_source_survives_the_repository_round_trip():
+    """⚠ 第四轮复审：`ai_adjusted` 只覆盖了纯函数，没有落库往返测试。
+
+    而「代码改写了取值却标成 ai」这个缺陷恰恰是在**落库后**才致命的 ——
+    必须在真实仓储上验证 source 与 note 都原样保留。
+    """
+    import importlib.util
+
+    from domain.novel.entities.storyline import Storyline
+    from domain.novel.value_objects.novel_id import NovelId
+    from domain.novel.value_objects.storyline_status import StorylineStatus
+    from domain.novel.value_objects.storyline_type import StorylineType
+    from infrastructure.persistence.database.sqlite_storyline_repository import (
+        SqliteStorylineRepository,
+    )
+
+    # 复用既有的裸 sqlite3 夹具（真实 schema 派生 DDL + 轻量 db 壳）
+    spec = importlib.util.spec_from_file_location(
+        "_sfn",
+        REPO_ROOT / "tests" / "unit" / "infrastructure" / "persistence"
+        / "test_storyline_new_fields.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    repo = SqliteStorylineRepository(mod._make_db())
+
+    repo.save(Storyline(
+        id="sl-adj", novel_id=NovelId("n1"),
+        storyline_type=StorylineType.MAIN_PLOT, status=StorylineStatus.ACTIVE,
+        estimated_chapter_start=1, estimated_chapter_end=11,
+        estimated_chapter_end_source="ai_adjusted",
+        estimated_chapter_end_note="模型给的 8 不晚于当前章 10，已抬到 11",
+    ))
+    back = repo.get_by_id("sl-adj")
+    assert back is not None
+    assert back.estimated_chapter_end == 11
+    assert back.estimated_chapter_end_source == "ai_adjusted", (
+        f"落库往返丢了 adjusted 标注：{back.estimated_chapter_end_source!r}"
+    )
+    assert "抬到 11" in back.estimated_chapter_end_note
+
+    # 缺省必须是空串 —— 默认填 ai 会把未标注数据读成「模型判断」
+    repo.save(Storyline(
+        id="sl-none", novel_id=NovelId("n1"),
+        storyline_type=StorylineType.MAIN_PLOT, status=StorylineStatus.ACTIVE,
+        estimated_chapter_start=1, estimated_chapter_end=50,
+    ))
+    bare = repo.get_by_id("sl-none")
+    assert bare.estimated_chapter_end_source == ""
+    assert bare.estimated_chapter_end_source != "ai"
+
+
+def test_fallback_note_states_the_value_actually_used():
+    """⚠ 第四轮复审 §3.2：fallback 分支曾复用裁决器那句「按兜底 5 章」
+    再拼「按重要性推算」—— 而实际值是 +15/+10/+5。这段文本会**落库**到
+    ``resolve_offset_note``，于是 provenance 与真实取值自相矛盾。
+
+    判据：fallback 分支必须**自述实际采用的 +N**，而不是引用裁决器那句
+    关于「兜底 5 章」的说明。
+    """
+    src = _read("application/analyst/services/state_updater.py")
+    assert "改按 importance 推算 {by_importance}" in src, (
+        "fallback 分支没有自述实际采用的 +N —— 复用裁决器那句「兜底 5 章」"
+        "会让落库的 provenance 与真实取值矛盾"
+    )
+    # 三个分支各自的 +N 必须都出现，说明 by_importance 不是写死的
+    for n in ('"+15"', '"+10"', '"+5"'):
+        assert n in src, f"importance 推算分支缺 {n}"
+    # 不能出现「按重要性推算」这种不带实际值的旧文案
+    assert "；按重要性推算\"" not in src, (
+        "仍有旧文案「；按重要性推算」—— 它不说实际取了 +N，落库后无法核对"
+    )
+
+
+def test_g03_log_has_three_branches():
+    """⚠ 第四轮复审 §3.3：建档日志只有 ai / fallback 两支，
+    ai_adjusted 落库正确但**无任何日志** —— 可观测通道不对称。"""
+    src = _read("application/analyst/services/state_updater.py")
+    for marker in ("SOURCE_AI:", "SOURCE_AI_ADJUSTED:", "SOURCE_FALLBACK"):
+        assert marker in src, f"建档日志缺 {marker} 分支（ai_adjusted 无日志 ⇒ 可观测不对称）"

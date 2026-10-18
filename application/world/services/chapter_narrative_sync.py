@@ -380,8 +380,9 @@ def _storyline_end(chapter_number: int, ai_end: Any = None) -> Tuple[int, str, s
     模型给就用模型的（并校验越界）；没给才走兜底。
     详见 ``foreshadow_pacing.resolve_storyline_end``。
 
-    ⚠ **来源目前只进日志，没有落库**：`storylines` 表是显式列结构，
-    带 source 需要一条迁移 + mapper + repository 同步改，超出本次范围。
+    ⚠ 来源**已落库**：``storylines.estimated_chapter_end_source`` /
+    ``_note`` 两列由迁移 ``add_storyline_end_source.sql`` 加入，
+    仓储双向透传。读取时缺失列回落**空串**（不是 ``'ai'``）。
     与 G-01 不同 —— 伏笔走的是 registry 的 JSON payload，加字段零迁移。
     这里至少保证 source 可被观察到，且不让后来者误以为它已经持久化。
     """
@@ -2062,8 +2063,8 @@ def _auto_adjust_storyline_range(
             elif chapter_number > matched.estimated_chapter_end:
                 # 性质说明：这**不是** G-03 那种「AI 没给收尾章，代码替它定」——
                 # 是 AI 本章的进展报告表明这条线还在推进，代码只是别让它立刻到期。
-                # 但 +5 仍是代码定的数，且**没有落库来源标记**（storylines 是显式列
-                # 结构，加 source 需迁移）。故在此显式说明是代码决定，
+                # 但 +5 仍是代码定的数 ⇒ 来源**标为 fallback 并落库**
+                # （estimated_chapter_end_source）。日志里也显式说明是代码决定，
                 # 免得日后把它读成「模型把这条线延长到了 X 章」。
                 matched.estimated_chapter_end = chapter_number + 5
                 matched.estimated_chapter_end_source = SOURCE_FALLBACK

@@ -53,8 +53,14 @@ SOURCE_AI_ADJUSTED = "ai_adjusted"
 def resolve_offset(raw: Any) -> Tuple[int, str, str]:
     """裁决伏笔回收偏移。返回 ``(偏移, 来源, 说明)``。
 
-    - 模型给了且可解析 ⇒ 钳到 [2, 30]，来源 ``"ai"``
+    - 模型给了且在 [2,30] 内 ⇒ 采用，来源 ``"ai"``
+    - 模型给了但**被钳位** ⇒ 来源 ``"ai_adjusted"``：最终取值不是模型原值
     - 模型没给 / 给了脏值 ⇒ 用兜底 5，来源 ``"fallback"``，说明写清原因
+
+    ⚠ 钳位不能标 ``"ai"``。该 source 会随
+    ``Foreshadowing.resolve_offset_source`` 落 registry JSON；只消费 source 的
+    下游会以为「第 2 章是模型说的」，而模型给的是 0。落库后的假来源比
+    日志里措辞不精确严重得多。与 :func:`resolve_storyline_end` 的抬升同一条原则。
     """
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return DEFAULT_RESOLVE_OFFSET, SOURCE_FALLBACK, "模型未给出回收偏移，按兜底 5 章"
@@ -66,8 +72,9 @@ def resolve_offset(raw: Any) -> Tuple[int, str, str]:
 
     bounded = max(RESOLVE_OFFSET_MIN, min(RESOLVE_OFFSET_MAX, value))
     if bounded != value:
-        return bounded, SOURCE_AI, (
+        return bounded, SOURCE_AI_ADJUSTED, (
             f"模型给出的回收偏移 {value} 被钳到 [{RESOLVE_OFFSET_MIN}, {RESOLVE_OFFSET_MAX}]"
+            f"（采用值非模型原值）"
         )
     return bounded, SOURCE_AI, "采用模型给出的回收偏移"
 

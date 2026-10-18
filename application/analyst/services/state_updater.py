@@ -31,6 +31,7 @@ from domain.novel.entities.timeline_registry import TimelineRegistry
 # G-01 / G-03 的取值裁决。foreshadow_pacing 无第三方 import，不构成循环。
 from application.world.services.foreshadow_pacing import (
     SOURCE_AI,
+    SOURCE_AI_ADJUSTED,
     SOURCE_FALLBACK,
     resolve_offset as resolve_offset_from_ai,
     resolve_storyline_end,
@@ -265,8 +266,8 @@ class StateUpdater:
                 importance_val = foreshadow_data.get("importance", "medium")
                 importance = _parse_importance(importance_val)
 
-                # 推算 suggested_resolve_chapter。
-                # G-01：模型给了偏移就用模型的；没给才按 importance 推算，
+                # G-01：推算 suggested_resolve_chapter。
+                # 模型给了偏移就用模型的；没给才按 importance 推算，
                 # 并且**标出来源** —— 落库后仍要能分辨「AI 判的回收节奏」
                 # 与「代码按重要性推的 +15/+10/+5」。
                 planted_ch = _safe_chapter_int(
@@ -284,20 +285,32 @@ class StateUpdater:
                 raw_offset = foreshadow_data.get("suggested_resolve_offset")
                 if raw_offset is None:
                     raw_offset = foreshadow_data.get("resolve_offset")
-                resolve_offset, offset_source, offset_note = resolve_offset_from_ai(
-                    raw_offset
-                )
-                if offset_source == "ai":
-                    suggested_resolve = planted_ch + resolve_offset
-                else:
-                    # 按 importance 推算（模型没给或给得不可解析）
+                offset, offset_source, adjudicator_note = resolve_offset_from_ai(raw_offset)
+
+                if offset_source == SOURCE_FALLBACK:
+                    # 模型没给（或给了脏值）⇒ 走 importance 推算。
+                    #
+                    # ⚠ note **自己生成**，不复用裁决器那句「按兜底 5 章」——
+                    # 实际值是 +15/+10/+5，不是 5。那段文本会随
+                    # resolve_offset_note **落库**，复用等于把假 provenance 存进产物。
+                    # 裁决器的说明只在「先说明模型侧发生了什么」时引用。
                     if importance.value >= ImportanceLevel.HIGH.value:
                         suggested_resolve = planted_ch + 15
+                        by_importance = "+15"
                     elif importance.value >= ImportanceLevel.MEDIUM.value:
                         suggested_resolve = planted_ch + 10
+                        by_importance = "+10"
                     else:
                         suggested_resolve = planted_ch + 5
-                    offset_note = f"{offset_note}；按重要性推算"
+                        by_importance = "+5"
+                    offset_source = SOURCE_FALLBACK
+                    offset_note = f"{adjudicator_note}；改按 importance 推算 {by_importance}"
+                else:
+                    # SOURCE_AI / SOURCE_AI_ADJUSTED —— 取值来自模型
+                    # （adjusted 表示被钳位，最终值非模型原值）
+                    suggested_resolve = planted_ch + offset
+                    offset_note = adjudicator_note
+
 
                 foreshadowing = Foreshadowing(
                     id=str(uuid.uuid4()),
@@ -458,6 +471,13 @@ class StateUpdater:
                     logger.info(
                         "故事线收尾章采用模型判断 novel=%s ch=%s end=%s",
                         novel_id, chapter_number, storyline_end,
+                    )
+                elif end_source == SOURCE_AI_ADJUSTED:
+                    # 与 chapter_narrative_sync 侧保持可观测通道对称
+                    logger.info(
+                        "故事线收尾章 novel=%s ch=%s end=%s（%s）"
+                        " —— 模型给了值但被代码改写，最终取值非模型原值",
+                        novel_id, chapter_number, storyline_end, end_note,
                     )
                 elif end_source == SOURCE_FALLBACK:
                     logger.info(

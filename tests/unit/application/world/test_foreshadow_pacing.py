@@ -59,14 +59,26 @@ def test_junk_offset_is_fallback_not_zero():
 
 
 def test_offset_clamped_to_existing_band():
-    """沿用改造前的 2-30 章限制，但钳制仍算「模型给了」。"""
+    """沿用改造前的 2-30 章限制。
+
+    ⚠ 钳制后的值**不是模型原值** ⇒ source 必须是 `ai_adjusted`。
+    第四轮复审指出：此前标 `ai`，而该 source 会随
+    `Foreshadowing.resolve_offset_source` 落 registry JSON ——
+    只消费 source 的下游会以为「第 2 章是模型说的」，而模型给的是 0。
+    与 `resolve_storyline_end` 的抬升同一条原则。
+    """
     low, source_low, _ = resolve_offset(0)
     assert low == RESOLVE_OFFSET_MIN
-    assert source_low == SOURCE_AI
+    assert source_low == SOURCE_AI_ADJUSTED
+    assert source_low != SOURCE_AI
 
     high, source_high, _ = resolve_offset(999)
     assert high == RESOLVE_OFFSET_MAX
-    assert source_high == SOURCE_AI
+    assert source_high == SOURCE_AI_ADJUSTED
+
+    # 区间内的原值才是真正的 ai
+    inside, source_inside, _ = resolve_offset(7)
+    assert (inside, source_inside) == (7, SOURCE_AI)
 
 
 def test_string_numbers_are_accepted():

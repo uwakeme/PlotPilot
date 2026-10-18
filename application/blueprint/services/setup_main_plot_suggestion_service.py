@@ -354,7 +354,11 @@ class SetupMainPlotSuggestionService:
                     raw_item, buf = extracted
                     norm = self._normalize_options(
                         [raw_item],
-                        target_chapters=int(target_chapters) if target_chapters else _ctx_target_chapters(ctx),
+                            # ⚠ 这里原先引用了一个**函数内从未定义**的
+                            # `target_chapters` ⇒ 生成器一跑到就 NameError，
+                            # 且被上层 except 改写成「请检查模型输出或 CPMS 模板」，
+                            # 把代码 bug 归因给模型。真实值取自 ctx。
+                        target_chapters=_ctx_target_chapters(ctx),
                     )
                     norm = self._complete_option_architecture(ctx, norm)
                     if not norm:
@@ -373,7 +377,11 @@ class SetupMainPlotSuggestionService:
                         ctx,
                         self._normalize_options(
                             raw_list,
-                            target_chapters=int(target_chapters) if target_chapters else _ctx_target_chapters(ctx),
+                            # ⚠ 这里原先引用了一个**函数内从未定义**的
+                            # `target_chapters` ⇒ 生成器一跑到就 NameError，
+                            # 且被上层 except 改写成「请检查模型输出或 CPMS 模板」，
+                            # 把代码 bug 归因给模型。真实值取自 ctx。
+                            target_chapters=_ctx_target_chapters(ctx),
                         ),
                     ):
                         if item["id"] in emitted_ids:
