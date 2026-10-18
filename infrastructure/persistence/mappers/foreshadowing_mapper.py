@@ -74,6 +74,8 @@ class ForeshadowingMapper:
                     "resolved_in_chapter": f.resolved_in_chapter,
                     "emotional_weight": f.emotional_weight,
                     "binding_level": f.binding_level,
+                    "resolve_offset_source": f.resolve_offset_source,
+                    "resolve_offset_note": f.resolve_offset_note,
                 }
                 for f in registry.foreshadowings
             ],
@@ -142,6 +144,10 @@ class ForeshadowingMapper:
                     binding_level=ForeshadowingMapper._to_binding_level(
                         f_data.get("binding_level"), DEFAULT_BINDING_LEVEL
                     ),
+                    # G-01 来源标记。缺失（旧 payload）落空串，
+                    # **不得**默认填 "ai" —— 那会把未标注的旧数据读成「AI 的判断」。
+                    resolve_offset_source=str(f_data.get("resolve_offset_source") or ""),
+                    resolve_offset_note=str(f_data.get("resolve_offset_note") or ""),
                 )
                 registry.register(foreshadowing)
 

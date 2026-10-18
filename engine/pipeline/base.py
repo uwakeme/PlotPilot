@@ -388,6 +388,23 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             return StepResult.fail(f"章节定位失败: {e}")
 
+    @staticmethod
+    def _last_chapter_tension_evaluated(novel_id: str) -> bool:
+        """上章张力是否**真的评估过**。
+
+        读章末审计落下的显式标记。读不到 / 抛错一律 False ——
+        「不知道」必须与「是 0」区分开，宁可不给信号也不给假信号。
+        """
+        try:
+            from application.ai_invocation.autopilot.shared_state import (
+                read_autopilot_shared_state,
+            )
+
+            state = read_autopilot_shared_state(novel_id) or {}
+            return state.get("last_chapter_tension_evaluated") is True
+        except Exception:
+            return False
+
     async def _decide_chapter_mode(self, ctx: PipelineContext, novel) -> None:
         """D-01：判定本章是余韵章还是正常推进，并把结果落到 ``ctx``。
 
@@ -422,8 +439,15 @@ class BaseStoryPipeline(ABC):
             last_tension = None
             if novel is not None:
                 raw = getattr(novel, "last_chapter_tension", None)
-                if raw is not None:
-                    last_tension = float(raw) * 10 if float(raw) <= 10 else float(raw)
+                # 「未评估」时 audit_delegate 仍写 0，而 `Novel.last_chapter_tension`
+                # 本身也默认 0 —— **0 在这一列上无法区分「真是 0」与「没测过」**。
+                # 拿编造的 0 当真实张力喂给模型，正是本轮红线要消灭的东西。
+                # 章末审计额外落了 `last_chapter_tension_evaluated` 显式标记，
+                # 这里只认标记为 True 的值；标记缺失（守护进程重启后内存态已失）
+                # 一律按「没测过」处理 —— 宁可少给一个信号，不给假信号。
+                if self._last_chapter_tension_evaluated(ctx.novel_id):
+                    if raw is not None:
+                        last_tension = float(raw) * 10 if float(raw) <= 10 else float(raw)
 
             decision = await get_chapter_mode_planner().decide(
                 novel_id=ctx.novel_id,
@@ -432,9 +456,12 @@ class BaseStoryPipeline(ABC):
                 last_tension=last_tension,
             )
         except Exception as exc:
+            ctx.buffer_reason = (
+                f"章节节奏判定失败（{type(exc).__name__}: {exc}），按常规推进处理"
+            )
             logger.warning(
-                "[%s] 章节节奏判定失败，保持常规推进 ch=%s: %s",
-                ctx.novel_id, ctx.chapter_number, exc,
+                "[%s] %s ch=%s",
+                ctx.novel_id, ctx.buffer_reason, ctx.chapter_number,
             )
             return
 
@@ -779,7 +806,10 @@ class BaseStoryPipeline(ABC):
             "[%s] 第 %s 章使用整章执行剧本生成，plan_chars=%d target_words=%d",
             ctx.novel_id,
             ctx.chapter_number,
-            len(outline),
+            # 用**最终生效**的 outline，而不是步骤开头捕获的局部变量 ——
+            # else 分支里 ctx.outline 已被 preplan.text 覆盖，
+            # 打旧值等于报一个从未参与生成的剧本长度。
+            len(ctx.outline or ""),
             ctx.target_word_count,
         )
         self._attach_chapter_preplan_metadata(ctx)

@@ -160,6 +160,14 @@ class VoiceDriftResponse(BaseModel):
     evaluated: bool
     sample_count: int  # 真实的基准样本数
     last_scored_chapter: Optional[int]
+    #: 本次评分的**真实**计算时刻（chapter_style_scores.computed_at）。
+    #: None = 未评估。此前前端拿「拉取时刻」冒充「检测时刻」，
+    #: 未评估时也会显示「最近检测=现在」，那是伪造时间戳。
+    computed_at: Optional[str] = None
+    #: 真实阈值（0-1 刻度）。前端此前自定 3.0/6.0 并展示给用户 ——
+    #: 那是 0-10 刻度的另一套数，与后端判定不一致，且展示的是假信息。
+    warning_threshold: float = DRIFT_WARNING
+    critical_threshold: float = DRIFT_CRITICAL
     reason: str = ""  # 未评估原因；已评估时为空
 
 
@@ -244,6 +252,7 @@ def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
         evaluated=True,
         sample_count=sample_count,
         last_scored_chapter=int(latest["chapter_number"]),
+        computed_at=latest.get("computed_at"),
         reason="",
     )
 

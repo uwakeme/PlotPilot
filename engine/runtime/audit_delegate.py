@@ -573,6 +573,7 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         host._update_shared_state(
             novel.novel_id.value,
             last_chapter_tension=tension,
+            last_chapter_tension_evaluated=True,
         )
         # 同步章节张力到 chapters 表，供 /monitor/tension-curve 与「audit_tension_result」SSE 刷新一致读库
         #（章后管线可能已写过多维张力，此处幂等 UPDATE 覆盖 composite）
@@ -593,6 +594,11 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         host._update_shared_state(
             novel.novel_id.value,
             last_chapter_tension=0,
+            # `last_chapter_tension` 是 int 且默认 0，**「真是 0」与「没测过」
+            # 在这一列上完全同形**。这里额外落一个显式标记，让下游（如 D-01 的
+            # 节奏判定）能区分两者，而不是把编造的 0 当成真实张力喂给模型。
+            # 列本身改 Optional 需要动约 40 处（含前端），不在本次范围。
+            last_chapter_tension_evaluated=False,
         )
     # 🔥 发布张力打分结果事件
     host._publish_audit_event(

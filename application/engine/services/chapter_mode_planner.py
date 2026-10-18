@@ -97,6 +97,13 @@ class ChapterModePlanner:
 
     @staticmethod
     def _parse(raw_text: str) -> Optional[Dict[str, Any]]:
+        """解析并按契约校验。走 ``PromptGateway.validate_output``。
+
+        契约声明了 ``output_schema=ChapterModeLlmPayload``，其中
+        ``needs_buffer`` 是 ``Optional[bool]`` 且默认 ``None`` ——
+        模型不给、给 null、给字符串 "true" 三种情况都由契约统一裁决成
+        「没给出明确结论」，而不是在这里手写分支。
+        """
         try:
             data = json.loads((raw_text or "").strip())
         except (json.JSONDecodeError, TypeError) as exc:
@@ -105,8 +112,16 @@ class ChapterModePlanner:
         if not isinstance(data, dict):
             logger.warning("章节节奏判定返回的 JSON 不是对象，按未判定处理")
             return None
-        if not isinstance(data.get("needs_buffer"), bool):
-            # 缺字段 / 非布尔（含字符串 "true"）都算「没给出明确结论」
-            return {"needs_buffer": None, "reason": data.get("reason", ""),
-                    "signals": data.get("signals", [])}
-        return data
+        try:
+            validated = get_prompt_gateway().validate_output(
+                CHAPTER_MODE_CONTRACT, data
+            )
+        except Exception as exc:
+            # 契约不通过（整坨垃圾输出）⇒ 未判定。**不得**退回手写宽松解析。
+            logger.warning("章节节奏判定输出不合契约，按未判定处理: %s", exc)
+            return None
+        return {
+            "needs_buffer": getattr(validated, "needs_buffer", None),
+            "reason": str(getattr(validated, "reason", "") or ""),
+            "signals": getattr(validated, "signals", []),
+        }

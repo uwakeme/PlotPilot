@@ -74,6 +74,11 @@ analyst:
     style_cache_max_size: 512
     baseline_cache_ttl_seconds: 600.0
     baseline_cache_max_size: 256
+    # F-04：文风漂移是否走 LLM 模式。默认 False = 统计模式（0 额外 token）。
+    # 开启后每章多一次 LLM 调用（约 500 token）。
+    use_llm_mode: false
+    # 相似度告警阈值（模块常量 DRIFT_ALERT_THRESHOLD 的可覆盖副本）。
+    drift_alert_threshold: 0.75
 
 # ─── MemoryEngine 跨章状态缓存配置 ───
 memory_engine:
@@ -228,3 +233,27 @@ daemon:
     terminate_join_timeout_seconds: 1.0
     sigkill_join_timeout_seconds: 1.0
     windows_taskkill_timeout_seconds: 3.0
+
+# ─── AI 参与度开关（默认全部关闭 = 行为与改造前逐位一致）────────────────────
+# 打开顺序建议：先只开一个、观察 shadow 日志，再关 shadow 真正施加。
+
+# D-02：上下文槽位权重。由 AI 判断本章最需要哪几类记忆并给出权重(0-1)，
+# 代码在 tier 预算内换算成 token。**只开 enabled 不会生效** ——
+# shadow 默认 true，权重只记录不施加。两条都要改才对。
+context_weights:
+  enabled: false
+  shadow: true
+  cache_ttl_seconds: 900.0        # 同章短期内不重复调用
+  failure_backoff_seconds: 300.0  # 调用失败后多久内不再重试
+
+# D-01：本章是否应为余韵章，由 AI 判定。enabled 只做判定与记录；
+# apply 决定是否真的把节奏指令送进模型（观察期关掉它）。
+chapter_mode:
+  enabled: false
+  apply: false
+
+# D-05：每章字数目标。AI 可在 ±max_deviation_ratio 内提议，
+# 超出即拒绝 —— 用户明确选过章长，AI 不能改全书节奏。
+chapter_target:
+  enabled: false
+  max_deviation_ratio: 0.30

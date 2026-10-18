@@ -43,6 +43,13 @@ class Foreshadowing:
     # 带默认值以兼容既有构造调用与旧 JSON 载荷。
     emotional_weight: float = DEFAULT_EMOTIONAL_WEIGHT
     binding_level: int = DEFAULT_BINDING_LEVEL
+    # G-01：``suggested_resolve_chapter`` 这个**取值**的来源。
+    # "ai" = 模型给了判断；"fallback" = 模型没给，代码兜底。
+    # 此前这个标记只打进日志，落库后「AI 说的」与「代码编的」完全同形。
+    # 空串 = 旧数据/未标注（**不等于** "ai"，读端必须显式判）。
+    resolve_offset_source: str = ""
+    #: 来源说明（为什么走了兜底 / 模型给的是什么），可读文本。
+    resolve_offset_note: str = ""
 
     def __post_init__(self):
         if self.planted_in_chapter < 1:

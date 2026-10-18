@@ -118,7 +118,20 @@ scripts/start_daemon.py :: build_daemon()
 
 `PLOTPILOT_USE_STORY_PIPELINE` is read in `engine/runtime/writing_delegate.py`: unset / `writing` / `1` / `full` / `engine` → StoryPipeline; `off` / `legacy` → legacy beat writing (emergency rollback path).
 
-**The pipeline has 12 steps, not ten** (`grep 'def _step_' engine/pipeline/base.py`): `find_next_chapter`, `prepare_governance`, `build_context`, `prepare_chapter_plan`, `generate`, `generate_with_composer`, `validate_content`, `save_chapter`, `validate_voice`, `run_post_commit`, `score_tension`, `finalize`. README and `docs/ARCHITECTURE.md` both say "十步" — they are wrong.
+**The pipeline has 12 steps, not ten** (`grep 'def _step_' engine/pipeline/base.py`): `find_next_chapter`, `prepare_governance`, `build_context`, `prepare_chapter_plan`, `generate`, `generate_with_composer`, `validate_content`, `save_chapter`, `validate_voice`, `run_post_commit`, `score_tension`, `finalize`. README and `docs/ARCHITECTURE.md` already say 12 — correct as of 2026-10-18 (this note used to claim they said 十步, which was itself out of date).
+
+**Step order ≠ definition order.** The orchestration calls `_step_find_next_chapter → _step_prepare_governance → _step_prepare_chapter_plan → _step_build_context → _step_generate` (grep the `self._step_*` call sites in `run_chapter`, not `def _step_`). This matters: `build_context` sits **after** `prepare_chapter_plan`, so anything a step writes into `ctx.outline` gets overwritten by that step's preplan result.
+
+### AI-participation switches (all default OFF)
+
+Four runtime switches live in `config/performance.yaml`. Off ⇒ behavior is byte-identical to before the switch existed.
+
+| Switch | Section | Effect |
+| --- | --- | --- |
+| D-02 context weights | `context_weights:` | AI judges which context slots this chapter needs most. **`enabled` alone does nothing** — `shadow: true` records without applying; both must change. |
+| D-01 chapter rhythm | `chapter_mode:` | AI decides whether this is a 余韵章. `enabled` only decides+logs; `apply` actually injects the pacing directive into the preplan prompt. |
+| D-05 chapter words | `chapter_target:` | AI proposes per-chapter word count within ±`max_deviation_ratio` (0.30); outside the band is rejected. |
+| F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. |
 
 ## Engine Subsystems
 
@@ -164,7 +177,7 @@ There is no DI container. Dependencies are module-level factory functions in **`
 
 ### Prompt strategy (CPMS)
 
-"Prompt injection points" are CPMS **node keys**. The real count is **76**, not "20+".
+"Prompt injection points" are CPMS **node keys**. The real count is **82**, not "20+".
 
 - `infrastructure/ai/prompt_keys.py` — the single source of truth. Business code must import constants from here rather than hardcoding strings.
 - `infrastructure/ai/prompt_packages/nodes/<node_key>/` — seed content: `package.yaml` (metadata + `variables`), `system.md`, `user.md`, optional `extras.json`. `bundle_meta.yaml` carries the version.

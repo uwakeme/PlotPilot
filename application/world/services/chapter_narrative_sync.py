@@ -32,6 +32,7 @@ from application.world.services.storyline_normalization import (
 
 from application.world.services.foreshadow_pacing import (  # noqa: E402
     DEFAULT_RESOLVE_OFFSET,
+    SOURCE_AI,
     SOURCE_FALLBACK,
     check_resolve_after_plant,
     resolve_offset as resolve_offset_from_ai,
@@ -351,13 +352,16 @@ def _make_storyline_from_progress_item(
     if len(name) > 80:
         name = name[:77] + "…"
 
+    end, source, note = _storyline_end(chapter_number, ai_end)
+    _log_storyline_end_source(novel_id, chapter_number, name, end, source, note)
+
     return Storyline(
         id=str(uuid.uuid4()),
         novel_id=NovelId(novel_id),
         storyline_type=stype,
         status=StorylineStatus.ACTIVE,
         estimated_chapter_start=chapter_number,
-        estimated_chapter_end=_storyline_end(chapter_number, ai_end),
+        estimated_chapter_end=end,
         name=name,
         description=(description or "")[:800],
         role=role,
@@ -366,14 +370,36 @@ def _make_storyline_from_progress_item(
     )
 
 
-def _storyline_end(chapter_number: int, ai_end: Any = None) -> int:
-    """G-03：故事线预估收尾章。
+def _storyline_end(chapter_number: int, ai_end: Any = None) -> Tuple[int, str, str]:
+    """G-03：故事线预估收尾章。返回 ``(收尾章, 来源, 说明)``。
 
     模型给就用模型的（并校验越界）；没给才走兜底。
     详见 ``foreshadow_pacing.resolve_storyline_end``。
+
+    ⚠ **来源目前只进日志，没有落库**：`storylines` 表是显式列结构，
+    带 source 需要一条迁移 + mapper + repository 同步改，超出本次范围。
+    与 G-01 不同 —— 伏笔走的是 registry 的 JSON payload，加字段零迁移。
+    这里至少保证 source 可被观察到，且不让后来者误以为它已经持久化。
     """
-    end, _source, _note = resolve_storyline_end(chapter_number, ai_end)
-    return end
+    return resolve_storyline_end(chapter_number, ai_end)
+
+
+def _log_storyline_end_source(
+    novel_id: str, chapter_number: int, name: str,
+    end: int, source: str, note: str,
+) -> None:
+    """G-03 来源落日志。``source == 'fallback'`` 表示这是代码兜底的收尾章。"""
+    if source == SOURCE_AI:
+        logger.info(
+            "故事线收尾章 novel=%s ch=%s name=%s 采用模型判断 end=%s",
+            novel_id, chapter_number, name, end,
+        )
+    else:
+        logger.info(
+            "故事线收尾章兜底 novel=%s ch=%s name=%s end=%s（%s）"
+            " —— 该值由代码推出，未落库标注",
+            novel_id, chapter_number, name, end, note,
+        )
 
 
 async def llm_chapter_extract_bundle(
@@ -696,6 +722,11 @@ def persist_bundle_triples_and_foreshadows(
                             suggested_resolve_chapter=suggested_resolve,
                             emotional_weight=emotional_weight,
                             binding_level=binding_level,
+                            # G-01：把来源**写进产物**，不再只打日志。
+                            # 落库后仍能分辨「AI 判断的回收节奏」与「代码兜底的 +5」，
+                            # 否则两者在 `suggested_resolve_chapter` 上完全同形。
+                            resolve_offset_source=offset_source,
+                            resolve_offset_note=offset_note,
                         )
                     )
                     logger.debug(
@@ -705,7 +736,17 @@ def persist_bundle_triples_and_foreshadows(
                     current_pending += 1  # ★ Phase 2: 跟踪 pending 计数
                 except Exception as e:
                     logger.debug("伏笔入库跳过: %s", e)
-            
+
+            # G-01 汇总：回收节奏有多少条走了代码兜底。
+            # 此前 `offset_fallbacks` 只累加、从不读取 —— 是个死变量，
+            # 「模型这一章给了多少真实判断」在日志里根本看不到。
+            if offset_fallbacks:
+                logger.info(
+                    "伏笔回收节奏兜底汇总 novel=%s ch=%s: %d 条走了代码默认，"
+                    "其余为模型判断（逐条来源见 foreshadowing.resolve_offset_source）",
+                    novel_id, chapter_number, offset_fallbacks,
+                )
+
             # 处理伏笔消费：将 LLM 识别的已消费伏笔标记为 RESOLVED/consumed
             if consumed:
                 # 获取所有待回收伏笔
@@ -1921,14 +1962,20 @@ def _initialize_first_chapter_storyline(
         storyline_name = "主线"
         storyline_desc = summary if summary else "小说主线剧情"
 
-        # 创建主线
+        # 创建主线。此处没有 AI 的收尾章输入（首章抽取只给本章摘要，
+        # 全书收尾不是单章抽取能判断的），因此 source 必为 fallback ——
+        # 显式记下来，别让下游以为这是模型的判断。
+        main_end, main_source, main_note = _storyline_end(chapter_number)
+        _log_storyline_end_source(
+            novel_id, chapter_number, storyline_name, main_end, main_source, main_note
+        )
         main_storyline = Storyline(
             id=str(uuid.uuid4()),
             novel_id=NovelId(novel_id),
             storyline_type=StorylineType.MAIN_PLOT,
             status=StorylineStatus.ACTIVE,
             estimated_chapter_start=chapter_number,
-            estimated_chapter_end=_storyline_end(chapter_number),  # G-03
+            estimated_chapter_end=main_end,  # G-03
             name=storyline_name,
             description=storyline_desc,
             progress_summary=summary  # 将首章摘要作为初始进展

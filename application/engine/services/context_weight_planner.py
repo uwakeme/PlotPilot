@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
 from domain.ai.services.llm_service import LLMService
 from infrastructure.ai.generation_profiles import generation_config_from_profile
@@ -33,15 +34,26 @@ from application.engine.services.context_weight_catalog import (
     catalog_lines,
     sanitize_weights,
 )
+from application.engine.services.context_weight_settings import (
+    get_context_weight_runtime_settings,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ContextWeightPlanner:
-    """按章规划上下文槽位权重。"""
+    """按章规划上下文槽位权重。
+
+    实例必须是长生命周期的（DI 工厂带 ``@lru_cache``）——下面两级缓存
+    都挂在实例上：新建实例会让缓存永远 miss、退避永远不生效。
+    """
 
     def __init__(self, llm: LLMService):
         self._llm = llm
+        # (novel_id, chapter_number) -> (过期时间戳, 权重)
+        self._cache: Dict[Tuple[str, int], Tuple[float, Dict[str, float]]] = {}
+        # novel_id -> 退避截止时间戳（调用失败后短期内不再重试）
+        self._backoff_until: Dict[str, float] = {}
 
     async def plan_weights(
         self,
@@ -53,6 +65,23 @@ class ContextWeightPlanner:
         recent_digest: str = "",
     ) -> Optional[Dict[str, float]]:
         """返回 ``{槽位 key: 权重}``；判不出来或调用失败一律返回 ``None``。"""
+        settings = get_context_weight_runtime_settings()
+
+        cached = self._cache.get((novel_id, chapter_number))
+        if cached is not None and cached[0] > time.monotonic():
+            logger.info(
+                "上下文权重命中缓存 novel=%s ch=%s slots=%s",
+                novel_id, chapter_number, sorted(cached[1]),
+            )
+            return dict(cached[1])
+
+        if time.monotonic() < self._backoff_until.get(novel_id, 0.0):
+            logger.info(
+                "上下文权重处于失败退避期，跳过调用 novel=%s ch=%s",
+                novel_id, chapter_number,
+            )
+            return None
+
         try:
             rendered = get_prompt_gateway().render(
                 CONTEXT_WEIGHTS_CONTRACT,
@@ -72,6 +101,9 @@ class ContextWeightPlanner:
             logger.warning(
                 "上下文权重规划调用失败，按未评估处理 novel=%s ch=%s: %s",
                 novel_id, chapter_number, exc,
+            )
+            self._backoff_until[novel_id] = (
+                time.monotonic() + settings.failure_backoff_seconds
             )
             return None
 
@@ -96,6 +128,12 @@ class ContextWeightPlanner:
             )
             return None
 
+        ttl = settings.cache_ttl_seconds
+        if ttl > 0:
+            self._cache[(novel_id, chapter_number)] = (
+                time.monotonic() + ttl,
+                dict(weights),
+            )
         logger.info(
             "上下文权重已规划 novel=%s ch=%s slots=%s",
             novel_id, chapter_number, sorted(weights),
@@ -106,7 +144,12 @@ class ContextWeightPlanner:
     def _parse(
         rendered: Any, raw_text: str, novel_id: str, chapter_number: int
     ) -> Optional[Dict[str, Any]]:
-        """解析并按契约校验。任何不合契约的输出都算「没判出来」。"""
+        """解析并按契约校验。任何不合契约的输出都算「没判出来」。
+
+        走 ``PromptGateway.validate_output`` —— 契约里声明了
+        ``output_schema=ContextWeightsLlmPayload``，手写解析等于让它形同虚设：
+        契约改字段时手写解析不会跟着变。
+        """
         text = (raw_text or "").strip()
         try:
             data = json.loads(text)
@@ -122,4 +165,18 @@ class ContextWeightPlanner:
                 novel_id, chapter_number,
             )
             return None
-        return data
+        try:
+            validated = get_prompt_gateway().validate_output(
+                CONTEXT_WEIGHTS_CONTRACT, data
+            )
+        except Exception as exc:
+            logger.warning(
+                "上下文权重输出不合契约，按未评估处理 novel=%s ch=%s: %s",
+                novel_id, chapter_number, exc,
+            )
+            return None
+        return {
+            "evaluated": bool(getattr(validated, "evaluated", False)),
+            "weights": getattr(validated, "weights", None),
+            "reason": str(getattr(validated, "reason", "") or ""),
+        }

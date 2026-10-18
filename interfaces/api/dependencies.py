@@ -1050,8 +1050,13 @@ def get_voice_drift_service() -> VoiceDriftService:
     )
 
 
+@lru_cache(maxsize=None)
 def get_context_weight_planner():
-    """D-02：上下文槽位权重规划器（长生命周期，复用同一 LLM 服务）"""
+    """D-02：上下文槽位权重规划器（长生命周期，复用同一 LLM 服务）。
+
+    ``@lru_cache`` 不是装饰性代码：planner 内按章缓存权重、按书做失败退避，
+    每次新建实例会让这两项完全失效（缓存永远 miss、退避永远不生效）。
+    """
     from application.engine.services.context_weight_planner import (
         ContextWeightPlanner,
     )
@@ -1059,8 +1064,9 @@ def get_context_weight_planner():
     return ContextWeightPlanner(get_llm_service())
 
 
+@lru_cache(maxsize=None)
 def get_chapter_mode_planner():
-    """D-01：章节节奏判定器（长生命周期，复用同一 LLM 服务）"""
+    """D-01：章节节奏判定器（长生命周期，复用同一 LLM 服务）。"""
     from application.engine.services.chapter_mode_planner import ChapterModePlanner
 
     return ChapterModePlanner(get_llm_service())

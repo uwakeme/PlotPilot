@@ -322,7 +322,12 @@ async def test_enabled_with_apply_prefixes_outline(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_legacy_tension_scale_is_normalised(monkeypatch):
-    """旧刻度（<=10）要 ×10，与 legacy_writing_delegate 保持一致。"""
+    """旧刻度（<=10）要 ×10，与 legacy_writing_delegate 保持一致。
+
+    **前提**：`last_chapter_tension` 是 int 且默认 0，「真是 0」与「没测过」
+    在这一列上完全同形。所以只有章末审计显式落了
+    ``last_chapter_tension_evaluated=True`` 时才采信该值。
+    """
     import engine.pipeline.base as base_mod
 
     seen = {}
@@ -333,6 +338,8 @@ async def test_legacy_tension_scale_is_normalised(monkeypatch):
     monkeypatch.setattr(
         "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
         lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+    monkeypatch.setattr(
+        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: True))
 
     class _Planner:
         async def decide(self, **kw):
@@ -357,6 +364,112 @@ async def test_legacy_tension_scale_is_normalised(monkeypatch):
     await BaseStoryPipeline._decide_chapter_mode(
         object.__new__(BaseStoryPipeline), ctx2, _NewNovel())
     assert seen["last_tension"] == 87.0
+
+
+@pytest.mark.asyncio
+async def test_unevaluated_tension_is_not_fed_to_the_model(monkeypatch):
+    """⚠ 红线：章末审计没评估过时写入的是 **0**，不是「张力就是 0」。
+
+    若照单全收，模型会拿到一个编造的「上章张力 0」，并据此判断
+    「上章毫无张力冲击」—— 那是代码造的结论。必须传 ``None``（= 没数据）。
+    """
+    import engine.pipeline.base as base_mod
+
+    seen = {}
+
+    monkeypatch.setattr(base_mod, "logger", type("L", (), {
+        "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
+    })())
+    monkeypatch.setattr(
+        "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
+        lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+    # 显式标记为「未评估」
+    monkeypatch.setattr(
+        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: False))
+
+    class _Planner:
+        async def decide(self, **kw):
+            seen.update(kw)
+            return None
+
+    monkeypatch.setattr(
+        "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
+
+    class _UnevaluatedNovel:
+        last_chapter_tension = 0          # 未评估时 audit_delegate 写的就是 0
+
+    ctx = _Ctx()
+    await BaseStoryPipeline._decide_chapter_mode(
+        object.__new__(BaseStoryPipeline), ctx, _UnevaluatedNovel())
+    assert seen["last_tension"] is None, (
+        "把未评估的 0 当成真实张力喂给模型了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_evaluated_flag_defaults_to_not_trusted(monkeypatch):
+    """标记读不到（守护进程重启后内存态已失）⇒ 按「没测过」处理。
+
+    「不知道」必须与「是 0」区分开。宁可少给一个信号，不给假信号。
+    """
+    import engine.pipeline.base as base_mod
+
+    seen = {}
+
+    monkeypatch.setattr(base_mod, "logger", type("L", (), {
+        "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
+    })())
+    monkeypatch.setattr(
+        "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
+        lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+    monkeypatch.setattr(
+        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: False))
+
+    class _Planner:
+        async def decide(self, **kw):
+            seen.update(kw)
+            return None
+
+    monkeypatch.setattr(
+        "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
+
+    class _Novel:
+        last_chapter_tension = 55
+
+    ctx = _Ctx()
+    await BaseStoryPipeline._decide_chapter_mode(
+        object.__new__(BaseStoryPipeline), ctx, _Novel())
+    assert seen["last_tension"] is None
+
+
+@pytest.mark.asyncio
+async def test_decide_failure_still_records_a_reason(monkeypatch):
+    """异常分支也必须留原因 —— docstring 承诺「未判定必须留原因」。"""
+    import engine.pipeline.base as base_mod
+
+    monkeypatch.setattr(base_mod, "logger", type("L", (), {
+        "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
+    })())
+    monkeypatch.setattr(
+        "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
+        lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
+
+    class _BoomPlanner:
+        async def decide(self, **kw):
+            raise RuntimeError("上游炸了")
+
+    monkeypatch.setattr(
+        "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _BoomPlanner())
+
+    ctx = _Ctx()
+    await BaseStoryPipeline._decide_chapter_mode(
+        object.__new__(BaseStoryPipeline), ctx, object())
+
+    assert ctx.needs_buffer is False
+    assert ctx.buffer_directive == ""
+    assert "上游炸了" in ctx.buffer_reason, (
+        f"异常分支没留下原因：{ctx.buffer_reason!r}"
+    )
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,11 @@ export interface VoiceDriftApiResponse {
   evaluated: boolean
   sample_count: number
   last_scored_chapter: number | null
+  /** 本次评分的真实计算时刻；`null` = 未评估。绝不能用「前端拉取时刻」顶替。 */
+  computed_at?: string | null
+  /** 告警阈值（0-1 刻度）。前端**不得**另定一套 —— 那样同一个数会得到两种结论。 */
+  warning_threshold?: number
+  critical_threshold?: number
   reason: string
 }
 

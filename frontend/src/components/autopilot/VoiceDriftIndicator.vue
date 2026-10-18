@@ -59,8 +59,10 @@
               <template v-else>未评估</template>
             </n-text>
           </n-descriptions-item>
-          <n-descriptions-item label="安全阈值">
-            <n-text>{{ safeThreshold.toFixed(1) }}</n-text>
+          <n-descriptions-item label="告警阈值">
+            <n-text depth="3">
+              警告 ≥ {{ warningThreshold }} / 严重 ≥ {{ criticalThreshold }}
+            </n-text>
           </n-descriptions-item>
           <n-descriptions-item label="检测章节">
             <template v-if="lastCheckChapter > 0">第 {{ lastCheckChapter }} 章</template>
@@ -114,7 +116,13 @@ interface VoiceDriftData {
   /** 真实的基准样本数 */
   sample_count: number
   last_check_chapter: number
-  last_check_time: string
+  /** 本次评分的真实计算时刻；null = 未评估（**不得**用拉取时刻顶替） */
+  last_check_time: string | null
+  /** 告警阈值（0-1 刻度），由后端下发 —— 前端不再另定一套 */
+  warning_threshold: number
+  critical_threshold: number
+  /** 后端判定的状态，是唯一事实源 */
+  status: string
   details?: Array<{
     dimension: string
     description: string
@@ -124,8 +132,6 @@ interface VoiceDriftData {
 
 const props = defineProps<{
   novelId: string
-  safeThreshold?: number  // 安全阈值，默认 3.0
-  dangerThreshold?: number  // 危险阈值，默认 6.0
   refreshKey?: number  // 🔥 刷新信号，变化时重新拉数据
 }>()
 
@@ -137,9 +143,11 @@ const driftData = ref<VoiceDriftData | null>(null)
 const showDetailModal = ref(false)
 const loading = ref(false)
 
-// 阈值
-const safeThreshold = computed(() => props.safeThreshold ?? 3.0)
-const dangerThreshold = computed(() => props.dangerThreshold ?? 6.0)
+// 告警阈值 —— **由后端下发**，不再由前端另定一套。
+// 后端判定用 0-1 刻度（0.3/0.5）；前端此前用 0-10 刻度（3.0/6.0），
+// drift ∈ [0.5, 0.6) 时两边结论不同，且展示给用户的「安全阈值 3.0」是假信息。
+const warningThreshold = computed(() => driftData.value?.warning_threshold ?? 0.3)
+const criticalThreshold = computed(() => driftData.value?.critical_threshold ?? 0.5)
 
 /** 是否完成过真实评估 —— 未评估时**不得**把 drift_score 当 0 处理 */
 const evaluated = computed(() => driftData.value?.evaluated === true)
@@ -156,13 +164,18 @@ const driftPercentage = computed(() => {
   return s === null ? 0 : Math.min((s / 10) * 100, 100)
 })
 
-// 状态
+// 状态 —— **后端 status 是唯一事实源**。
+// 此前前端拿自己的 3.0/6.0 阈值（0-10 刻度，因为 drift_score 被乘了 10）
+// 重算，而后端用的是 0.3/0.5（0-1 刻度）。drift ∈ [0.5, 0.6) 时
+// 后端判 critical、前端显示「轻微偏离」—— 两边对同一个数给出不同结论。
 const driftStatus = computed(() => {
-  const s = driftScore.value
-  if (s === null) return 'unevaluated'
-  if (s >= dangerThreshold.value) return 'danger'
-  if (s >= safeThreshold.value) return 'warning'
-  return 'safe'
+  if (driftScore.value === null) return 'unevaluated'
+  switch (driftData.value?.status) {
+    case 'critical': return 'danger'
+    case 'warning': return 'warning'
+    case 'normal': return 'safe'
+    default: return 'unevaluated'
+  }
 })
 
 const isDanger = computed(() => driftStatus.value === 'danger')
@@ -245,7 +258,13 @@ async function loadDriftData() {
         reason: res.reason ?? '',
         sample_count: res.sample_count ?? 0,
         last_check_chapter: res.last_scored_chapter ?? 0,
-        last_check_time: new Date().toISOString(),
+        // 后端给的**真实**评分时刻。此前填 `new Date().toISOString()` ——
+        // 那是「前端拉取的时刻」，被当成「检测时刻」展示；
+        // 未评估时更会显示「最近检测=现在」，等于凭空造一个检测记录。
+        last_check_time: res.computed_at ?? null,
+        warning_threshold: res.warning_threshold ?? 0.3,
+        critical_threshold: res.critical_threshold ?? 0.5,
+        status: res.status ?? 'unevaluated',
         details: []
       }
 
