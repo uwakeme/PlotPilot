@@ -150,7 +150,8 @@ class ChapterPreplanningService:
             continuity_context=continuity_context,
         )
         logger.info(
-            "[ChapterPreplan] novel=%s chapter=%s generated execution plan chars=%d target_words=%s",
+            "[ChapterPreplan] novel=%s chapter=%s generated execution plan "
+            "chars=%d target_words=%s proposed_target_words=%s",
             novel_id,
             chapter_number,
             len(rendered),

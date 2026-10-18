@@ -227,6 +227,21 @@ def _scope_local_names(fn) -> set[str]:
                     local.add(sub.arg)
                 if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
                     local.add(sub.id)
+
+    # ⚠ 嵌套函数的**形参**也算本作用域的绑定。
+    # 少了这一段会把 `def _replace(match: re.Match): match.group(1)` 里的
+    # `match` 报成未绑定 —— 它是软关键字，同时也是形参名，纯属误报。
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for arg in (
+                list(node.args.posonlyargs) + list(node.args.args)
+                + list(node.args.kwonlyargs)
+            ):
+                local.add(arg.arg)
+            if node.args.vararg:
+                local.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                local.add(node.args.kwarg.arg)
     return local
 
 
@@ -264,16 +279,31 @@ def _unbound_names(rel_path: str) -> list[str]:
     return unbound
 
 
-def test_audit_delegate_has_no_unbound_names():
-    """`anti_ai_severe` 事故：变量搬进 helper，调用方还引用它。"""
-    unbound = _unbound_names("engine/runtime/audit_delegate.py")
-    assert not unbound, "函数里引用了未绑定名（NameError）：\n  " + "\n  ".join(unbound)
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        # `anti_ai_severe` 事故的现场
+        "engine/runtime/audit_delegate.py",
+        # `description_ai_end` 事故的现场
+        "application/world/services/chapter_narrative_sync.py",
+        # `PlotArc` NameError 的现场：另一个函数里有同名 import，
+        # 本函数直接用会被外层 except 吞成 warning。f7944889 已存在，
+        # 是靠「独立审查 + unbound 扫描」抓到的，不是靠单测。
+        "application/workflows/auto_novel_generation_workflow.py",
+        # 本轮反复改动的两个高风险文件
+        "engine/pipeline/base.py",
+        "application/blueprint/services/chapter_preplanning_service.py",
+    ],
+)
+def test_no_unbound_names_in_rewritten_modules(rel_path):
+    """跨步骤/重构后残留的未绑定名 ⇒ NameError。
 
-
-def test_chapter_narrative_sync_has_no_unbound_names():
-    """`description_ai_end` 事故：G-03 引用了一个从未存在的入参。"""
-    unbound = _unbound_names("application/world/services/chapter_narrative_sync.py")
-    assert not unbound, "函数里引用了未绑定名（NameError）：\n  " + "\n  ".join(unbound)
+    这类缺陷单测抓不到：旧的纯函数测试全绿，坏的是**调用方**。
+    """
+    unbound = _unbound_names(rel_path)
+    assert not unbound, (
+        f"{rel_path} 引用了未绑定名（NameError）：\n  " + "\n  ".join(unbound)
+    )
 
 
 # ── 3. G-03：AI 入参必须真的可达 ──────────────────────────────────────────

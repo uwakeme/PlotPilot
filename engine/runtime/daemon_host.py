@@ -741,7 +741,16 @@ class DaemonHostMixin:
                 target_chapters=novel.target_chapters,
                 target_words_per_chapter=getattr(novel, 'target_words_per_chapter', 2500) or 2500,
                 auto_approve_mode=getattr(novel, 'auto_approve_mode', False),
-                last_chapter_tension=getattr(novel, 'last_chapter_tension', 0) or 0,
+                # 不用 `or 0`：`or` 会把合法的 0 与「没这个字段」压成同一个值 ——
+                # 这里显式区分 None（该小说还没有张力数据）。
+                # 评估标记**不在此处推断**：这里只是把 Novel 快照同步到共享内存，
+                # 真正的评估结论由 audit_delegate / writing_delegate 在写入时落，
+                # 这里若凭空补一个标记就会覆盖掉上游的真值。
+                **(
+                    {}
+                    if getattr(novel, "last_chapter_tension", None) is None
+                    else {"last_chapter_tension": novel.last_chapter_tension}
+                ),
                 current_auto_chapters=novel.current_auto_chapters,
             )
         except Exception as e:
@@ -1311,12 +1320,28 @@ class DaemonHostMixin:
 
 
     def _similarity_below_warning_threshold(self, similarity_score: Any) -> bool:
-        """展示告警阈值：宽松，用于提示。"""
+        """展示告警阈值：宽松，用于提示。
+
+        F-04：阈值可被配置覆盖，但此前这里直接 import 模块常量 ——
+        用户改了配置，API 侧按新阈值判、daemon 侧仍按旧的 0.75 判，
+        两边对同一个数给出不同结论。统一走 settings。
+        """
         if similarity_score is None:
             return False
         try:
-            from application.analyst.services.voice_drift_service import DRIFT_ALERT_THRESHOLD
-            return float(similarity_score) < float(DRIFT_ALERT_THRESHOLD)
+            from application.analyst.services.voice_analysis_settings import (
+                get_voice_analysis_runtime_settings,
+            )
+
+            threshold = get_voice_analysis_runtime_settings().drift_alert_threshold
+        except Exception:
+            from application.analyst.services.voice_drift_service import (
+                DRIFT_ALERT_THRESHOLD,
+            )
+
+            threshold = DRIFT_ALERT_THRESHOLD
+        try:
+            return float(similarity_score) < float(threshold)
         except Exception:
             return float(similarity_score) < VOICE_WARNING_DEFAULT_THRESHOLD
 

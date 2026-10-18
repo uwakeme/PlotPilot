@@ -207,7 +207,7 @@ Plain `.sql` files in `infrastructure/persistence/database/migrations/` (32 toda
 ## Conventions
 
 - **Layer placement is a review gate.** The PR template asks which layer a new file belongs to (`domain` / `application` / `infrastructure` / `interfaces` / `frontend` / `scripts`) and why. Adding a DB table/field requires a migration note; changing an API contract must be called out.
-- **Import boundaries are aspirational, not enforced.** `domain/` is meant to have zero external deps, but `domain/engine/dag/repositories/dag_version_repository.py` already imports from `application/engine/dag/models` (a domain→application inversion). Don't add more.
+- **Import boundaries are aspirational, not enforced.** `domain/` is meant to have zero external deps, but `domain/novel/value_objects/story_phase.py` already imports from `engine.core.entities.story` (a domain→upper-layer inversion). Don't add more. (The previously-cited example, `domain/engine/dag/repositories/dag_version_repository.py`, was deleted in `577202c4`.)
 - `docs/ARCHITECTURE.md` is itself out of date (its `domain/` tree omits `cast/`, `character/`, `evolution/`, `engine/`, `structure/`, `worldbuilding/`; its `application/` tree lists 9 of ~30 packages). Trust the code.
 - Tests mirror the layer structure: `tests/unit/{application,domain,engine,infrastructure,interfaces}/`. CI runs only `pytest tests/unit -q --tb=short` with placeholder API keys.
 - Frontend uses the `@/` alias for `frontend/src/`. Vite manual chunks: `naive-ui`, `echarts`, `vue-runtime`, `vendor`. The `/api` proxy sets `timeout: 0` for SSE — keep it.

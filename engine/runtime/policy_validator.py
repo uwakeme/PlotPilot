@@ -201,7 +201,11 @@ class PolicyValidator:
             PolicyReport（通过时）
 
         Raises:
-            PolicyViolationError: 策略不达标时
+            PolicyUnavailableError: **本次没评估出结论**（护栏跑不起来、
+                或无任何可评估维度）。与 PolicyViolationError 是两个平行的类型，
+                **没有继承关系** —— 只 catch PolicyViolationError 的调用方
+                会被这个直接打断。
+            PolicyViolationError: 评估完成且确实不达标时
         """
         report = self.check(
             text=text,

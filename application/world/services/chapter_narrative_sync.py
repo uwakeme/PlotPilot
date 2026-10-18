@@ -651,6 +651,14 @@ def persist_bundle_triples_and_foreshadows(
                     resolve_hint = None
                     emotional_weight = 0.5
                     binding_level = 1
+                    # 同样计入兜底汇总 —— 非结构化提示词意味着这一条
+                    # **根本没经过模型判断**，与「模型没给 suggested_resolve_offset」
+                    # 是同一性质的降级。此前只有 else 分支 +=1，汇总数字会偏小。
+                    offset_fallbacks += 1
+                    logger.info(
+                        "伏笔回收节奏兜底 novel=%s ch=%s: %s",
+                        novel_id, chapter_number, offset_note,
+                    )
                 else:
                     desc = str(h.get("description", "")).strip()
                     # G-01：模型给的优先；没给才走兜底。
@@ -2035,10 +2043,17 @@ def _auto_adjust_storyline_range(
                 )
 
             elif chapter_number > matched.estimated_chapter_end:
+                # 性质说明：这**不是** G-03 那种「AI 没给收尾章，代码替它定」——
+                # 是 AI 本章的进展报告表明这条线还在推进，代码只是别让它立刻到期。
+                # 但 +5 仍是代码定的数，且**没有落库来源标记**（storylines 是显式列
+                # 结构，加 source 需迁移）。故在此显式说明是代码决定，
+                # 免得日后把它读成「模型把这条线延长到了 X 章」。
                 matched.estimated_chapter_end = chapter_number + 5
                 storyline_repository.save(matched)
                 logger.info(
-                    "自动延长故事线 novel=%s storyline=%s new_end=%d",
+                    "自动延长故事线 novel=%s storyline=%s new_end=%d"
+                    "（代码决定 +5：模型本章报告该线仍在推进，非模型给出的收尾章；"
+                    "该值未落库来源标记）",
                     novel_id,
                     matched.name,
                     matched.estimated_chapter_end,

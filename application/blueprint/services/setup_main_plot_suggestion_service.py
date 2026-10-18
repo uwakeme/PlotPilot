@@ -24,6 +24,25 @@ from application.blueprint.services.subline_contract import (  # noqa: E402
 DEFAULT_TARGET_CHAPTERS = 100
 
 
+def _ctx_target_chapters(ctx: Any) -> int:
+    """从 ctx 取目标章数。
+
+    区分「没有 / 非法」与「真的是那个数」：``or 100`` 会把合法的 0 也顶成 100，
+    而这里的目标章数参与「merge_chapter ≤ 目标章数」不变量的上界计算，
+    取错就等于整条校验空转。
+    """
+    if not isinstance(ctx, Mapping):
+        return DEFAULT_TARGET_CHAPTERS
+    raw = ctx.get("target_chapters")
+    if raw is None:
+        return DEFAULT_TARGET_CHAPTERS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TARGET_CHAPTERS
+    return value if value > 0 else DEFAULT_TARGET_CHAPTERS
+
+
 logger = logging.getLogger(__name__)
 
 SETUP_TASK_MARKER = "setup_main_plot_options_v1"
@@ -51,8 +70,10 @@ def normalize_main_plot_options_data(raw_data: Any, ctx: Dict[str, Any]) -> List
         raw_list = raw_data
     if not isinstance(raw_list, list):
         raise MainPlotSuggestionContractError("主线候选输出必须是数组")
+    # 用 ctx 里的真实目标章数，**不要**退回硬编码的 100 ——
+    # 「merge_chapter ≤ 目标章数」这条不变量的上界取错，整条校验就是空转。
     normalized = SetupMainPlotSuggestionService._normalize_options(
-        raw_list, target_chapters=DEFAULT_TARGET_CHAPTERS
+        raw_list, target_chapters=_ctx_target_chapters(ctx)
     )
     normalized = SetupMainPlotSuggestionService._complete_option_architecture(ctx, normalized)
     if len(normalized) >= 3:
@@ -182,7 +203,7 @@ class SetupMainPlotSuggestionService:
         ctx: Dict[str, Any],
         options: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        target_chapters = int(ctx.get("target_chapters") or 100)
+        target_chapters = _ctx_target_chapters(ctx)
         axis = ctx.get("fusion_axis") or {}
         core_promise = str(axis.get("core_promise") or "").strip()
         central_conflict = str(axis.get("central_conflict") or "").strip()
@@ -333,7 +354,7 @@ class SetupMainPlotSuggestionService:
                     raw_item, buf = extracted
                     norm = self._normalize_options(
                         [raw_item],
-                        target_chapters=int(target_chapters or DEFAULT_TARGET_CHAPTERS),
+                        target_chapters=int(target_chapters) if target_chapters else _ctx_target_chapters(ctx),
                     )
                     norm = self._complete_option_architecture(ctx, norm)
                     if not norm:
@@ -352,7 +373,7 @@ class SetupMainPlotSuggestionService:
                         ctx,
                         self._normalize_options(
                             raw_list,
-                            target_chapters=int(target_chapters or DEFAULT_TARGET_CHAPTERS),
+                            target_chapters=int(target_chapters) if target_chapters else _ctx_target_chapters(ctx),
                         ),
                     ):
                         if item["id"] in emitted_ids:

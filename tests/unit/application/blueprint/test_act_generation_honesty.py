@@ -314,8 +314,37 @@ def test_no_macro_plan_caller_can_opt_into_placeholder_structure():
 
 @pytest.mark.asyncio
 async def test_act_planning_delegate_does_not_pass_placeholder_flag():
-    """B-11-5：两个生产调用方都不该再传那个开关（方法签名已不接受它）。"""
+    """B-11-5：调用方不得再传那个已被签名移除的开关。
+
+    用 **AST 判定实际调用**，不用 `inspect.getsource` + `not in src`：
+    后者会被注释里的关键字骗红，也会被「换个调用写法」绕过 ——
+    复审把这条列为弱信号。注释不进 AST。
+    """
+    import ast
+
     import engine.runtime.macro_planning_delegate as mpd
 
     src = inspect.getsource(mpd)
-    assert "allow_minimal_placeholder_on_empty" not in src
+    tree = ast.parse(textwrap_dedent(src))
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        if name != "apply_macro_plan_from_llm_result":
+            continue
+        for kw in node.keywords:
+            if (kw.arg or "").startswith("allow_minimal_placeholder"):
+                offenders.append((kw.lineno, kw.arg))
+
+    assert not offenders, (
+        f"调用方仍在传 {offenders} —— 该开关已从方法签名移除"
+    )
+
+
+def textwrap_dedent(s: str) -> str:
+    import textwrap
+
+    return textwrap.dedent(s)

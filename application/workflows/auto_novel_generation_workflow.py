@@ -1806,6 +1806,11 @@ class AutoNovelGenerationWorkflow:
 
     def _load_plot_arc(self, novel_id_obj: NovelId) -> "PlotArc":
         """从情节弧仓储加载本书的 PlotArc；加载失败返回空弧而非阻断检查。"""
+        # ⚠ 局部 import：模块顶部没有 PlotArc，另一个函数里有同名 import
+        # 但那是**另一个函数**的作用域，本函数直接用会 NameError，
+        # 被外层 except 吞成一条 warning —— 一致性检查永远拿不到空弧兜底。
+        from domain.novel.entities.plot_arc import PlotArc
+
         try:
             arc = self.plot_arc_repository.get_by_novel_id(novel_id_obj)
             if arc is not None:

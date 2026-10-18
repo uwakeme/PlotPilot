@@ -390,12 +390,16 @@ async def test_enabled_with_apply_prefixes_outline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_legacy_tension_scale_is_normalised(monkeypatch):
-    """旧刻度（<=10）要 ×10，与 legacy_writing_delegate 保持一致。
+async def test_flagged_tension_is_used_verbatim_without_rescaling(monkeypatch):
+    """标记为「评估过」的张力**原样使用**，不做 `<=10 → ×10` 的刻度猜测。
 
-    **前提**：`last_chapter_tension` 是 int 且默认 0，「真是 0」与「没测过」
-    在这一列上完全同形。所以只有章末审计显式落了
-    ``last_chapter_tension_evaluated=True`` 时才采信该值。
+    为什么改掉：标记为 True 意味着这个值来自章末审计，而 audit 写入的
+    本来就是 0-100 刻度（`tension = int(tension_composite)`，无 /10 降级）。
+    再乘 10 会把「真实 8 分」放大成 80，直接把正常章判成余韵章 ——
+    比不给信号更坏。
+
+    旧实现有 `* 10 if float(raw) <= 10 else float(raw)`，复审指出它会把
+    真实低分放大十倍。
     """
     import engine.pipeline.base as base_mod
 
@@ -418,18 +422,21 @@ async def test_legacy_tension_scale_is_normalised(monkeypatch):
     monkeypatch.setattr(
         "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
 
-    class _LegacyNovel:
-        last_chapter_tension = 8          # 旧刻度
+    # 低分：旧实现会变成 80.0，正是「把正常章判成余韵章」的成因
+    class _LowScore:
+        last_chapter_tension = 8
 
     ctx = _Ctx()
     await BaseStoryPipeline._decide_chapter_mode(
-        object.__new__(BaseStoryPipeline), ctx, _LegacyNovel())
-    assert seen["last_tension"] == 80.0
+        object.__new__(BaseStoryPipeline), ctx, _LowScore())
+    assert seen["last_tension"] == 8.0, (
+        "低张力被放大了 —— 标记为评估过的值本就已是 0-100 刻度，不该再 ×10"
+    )
 
     seen.clear()
     ctx2 = _Ctx()
     class _NewNovel:
-        last_chapter_tension = 87         # 新刻度
+        last_chapter_tension = 87
     await BaseStoryPipeline._decide_chapter_mode(
         object.__new__(BaseStoryPipeline), ctx2, _NewNovel())
     assert seen["last_tension"] == 87.0

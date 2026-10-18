@@ -440,17 +440,21 @@ class BaseStoryPipeline(ABC):
             from interfaces.api.dependencies import get_chapter_mode_planner
 
             last_tension = None
-            if novel is not None:
+            if novel is not None and self._last_chapter_tension_evaluated(ctx.novel_id):
                 raw = getattr(novel, "last_chapter_tension", None)
                 # 「未评估」时 audit_delegate 仍写 0，而 `Novel.last_chapter_tension`
                 # 本身也默认 0 —— **0 在这一列上无法区分「真是 0」与「没测过」**。
                 # 拿编造的 0 当真实张力喂给模型，正是本轮红线要消灭的东西。
-                # 章末审计额外落了 `last_chapter_tension_evaluated` 显式标记，
-                # 这里只认标记为 True 的值；标记缺失（守护进程重启后内存态已失）
-                # 一律按「没测过」处理 —— 宁可少给一个信号，不给假信号。
-                if self._last_chapter_tension_evaluated(ctx.novel_id):
-                    if raw is not None:
-                        last_tension = float(raw) * 10 if float(raw) <= 10 else float(raw)
+                # 章末审计额外落了 `last_chapter_tension_evaluated` 显式标记；
+                # 标记缺失（守护进程重启后内存态已失）一律按「没测过」处理 ——
+                # 宁可少给一个信号，不给假信号。
+                if raw is not None:
+                    # ⚠ **不做 `<=10 → ×10` 的刻度猜测**。标记为 True 意味着这个值
+                    # 来自章末审计，而 audit 写入的本来就是 0-100 刻度
+                    # （`tension = int(tension_composite)`，无 /10 降级）。
+                    # 再乘 10 会把「真实 8 分」放大成 80，直接把正常章判成余韵章 ——
+                    # 比不给信号更坏。老刻度兼容只留给没有标记的 legacy 写入者。
+                    last_tension = float(raw)
 
             decision = await get_chapter_mode_planner().decide(
                 novel_id=ctx.novel_id,

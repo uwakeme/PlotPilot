@@ -67,10 +67,11 @@ CREATE INDEX IF NOT EXISTS idx_chapter_summaries_knowledge_cover
 ON chapter_summaries(knowledge_id, chapter_number);
 
 -- ========================================
--- 6. 分析查询计划（原 EXPLAIN QUERY PLAN 三条已移除）
+-- 6. 分析查询计划（原 EXPLAIN QUERY PLAN 诊断语句已移除）
 -- ========================================
--- 这三条原本只是人工验证索引效果的诊断语句，没有任何 schema 副作用，
--- 但迁移执行器是逐条 `conn.execute(statement)` 且不预绑定参数：
+-- 原有 3 条人工验证索引效果的诊断语句（其中 2 条带未绑定的 `?` 占位符）
+-- 没有任何 schema 副作用，但迁移执行器是逐条 `conn.execute(statement)`
+-- 且不预绑定参数：
 --   * `?` 占位符无绑定 ⇒ sqlite3.ProgrammingError（不是 OperationalError，
 --     走不到 _BENIGN_ERROR_MARKERS 分支）
 --   * 任一语句失败 ⇒ 整个文件被判失败 ⇒ **永不写入 migrations_applied**

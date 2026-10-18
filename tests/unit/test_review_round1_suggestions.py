@@ -216,12 +216,35 @@ def test_workflow_main_path_forwards_the_actual_slot_weights_value():
 
 
 def test_decide_chapter_mode_only_trusts_flagged_tension():
-    src = _read("engine/pipeline/base.py")
-    assert "_last_chapter_tension_evaluated" in src, (
-        "D-01 没有校验张力是否真的评估过"
+    """D-01 的取值必须被评估标记门控。
+
+    用 AST 判定：`_last_chapter_tension_evaluated` 的结果必须出现在
+    **给 `last_tension` 赋值的控制流里** —— 只查「函数体里出现过这个名字」
+    等于没查（注释里写一遍就过）。
+    """
+    tree = _ast("engine/pipeline/base.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "_decide_chapter_mode"
     )
-    # 取值必须被标记门控
-    assert "if self._last_chapter_tension_evaluated(ctx.novel_id):" in src
+    assigns = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "last_tension" for t in n.targets)
+    ]
+    assert assigns, "没找到 last_tension 的赋值"
+
+    guarded = False
+    for a in assigns:
+        # 赋值行所在的 If 链里，必须有对标记的调用
+        for node in ast.walk(fn):
+            if isinstance(node, ast.If) and a in list(ast.walk(node)):
+                if "_last_chapter_tension_evaluated" in ast.unparse(node.test):
+                    guarded = True
+    assert guarded, (
+        "last_tension 的赋值没有被评估标记门控 —— 未评估时写入的 0 会被当真实张力喂给模型"
+    )
 
 
 def test_flag_reader_defaults_to_false_on_any_problem():
@@ -789,6 +812,93 @@ async def test_context_weight_planner_rejects_out_of_contract_payload(monkeypatc
     )
     assert got is None, f"不合契约的输出被当成了有效权重：{got!r}"
 
+
+
+# ── 7. D-02 的 T0 层必须拒绝权重（复审建议 7：结构正确但无测试钉住）────────
+
+
+def test_t0_truncation_has_no_slot_weights_parameter():
+    """T0 是「不可压缩」层，**结构上**就不接受权重。
+
+    `truncate_t0_slots` 没有 `slot_weights` 形参 ⇒ 权重无法施加到 T0。
+    这比「运行时验证它被拒绝」更强：连传都传不进去。
+    """
+    import inspect
+
+    from application.engine.services.context_budget_policy import truncate_t0_slots
+
+    params = list(inspect.signature(truncate_t0_slots).parameters)
+    assert "slot_weights" not in params, (
+        f"truncate_t0_slots 出现了 slot_weights：{params} —— "
+        f"T0 是不可压缩层，权重不应影响它"
+    )
+    assert "weights" not in " ".join(params)
+
+
+def test_t0_never_routes_through_allocate_tier():
+    """分配器对 T0 只能走截断路径，不能调带权重的 `allocate_tier`。
+
+    用 AST 判定调用形态，而不是数 `_allocate_tier` 的调用点 ——
+    形态判定能直接回答「T0 有没有可能拿到权重」。
+    注意 T0 走的是包装方法 `self._truncate_t0_slots`，不是模块函数直调。
+    """
+    tree = _ast("application/engine/services/context_budget_allocator.py")
+
+    allocate_fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "allocate"
+    )
+    truncate_calls = [
+        n for n in ast.walk(allocate_fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and "truncate_t0" in n.func.attr
+    ]
+    assert truncate_calls, "allocate() 里没有对 T0 的截断调用 —— T0 语义可能已变"
+
+    # T1/T2/T3 才允许走带权重的 _allocate_tier
+    weighted_calls = [
+        n for n in ast.walk(allocate_fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "_allocate_tier"
+    ]
+    assert weighted_calls, "没找到 T1/T2/T3 的分配调用"
+
+    # 包装层不得偷偷传权重
+    wrapper = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_truncate_t0_slots"
+    )
+    for arg in wrapper.args.args:
+        assert "weight" not in ast.unparse(arg).lower(), (
+            f"T0 截断包装层传了权重：{ast.unparse(arg)}"
+        )
+    inner = [
+        n for n in ast.walk(wrapper)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "truncate_t0_slots"
+    ]
+    assert inner, "_truncate_t0_slots 没有转调模块函数 truncate_t0_slots"
+    for call in inner:
+        for kw in call.keywords:
+            assert "weight" not in (kw.arg or ""), (
+                f"T0 截断调用传了 {kw.arg}"
+            )
+        for arg in call.args[1:]:
+            assert "weight" not in ast.unparse(arg).lower(), (
+                f"T0 截断实参含权重：{ast.unparse(arg)}"
+            )
+
+
+def test_allocate_tier_is_only_reached_from_t1_and_below():
+    """`allocate_tier` 带 `slot_weights` 形参 ⇒ 只有 T1/T2/T3 能调它。"""
+    import inspect
+
+    from application.engine.services.context_budget_policy import allocate_tier
+
+    assert "slot_weights" in inspect.signature(allocate_tier).parameters
 
 # ── 8. 墙钟守卫必须真的抓得住 ────────────────────────────────────────────
 

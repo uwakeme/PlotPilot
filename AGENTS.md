@@ -46,7 +46,7 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
 
 - **没有 Python linter/formatter**（无 ruff/black/flake8/pre-commit）；不要发明 `python -m lint`
 - **没有前端 ESLint**；`npm run build` 是前端唯一门禁
-- **依赖边界是"约定"，不是强制的**：`domain/` 不应引入外部依赖；现有的越界（如 `domain/engine/dag/repositories/dag_version_repository.py` 引入 `application`）不要新增
+- **依赖边界是"约定"，不是强制的**：`domain/` 不应引入外部依赖；现有的越界（`domain/novel/value_objects/story_phase.py` 引入 `engine.core.entities.story`）不要新增
 - **分层位置是 PR 评审项**：新建文件先想清楚属于哪一层；加表/字段 PR 必须写迁移说明；改 API 契约必须显式说明
 - **SQLite 写盘统一走单一写者派发器**：业务代码不要直接 `import sqlite3`，经 `infrastructure/persistence/database/connection.py` 的 `db.execute()` / `db.transaction()`；底层 `write_dispatch.py` 负责串行化
 - **Prompt 注入字符串用常量**：`infrastructure/ai/prompt_keys.py` 是 CPMS 82 个节点键的唯一来源；新增模板放在 `infrastructure/ai/prompt_packages/nodes/<node_key>/` 并 bump `bundle_meta.yaml` 版本号
