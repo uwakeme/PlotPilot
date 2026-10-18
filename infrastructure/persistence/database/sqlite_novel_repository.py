@@ -92,7 +92,8 @@ class SqliteNovelRepository(NovelRepository):
         current_chapter_in_act = getattr(novel, 'current_chapter_in_act', 0)
         max_auto_chapters = getattr(novel, 'max_auto_chapters', 9999)
         current_auto_chapters = getattr(novel, 'current_auto_chapters', 0)
-        last_chapter_tension = getattr(novel, 'last_chapter_tension', 0)
+        # None = 从未评估过；不要退回 0（0 是合法的真实张力值）
+        last_chapter_tension = getattr(novel, 'last_chapter_tension', None)
         consecutive_error_count = getattr(novel, 'consecutive_error_count', 0)
         current_beat_index = getattr(novel, 'current_beat_index', 0)
         beats_completed = 1 if getattr(novel, 'beats_completed', False) else 0
@@ -340,7 +341,8 @@ class SqliteNovelRepository(NovelRepository):
             current_chapter_in_act=row.get('current_chapter_in_act', 0),
             max_auto_chapters=row.get('max_auto_chapters', 9999),
             current_auto_chapters=row.get('current_auto_chapters', 0),
-            last_chapter_tension=row.get('last_chapter_tension', 0),
+            # 该列可为 NULL（从未评估）⇒ 保持 None，不要压成 0
+            last_chapter_tension=row.get('last_chapter_tension'),
             consecutive_error_count=row.get('consecutive_error_count', 0),
             current_beat_index=row.get('current_beat_index', 0),
             autopilot_run_epoch=row.get("autopilot_run_epoch", 0),

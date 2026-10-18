@@ -411,8 +411,6 @@ async def test_flagged_tension_is_used_verbatim_without_rescaling(monkeypatch):
     monkeypatch.setattr(
         "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
         lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
-    monkeypatch.setattr(
-        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: True))
 
     class _Planner:
         async def decide(self, **kw):
@@ -460,8 +458,6 @@ async def test_unevaluated_tension_is_not_fed_to_the_model(monkeypatch):
         "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
         lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
     # 显式标记为「未评估」
-    monkeypatch.setattr(
-        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: False))
 
     class _Planner:
         async def decide(self, **kw):
@@ -471,35 +467,35 @@ async def test_unevaluated_tension_is_not_fed_to_the_model(monkeypatch):
     monkeypatch.setattr(
         "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
 
+    # ⚠ 值本身即三态：None = 从未评估。此前是「int 且默认 0」+ 另立标记区分，
+    # 现在 0 是**合法**的真实张力值，None 才是「没测过」。
     class _UnevaluatedNovel:
-        last_chapter_tension = 0          # 未评估时 audit_delegate 写的就是 0
+        last_chapter_tension = None
 
     ctx = _Ctx()
     await BaseStoryPipeline._decide_chapter_mode(
         object.__new__(BaseStoryPipeline), ctx, _UnevaluatedNovel())
     assert seen["last_tension"] is None, (
-        "把未评估的 0 当成真实张力喂给模型了"
+        "把「未评估」当成了真实信号喂给模型"
     )
 
 
 @pytest.mark.asyncio
-async def test_missing_evaluated_flag_defaults_to_not_trusted(monkeypatch):
-    """标记读不到（守护进程重启后内存态已失）⇒ 按「没测过」处理。
+async def test_zero_tension_is_a_real_value_not_missing_signal(monkeypatch):
+    """**反向守卫**：0 是合法的真实张力，不能被当成「没测过」丢掉。
 
-    「不知道」必须与「是 0」区分开。宁可少给一个信号，不给假信号。
+    这正是从「int + 独立标记」改成 Optional 之后必须钉住的语义边界 ——
+    上一代实现里 0 无法与「没测过」区分，所以这里要明确它现在代表什么。
     """
     import engine.pipeline.base as base_mod
 
     seen = {}
-
     monkeypatch.setattr(base_mod, "logger", type("L", (), {
         "warning": lambda self, *a, **k: None, "info": lambda self, *a, **k: None,
     })())
     monkeypatch.setattr(
         "application.engine.services.chapter_mode_settings.get_chapter_mode_runtime_settings",
         lambda: ChapterModeRuntimeSettings(enabled=True, apply=True))
-    monkeypatch.setattr(
-        BaseStoryPipeline, "_last_chapter_tension_evaluated", staticmethod(lambda _nid: False))
 
     class _Planner:
         async def decide(self, **kw):
@@ -509,13 +505,15 @@ async def test_missing_evaluated_flag_defaults_to_not_trusted(monkeypatch):
     monkeypatch.setattr(
         "interfaces.api.dependencies.get_chapter_mode_planner", lambda: _Planner())
 
-    class _Novel:
-        last_chapter_tension = 55
+    class _ZeroNovel:
+        last_chapter_tension = 0
 
     ctx = _Ctx()
     await BaseStoryPipeline._decide_chapter_mode(
-        object.__new__(BaseStoryPipeline), ctx, _Novel())
-    assert seen["last_tension"] is None
+        object.__new__(BaseStoryPipeline), ctx, _ZeroNovel())
+    assert seen["last_tension"] == 0.0, (
+        "真实张力 0 被当成「没测过」丢掉了 —— 那是丢掉一个合法信号"
+    )
 
 
 @pytest.mark.asyncio

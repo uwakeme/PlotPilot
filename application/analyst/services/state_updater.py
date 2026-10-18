@@ -459,6 +459,8 @@ class StateUpdater:
                     status=StorylineStatus.ACTIVE,
                     estimated_chapter_start=chapter_number,
                     estimated_chapter_end=storyline_end,
+                    estimated_chapter_end_source=end_source,
+                    estimated_chapter_end_note=end_note,
                     name=new_data.get("name", ""),
                     description=new_data.get("description", ""),
                     last_active_chapter=chapter_number,

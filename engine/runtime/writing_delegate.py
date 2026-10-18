@@ -232,12 +232,6 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
             writing_substep_label="审计准备",
             current_chapter_number=chapter_num,
             last_chapter_tension=result.tension,
-            # ⚠ 与 `last_chapter_tension` **同源**写评估标记。
-            # `Novel.last_chapter_tension` 默认就是 0，「真是 0」与「没测过」在
-            # 该列上完全同形；D-01 只采信标记为 True 的值。若这里只写值不写标记，
-            # 就会留下「上一章的 True + 这一章的新值」的错配 ——
-            # 新值可能是 None/0 而标记还停留在 True。
-            last_chapter_tension_evaluated=result.tension is not None,
             audit_aftermath_reused=False,
             audit_aftermath_rebuilt=False,
         )

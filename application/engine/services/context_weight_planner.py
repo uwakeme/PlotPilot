@@ -109,6 +109,13 @@ class ContextWeightPlanner:
 
         payload = self._parse(rendered, result.content, novel_id, chapter_number)
         if payload is None:
+            # ⚠ 「上游调通了但输出不合契约」和「上游抛异常」是同一种降级：
+            # 都说明此刻拿不到可信权重。此前只有异常分支进失败退避，
+            # 于是上游持续返回垃圾 JSON 时**每章都会重新打一次** ——
+            # 既浪费调用又刷屏日志。返回 None 一律进退避。
+            self._backoff_until[novel_id] = (
+                time.monotonic() + settings.failure_backoff_seconds
+            )
             return None
 
         if not payload.get("evaluated", False):
@@ -125,6 +132,9 @@ class ContextWeightPlanner:
             logger.warning(
                 "上下文权重声称已评估但无可用槽位，按未评估处理 novel=%s ch=%s",
                 novel_id, chapter_number,
+            )
+            self._backoff_until[novel_id] = (
+                time.monotonic() + settings.failure_backoff_seconds
             )
             return None
 

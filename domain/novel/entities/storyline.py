@@ -28,6 +28,14 @@ class Storyline(BaseEntity):
         role: StorylineRole = StorylineRole.MAIN,
         parent_id: Optional[str] = None,
         chapter_weight: float = 1.0,
+        # G-03：`estimated_chapter_end` 这个**取值**的来源。
+        #   'ai'       模型给了收尾章
+        #   'fallback' 模型没给，代码兜底
+        #   ''（默认）旧数据未标注 —— **不等于** 'ai'，读端必须显式判
+        # 默认空串而非 'ai'：默认填 'ai' 会把未标注的旧数据
+        # 读成「这是模型的判断」。
+        estimated_chapter_end_source: str = "",
+        estimated_chapter_end_note: str = "",
     ):
         super().__init__(id)
         self.novel_id = novel_id
@@ -44,6 +52,8 @@ class Storyline(BaseEntity):
         self.role = role
         self.parent_id = parent_id
         self.chapter_weight = chapter_weight
+        self.estimated_chapter_end_source = estimated_chapter_end_source
+        self.estimated_chapter_end_note = estimated_chapter_end_note
 
     def update_progress(self, chapter_number: int, summary: str) -> None:
         """更新故事线进度

@@ -69,18 +69,21 @@ class SqliteStorylineRepository(StorylineRepository):
                 INSERT INTO storylines (
                     id, novel_id, storyline_type, status,
                     estimated_chapter_start, estimated_chapter_end,
+                    estimated_chapter_end_source, estimated_chapter_end_note,
                     current_milestone_index, name, description,
                     last_active_chapter, progress_summary,
                     role, parent_id, chapter_weight,
                     extensions, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     novel_id = excluded.novel_id,
                     storyline_type = excluded.storyline_type,
                     status = excluded.status,
                     estimated_chapter_start = excluded.estimated_chapter_start,
                     estimated_chapter_end = excluded.estimated_chapter_end,
+                    estimated_chapter_end_source = excluded.estimated_chapter_end_source,
+                    estimated_chapter_end_note = excluded.estimated_chapter_end_note,
                     current_milestone_index = excluded.current_milestone_index,
                     name = excluded.name,
                     description = excluded.description,
@@ -98,6 +101,9 @@ class SqliteStorylineRepository(StorylineRepository):
                     storyline.status.value,
                     storyline.estimated_chapter_start,
                     storyline.estimated_chapter_end,
+                    # G-03：属性缺失（老代码路径）时回落空串，**不回落 'ai'**
+                    getattr(storyline, "estimated_chapter_end_source", "") or "",
+                    getattr(storyline, "estimated_chapter_end_note", "") or "",
                     storyline.current_milestone_index,
                     storyline.name,
                     storyline.description,
@@ -197,6 +203,9 @@ class SqliteStorylineRepository(StorylineRepository):
             status=StorylineStatus(row["status"]),
             estimated_chapter_start=row["estimated_chapter_start"],
             estimated_chapter_end=row["estimated_chapter_end"],
+            # row.get 而非 row[...]：迁移未跑时该列不存在
+            estimated_chapter_end_source=row.get("estimated_chapter_end_source", "") or "",
+            estimated_chapter_end_note=row.get("estimated_chapter_end_note", "") or "",
             milestones=milestones,
             current_milestone_index=row["current_milestone_index"],
             name=row.get("name", ""),

@@ -117,25 +117,13 @@ def test_frontend_uses_backend_status_as_single_source_of_truth():
 # ── 2. D-01 输入：未评估 ≠ 0 ──────────────────────────────────────────────
 
 
-def test_audit_writes_an_explicit_evaluated_flag_for_both_branches():
-    """`last_chapter_tension=0` 同时表达「真是 0」与「没测过」，必须另带标记。"""
-    src = _read("engine/runtime/audit_delegate.py")
-    assert src.count("last_chapter_tension_evaluated") >= 2, (
-        "评估标记必须两个分支都写：True（评估过）与 False（未评估）"
-    )
-    assert "last_chapter_tension_evaluated=True" in src
-    assert "last_chapter_tension_evaluated=False" in src
+def test_audit_writes_none_not_zero_when_tension_was_not_evaluated():
+    """未评估时必须写 ``None``，**不是 0**。
 
-
-def test_audit_flag_is_not_swapped_between_the_two_branches():
-    """⚠ 复审实证：把两个分支的标记**对调**（语义反转）时，上一条全绿。
-
-    上一条只验「两个字符串都出现过」，注释里写一遍就能过。
-    这里改成**结构判定**：标记必须落在对应的 `if/else` 分支里。
-
-    `tension_evaluated=True` 的分支 ⇒ 标记必须是 True；
-    `else`（未评估）分支 ⇒ 标记必须是 False。
-    对调即红线语义反转 —— 未评估会被报成「评估过，张力 0」。
+    `last_chapter_tension` 现为 `Optional[int]`，None = 从未评估。
+    此前它是 int 且默认 0，未评估时也写 0 —— 两者在 0 上同形，
+    只能另立一个 `_evaluated` 标记区分；那等于制造了第二个事实源（值 + 标记），
+    两者可以漂移。现在单一事实源就是值本身。
     """
     tree = _ast("engine/runtime/audit_delegate.py")
     fn = next(
@@ -144,83 +132,87 @@ def test_audit_flag_is_not_swapped_between_the_two_branches():
         and n.name == "run_chapter_audit"
     )
 
-    def flag_of(nodes) -> str | None:
-        for node in nodes:
-            for sub in ast.walk(node):
-                if (isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_update_shared_state"):
-                    for kw in sub.keywords:
-                        if kw.arg == "last_chapter_tension_evaluated":
-                            if isinstance(kw.value, ast.Constant):
-                                return repr(kw.value.value)
-                            return ast.unparse(kw.value)
-        return None
+    def assignments_to(name):
+        # 目标可能是 `novel.last_chapter_tension`（Attribute），
+        # 不只是裸 Name —— 只认 Name 会一个都找不到
+        def hits(target):
+            if isinstance(target, ast.Name):
+                return target.id == name
+            return isinstance(target, ast.Attribute) and target.attr == name
 
-    pairs = []
-    for node in ast.walk(fn):
-        if not isinstance(node, ast.If):
-            continue
-        if "tension_evaluated" not in ast.unparse(node.test):
-            continue
-        body_flag = flag_of(node.body)
-        else_flag = flag_of(node.orelse) if node.orelse else None
-        if body_flag is not None or else_flag is not None:
-            pairs.append((node.lineno, body_flag, else_flag))
+        return [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Assign) and any(hits(x) for x in n.targets)
+        ]
 
-    assert pairs, "没找到写评估标记的 tension_evaluated 分支"
-    # 逐对检查语义方向，而不是只看「两个值都出现过」
-    for lineno, body_flag, else_flag in pairs:
-        assert body_flag != "False", (
-            f"L{lineno}：评估过的分支标记写成了 False —— 未评估会被报成「张力 0」，"
-            f"或评估过的被当成没测过"
-        )
-        assert else_flag != "True", (
-            f"L{lineno}：未评估分支标记写成了 True —— 「没测过」会被当成真实张力"
-        )
-    # 且必须至少有一对是「True + False」的标准形态
-    assert any(b == "True" and e == "False" for _, b, e in pairs), (
-        f"没有任何分支呈现「评估过=True / 未评估=False」的标准形态：{pairs}"
+    tension_asg = assignments_to("last_chapter_tension")
+    assert len(tension_asg) >= 2, (
+        f"只找到 {len(tension_asg)} 处 last_chapter_tension 赋值 —— 两个分支都该有"
     )
-
-
-def test_workflow_main_path_forwards_the_actual_slot_weights_value():
-    """⚠ 复审实证：把主路径的 `slot_weights=slot_weights` 改成 `=None`，
-    相关 20+ 条测试全绿 —— 因为守卫只查 AST token 存在，不验转发值。
-
-    这里改成**判定转发的是不是原值**。`prepare_chapter_generation` 的
-    协作依赖太重，不适合在单测里真跑；AST 判 kwarg 的值足够，
-    且比源码子串匹配强（注释里写一遍骗不过去）。
-    """
-    tree = _ast("application/workflows/auto_novel_generation_workflow.py")
-    fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef)
-        and n.name == "prepare_chapter_generation"
-    )
-    calls = [
-        n for n in ast.walk(fn)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "build_structured_context"
+    zero_writes = [
+        a.lineno for a in tension_asg if ast.unparse(a.value).strip() == "0"
     ]
-    assert calls, "没找到 build_structured_context 调用"
-    for call in calls:
-        forwarded = [kw for kw in call.keywords if kw.arg == "slot_weights"]
-        assert forwarded, "存在不传 slot_weights 的 build_structured_context 调用"
-        for kw in forwarded:
-            assert ast.unparse(kw.value) == "slot_weights", (
-                f"slot_weights 被改成了 {ast.unparse(kw.value)!r} —— "
-                f"权重会算完即丢（生产 daemon 恒走这条主路径）"
-            )
+    assert not zero_writes, (
+        f"L{zero_writes} 把未评估写成了 0 —— 「真是 0」与「没测过」就此同形"
+    )
+    none_writes = [
+        a.lineno for a in tension_asg if ast.unparse(a.value).strip() == "None"
+    ]
+    assert none_writes, "未评估分支没有写 None"
+
+    # 共享状态也要跟着写 None
+    shared = [
+        kw for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_update_shared_state"
+        for kw in node.keywords
+        if kw.arg == "last_chapter_tension"
+    ]
+    assert shared, "没找到共享状态里的 last_chapter_tension 写入"
+    assert not [
+        kw for kw in shared if ast.unparse(kw.value).strip() == "0"
+    ], "共享状态仍在把未评估压成 0"
+
+    # 冗余标记必须已被移除。
+    # ⚠ 用 AST 判关键字参数名，**不要**用 `"..." not in src` ——
+    # 注释里提到这个名字就会让断言误判（这轮已经吃过一次）。
+    flag_kwargs = [
+        (n.lineno, kw.arg)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        for kw in n.keywords
+        if (kw.arg or "").startswith("last_chapter_tension_evaluated")
+    ]
+    assert not flag_kwargs, (
+        f"评估标记仍作为参数存在：{flag_kwargs} —— 值本身就是三态，"
+        f"留着它等于留了第二个可以漂移的事实源"
+    )
 
 
-def test_decide_chapter_mode_only_trusts_flagged_tension():
-    """D-01 的取值必须被评估标记门控。
+def test_novel_entity_declares_tension_as_optional():
+    from domain.novel.entities.novel import Novel
+    import inspect
 
-    用 AST 判定：`_last_chapter_tension_evaluated` 的结果必须出现在
-    **给 `last_tension` 赋值的控制流里** —— 只查「函数体里出现过这个名字」
-    等于没查（注释里写一遍就过）。
+    ann = str(Novel.__init__.__annotations__.get("last_chapter_tension", ""))
+    assert "None" in ann and ("Optional" in ann or "| None" in ann), (
+        f"last_chapter_tension 应为 Optional[int]，实际 {ann!r}"
+    )
+    sig = inspect.signature(Novel.__init__)
+    assert sig.parameters["last_chapter_tension"].default is None, (
+        "默认值必须是 None（= 从未评估），0 会与「真实张力 0」同形"
+    )
+    fresh = Novel(
+        id=__import__("domain.novel.value_objects.novel_id", fromlist=["NovelId"]).NovelId("n1"),
+        title="t", author="a", target_chapters=10,
+    )
+    assert fresh.last_chapter_tension is None
+
+
+def test_decide_chapter_mode_treats_none_as_no_signal():
+    """D-01 的取值直接来自 Optional 值：None ⇒ 不给信号。
+
+    不再经过任何中间判定函数 —— 值本身就是三态，没有第二个事实源。
     """
     tree = _ast("engine/pipeline/base.py")
     fn = next(
@@ -234,29 +226,14 @@ def test_decide_chapter_mode_only_trusts_flagged_tension():
         and any(isinstance(t, ast.Name) and t.id == "last_tension" for t in n.targets)
     ]
     assert assigns, "没找到 last_tension 的赋值"
-
-    guarded = False
-    for a in assigns:
-        # 赋值行所在的 If 链里，必须有对标记的调用
-        for node in ast.walk(fn):
-            if isinstance(node, ast.If) and a in list(ast.walk(node)):
-                if "_last_chapter_tension_evaluated" in ast.unparse(node.test):
-                    guarded = True
-    assert guarded, (
-        "last_tension 的赋值没有被评估标记门控 —— 未评估时写入的 0 会被当真实张力喂给模型"
+    # 赋值必须在 `raw is not None` 的守卫之内
+    src = ast.unparse(fn)
+    assert "if raw is not None" in src, (
+        "last_tension 的取值没有被 None 守卫 —— 未评估的 None 会直接喂给模型"
     )
-
-
-def test_flag_reader_defaults_to_false_on_any_problem():
-    """读不到 / 抛错一律 False —— 「不知道」必须与「是 0」区分开。"""
-    from engine.pipeline.base import BaseStoryPipeline
-
-    src = inspect.getsource(BaseStoryPipeline._last_chapter_tension_evaluated)
-    assert "except Exception" in src
-    assert src.rstrip().endswith("return False")
-
-
-# ── 3. 异常分支必须留原因 ────────────────────────────────────────────────
+    assert "last_chapter_tension_evaluated" not in src, (
+        "仍在走已删除的评估标记 —— 值本身就是三态，不需要第二个事实源"
+    )
 
 
 def test_decide_failure_branch_records_the_reason():

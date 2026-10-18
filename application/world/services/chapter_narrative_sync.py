@@ -362,6 +362,9 @@ def _make_storyline_from_progress_item(
         status=StorylineStatus.ACTIVE,
         estimated_chapter_start=chapter_number,
         estimated_chapter_end=end,
+        # G-03：来源随取值一起落库。此前只有日志里有，落库后无法分辨
+        estimated_chapter_end_source=source,
+        estimated_chapter_end_note=note,
         name=name,
         description=(description or "")[:800],
         role=role,
@@ -1984,6 +1987,8 @@ def _initialize_first_chapter_storyline(
             status=StorylineStatus.ACTIVE,
             estimated_chapter_start=chapter_number,
             estimated_chapter_end=main_end,  # G-03
+            estimated_chapter_end_source=main_source,
+            estimated_chapter_end_note=main_note,
             name=storyline_name,
             description=storyline_desc,
             progress_summary=summary  # 将首章摘要作为初始进展
@@ -2049,6 +2054,10 @@ def _auto_adjust_storyline_range(
                 # 结构，加 source 需迁移）。故在此显式说明是代码决定，
                 # 免得日后把它读成「模型把这条线延长到了 X 章」。
                 matched.estimated_chapter_end = chapter_number + 5
+                matched.estimated_chapter_end_source = SOURCE_FALLBACK
+                matched.estimated_chapter_end_note = (
+                    "代码自动延长 +5：模型本章报告该线仍在推进，非模型给出的收尾章"
+                )
                 storyline_repository.save(matched)
                 logger.info(
                     "自动延长故事线 novel=%s storyline=%s new_end=%d"

@@ -573,7 +573,6 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         host._update_shared_state(
             novel.novel_id.value,
             last_chapter_tension=tension,
-            last_chapter_tension_evaluated=True,
         )
         # 同步章节张力到 chapters 表，供 /monitor/tension-curve 与「audit_tension_result」SSE 刷新一致读库
         #（章后管线可能已写过多维张力，此处幂等 UPDATE 覆盖 composite）
@@ -590,15 +589,15 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
                 e,
             )
     else:
-        novel.last_chapter_tension = 0
+        # **写 None，不是 0。** 该列在 SQLite 里是 `INTEGER DEFAULT 0` 且未声明
+        # NOT NULL ⇒ 天然能存 NULL，不需要迁移。关键是别再把「没测过」压成 0 ——
+        # 两者在 0 这一列上同形，任何拿它做创作判断的读者都会读到编造的值。
+        # 此前靠额外的 `last_chapter_tension_evaluated` 标记来区分，那等于
+        # 制造了第二个事实源（值 + 标记），两者可以漂移。现在单一事实源就是值本身。
+        novel.last_chapter_tension = None
         host._update_shared_state(
             novel.novel_id.value,
-            last_chapter_tension=0,
-            # `last_chapter_tension` 是 int 且默认 0，**「真是 0」与「没测过」
-            # 在这一列上完全同形**。这里额外落一个显式标记，让下游（如 D-01 的
-            # 节奏判定）能区分两者，而不是把编造的 0 当成真实张力喂给模型。
-            # 列本身改 Optional 需要动约 40 处（含前端），不在本次范围。
-            last_chapter_tension_evaluated=False,
+            last_chapter_tension=None,
         )
     # 🔥 发布张力打分结果事件
     host._publish_audit_event(

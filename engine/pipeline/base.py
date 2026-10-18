@@ -388,23 +388,6 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             return StepResult.fail(f"章节定位失败: {e}")
 
-    @staticmethod
-    def _last_chapter_tension_evaluated(novel_id: str) -> bool:
-        """上章张力是否**真的评估过**。
-
-        读章末审计落下的显式标记。读不到 / 抛错一律 False ——
-        「不知道」必须与「是 0」区分开，宁可不给信号也不给假信号。
-        """
-        try:
-            from application.ai_invocation.autopilot.shared_state import (
-                read_autopilot_shared_state,
-            )
-
-            state = read_autopilot_shared_state(novel_id) or {}
-            return state.get("last_chapter_tension_evaluated") is True
-        except Exception:
-            return False
-
     async def _decide_chapter_mode(self, ctx: PipelineContext, novel) -> None:
         """D-01：判定本章是余韵章还是正常推进，并把结果落到 ``ctx``。
 
@@ -440,20 +423,19 @@ class BaseStoryPipeline(ABC):
             from interfaces.api.dependencies import get_chapter_mode_planner
 
             last_tension = None
-            if novel is not None and self._last_chapter_tension_evaluated(ctx.novel_id):
+            if novel is not None:
                 raw = getattr(novel, "last_chapter_tension", None)
-                # 「未评估」时 audit_delegate 仍写 0，而 `Novel.last_chapter_tension`
-                # 本身也默认 0 —— **0 在这一列上无法区分「真是 0」与「没测过」**。
-                # 拿编造的 0 当真实张力喂给模型，正是本轮红线要消灭的东西。
-                # 章末审计额外落了 `last_chapter_tension_evaluated` 显式标记；
-                # 标记缺失（守护进程重启后内存态已失）一律按「没测过」处理 ——
-                # 宁可少给一个信号，不给假信号。
+                # `last_chapter_tension` 是 `Optional[int]`：**None = 从未评估过**，
+                # 与「真是 0」天然可分辨。此前它是 int 且默认 0，未评估时也写 0，
+                # 两者同形，于是不得不另立一个 `last_chapter_tension_evaluated`
+                # 标记来区分 —— 那等于制造了第二个事实源（值 + 标记），两者可以漂移。
+                # 现在单一事实源就是值本身；守护进程重启后读不到旧值也不会误判。
+                #
+                # ⚠ **不做 `<=10 → ×10` 的刻度猜测**。该值来自章末审计，而 audit
+                # 写入的本来就是 0-100 刻度（`int(tension_composite)`，无 /10 降级）。
+                # 再乘 10 会把「真实 8 分」放大成 80，直接把正常章判成余韵章 ——
+                # 比不给信号更坏。老刻度兼容只留给 legacy 写入者。
                 if raw is not None:
-                    # ⚠ **不做 `<=10 → ×10` 的刻度猜测**。标记为 True 意味着这个值
-                    # 来自章末审计，而 audit 写入的本来就是 0-100 刻度
-                    # （`tension = int(tension_composite)`，无 /10 降级）。
-                    # 再乘 10 会把「真实 8 分」放大成 80，直接把正常章判成余韵章 ——
-                    # 比不给信号更坏。老刻度兼容只留给没有标记的 legacy 写入者。
                     last_tension = float(raw)
 
             decision = await get_chapter_mode_planner().decide(

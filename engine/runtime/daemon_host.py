@@ -226,7 +226,9 @@ class DaemonHostMixin:
             "target_chapters": novel.target_chapters or 0,
             "target_words_per_chapter": novel.target_words_per_chapter or 2500,
             "consecutive_error_count": novel.consecutive_error_count or 0,
-            "last_chapter_tension": novel.last_chapter_tension or 0,
+            # 不加 `or 0`：`last_chapter_tension` 现为 Optional，None = 从未评估，
+            # 压成 0 会让「没测过」在下游读成「张力 0」
+            "last_chapter_tension": novel.last_chapter_tension,
             # 🔥 needs_review 是计算字段（由 current_stage == paused_for_review 推导），
             # novels 表无此列，不能写入 DB，否则会导致 "no such column: needs_review" 错误
             # 使整条审计落盘失败。前端通过 current_stage 自行推导 needs_review。

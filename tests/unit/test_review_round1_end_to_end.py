@@ -391,34 +391,29 @@ def test_logger_format_placeholders_match_argument_count(rel):
 # ── 复审 §9 遗留项的行为守卫 ─────────────────────────────────────────────
 
 
-def test_writing_delegate_writes_the_evaluated_flag_with_the_same_source():
-    """⚠ 变异 P3 不转红：`writing_delegate` 写值时必须**同源**写标记。
+def test_writing_delegate_passes_tension_through_without_inventing_a_value():
+    """写作完成时把张力原样传给共享状态，**不做 `or 0` 之类的兜底**。
 
-    只写值不写标记 ⇒ 留下「上一章的 True + 这一章的新值」的错配。
-    这里判定标记的字面量确实由 `result.tension` 派生，而不是写死 True。
+    `result.tension` 为 None（本章没产出张力）时必须原样传 None ——
+    压成 0 就是把「没测过」写成「张力 0」。
     """
     tree = ast.parse(
         (REPO_ROOT / "engine/runtime/writing_delegate.py").read_bytes().decode("utf-8-sig")
     )
     found = False
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not (isinstance(node.func, ast.Attribute)
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "_update_shared_state"):
             continue
         for kw in node.keywords:
-            if kw.arg != "last_chapter_tension_evaluated":
-                continue
-            src = ast.unparse(kw.value)
-            assert "tension" in src, (
-                f"评估标记被写死成 {src!r} —— 它必须由本章是否真产出张力决定"
-            )
-            assert "None" in src, (
-                "标记必须区分「本章没张力」（None → False）与「有」（→ True）"
-            )
-            found = True
-    assert found, "writing_delegate 没有写 last_chapter_tension_evaluated"
+            if kw.arg == "last_chapter_tension":
+                src = ast.unparse(kw.value)
+                assert src == "result.tension", (
+                    f"共享状态里的张力被改写成了 {src!r}，必须原样透传 result.tension"
+                )
+                found = True
+    assert found, "writing_delegate 没有写 last_chapter_tension"
 
 
 def test_main_plot_normalization_uses_the_ctx_target_chapters():
@@ -565,3 +560,79 @@ def test_daemon_threshold_follows_the_configured_override(monkeypatch):
 
     # None 仍返回 False（未评估不得当越阈）
     assert fn(host, None) is False
+
+
+# ── legacy 写作路径的余韵章阈值 ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expect_buffer",
+    [
+        (None, False),   # 从未评估 —— 不参与阈值比较
+        (0, False),      # 真实张力 0 —— 合法值，但不触发
+        (8, True),       # 旧刻度 8/10 → ×10 = 80 达阈
+        (79, False),
+        (80, True),
+        (85, True),
+        (100, True),
+    ],
+)
+def test_legacy_buffer_threshold_treats_none_as_no_signal(raw, expect_buffer):
+    """⚠ `legacy_writing_delegate` 的余韵章阈值：None 不得按 0 参与比较。
+
+    此前是 `novel.last_chapter_tension or 0`，None 被压成 0 再参与 `>= 80`
+    比较 —— 结论恰好相同（不触发），但那是因为「0 本来也不够高」而不是
+    「我们正确处理了没测过」。一旦阈值调低、或将来把 0 当作有效下界，
+    这个 bug 就会显形。现在 None 是显式的一支。
+    """
+    from engine.runtime.legacy_writing_delegate import (
+        _needs_buffer_chapter,
+    )
+
+    got, echoed = _needs_buffer_chapter(raw)
+    assert got is expect_buffer, f"tension={raw!r} 期望 {expect_buffer}，实际 {got}"
+    assert echoed == raw, "原始值必须原样回传（日志要用）"
+
+
+def test_legacy_buffer_threshold_constant_is_eighty():
+    """阈值是 80（0-100 刻度，对应旧 8/10）。改它要有人知道。"""
+    from engine.runtime.legacy_writing_delegate import BUFFER_TENSION_THRESHOLD
+
+    assert BUFFER_TENSION_THRESHOLD == 80
+
+
+# ── 张力三态在 DB 层的往返 ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", [None, 0, 87])
+def test_tension_tri_state_round_trips_through_the_repository(value, tmp_path):
+    """None / 0 / 87 三态都必须**原样**往返。
+
+    `last_chapter_tension` 现在是 Optional，列在 SQLite 里也天然可存 NULL。
+    这一条是「真的写进去再读出来」，不是静态判定 —— 静态能骗人：
+    读取侧曾用 `or 0`，静态看起来没问题，只有真跑才会发现 0 和 None 同形。
+    """
+    from domain.novel.entities.novel import Novel
+    from domain.novel.value_objects.novel_id import NovelId
+    from infrastructure.persistence.database.connection import DatabaseConnection
+    from infrastructure.persistence.database.sqlite_novel_repository import (
+        SqliteNovelRepository,
+    )
+
+    db = DatabaseConnection(str(tmp_path / "novels.db"))
+    try:
+        repo = SqliteNovelRepository(db)
+        novel = Novel(
+            id=NovelId("n-tri"), title="t", author="a", target_chapters=10
+        )
+        novel.last_chapter_tension = value
+        repo.save(novel)
+
+        back = repo.get_by_id(NovelId("n-tri"))
+        assert back is not None
+        assert back.last_chapter_tension == value, (
+            f"{value!r} 往返后变成 {back.last_chapter_tension!r} —— "
+            f"None 与 0 在这一列上必须可分辨"
+        )
+    finally:
+        db.close_all()

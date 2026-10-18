@@ -410,6 +410,14 @@ CREATE TABLE IF NOT EXISTS storylines (
     status TEXT NOT NULL,
     estimated_chapter_start INTEGER NOT NULL,
     estimated_chapter_end INTEGER NOT NULL,
+    -- G-03：`estimated_chapter_end` 这个**取值**的来源。
+    --   'ai'        = 模型给的收尾章
+    --   'fallback'  = 模型没给，代码兜底
+    --   '' / NULL   = 旧数据未标注（**不等于** 'ai'，读端必须显式判）
+    -- 空串而非 'ai' 作默认值：默认填 'ai' 会把未标注的旧数据
+    -- 读成「这是模型的判断」。
+    estimated_chapter_end_source TEXT NOT NULL DEFAULT '',
+    estimated_chapter_end_note TEXT NOT NULL DEFAULT '',
     current_milestone_index INTEGER NOT NULL DEFAULT 0,
     extensions TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

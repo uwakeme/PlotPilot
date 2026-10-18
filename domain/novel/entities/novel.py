@@ -46,7 +46,13 @@ class Novel(BaseEntity):
         current_chapter_in_act: int = 0,
         max_auto_chapters: int = 9999,  # 保护上限，默认几乎无限制，由 target_chapters 控制实际完成点
         current_auto_chapters: int = 0,
-        last_chapter_tension: int = 0,
+        #: 上一章张力（0-100 刻度）。**None = 从未评估过**，与「真是 0」可分辨。
+        #：: 该列在 SQLite 里是 `INTEGER DEFAULT 0` 且 **NOT NULL 未声明** ⇒ 天然能存
+        #：: NULL，不需要迁移；关键是**写入侧别再把「没测过」压成 0**。
+        #：
+        #：: 此前默认 0 + audit 未评估时写 0，使两者在列上完全同形，
+        #：: 任何拿它做创作判断的读者（余韵章判定等）都会读到编造的值。
+        last_chapter_tension: Optional[int] = None,
         consecutive_error_count: int = 0,
         current_beat_index: int = 0,
         autopilot_run_epoch: int = 0,

@@ -28,6 +28,29 @@ from engine.runtime.target_reached_gate import (
 logger = logging.getLogger(__name__)
 
 
+#: 余韵章触发的张力阈值（0-100 刻度）。80 对应旧刻度的 8/10。
+BUFFER_TENSION_THRESHOLD = 80
+
+
+def _needs_buffer_chapter(last_chapter_tension: Optional[int]) -> tuple[bool, Optional[int]]:
+    """上章张力是否够高到该插一章余韵章。返回 ``(是否触发, 原始值)``。
+
+    ★ Phase 1：统一使用 0-100 刻度。
+
+    `last_chapter_tension` 是 ``Optional[int]``：**None = 从未评估过**。
+    None 时**不触发** —— 把「没测过」当成 0 参与阈值比较，
+    等于让一个没发生过的结论驱动创作决策。
+
+    刻度兼容（``<= 10`` 视为旧刻度 ×10）只留给 legacy 写入者：
+    该路径早已不生产这种值，但它可能读到历史数据。
+    """
+    raw = last_chapter_tension
+    if raw is None:
+        return False, None
+    tension_100 = raw * 10 if raw <= 10 else raw
+    return tension_100 >= BUFFER_TENSION_THRESHOLD, raw
+
+
 def _get_autopilot_orchestrator(host: "DaemonHostProtocol") -> AutopilotInvocationOrchestrator:
     from application.ai_invocation.contracts import ensure_invocation_contract
     from application.ai_invocation.autopilot.factory import get_or_create_autopilot_orchestrator
@@ -196,11 +219,7 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
 
 
     # 2. 余韵章判断（高潮后插入余韵章——不再是"日常过渡"，而是"高潮余波"）
-    # ★ Phase 1: 统一使用 0-100 刻度。阈值 80 对应旧 8/10
-    # 兼容旧数据：如果值 <= 10 视为旧刻度，自动 ×10
-    raw_tension = novel.last_chapter_tension or 0
-    tension_100 = raw_tension * 10 if raw_tension <= 10 else raw_tension
-    needs_buffer = tension_100 >= 80
+    needs_buffer, raw_tension = _needs_buffer_chapter(novel.last_chapter_tension)
     if needs_buffer:
         logger.info(f"[{novel.novel_id}] 上章张力≥80（raw={raw_tension}），触发余韵章")
 
