@@ -20,6 +20,7 @@ from application.world.services.foreshadow_pacing import (
     RESOLVE_OFFSET_MAX,
     RESOLVE_OFFSET_MIN,
     SOURCE_AI,
+    SOURCE_AI_ADJUSTED,
     SOURCE_FALLBACK,
     check_resolve_after_plant,
     resolve_offset,
@@ -108,10 +109,16 @@ def test_missing_end_falls_back_but_is_marked():
 
 
 def test_end_not_after_current_is_lifted():
-    """不变量：收尾章必须晚于当前章。模型给了 5 而当前 10 ⇒ 抬到 11。"""
+    """不变量：收尾章必须晚于当前章。模型给了 5 而当前 10 ⇒ 抬到 11。
+
+    ⚠ 抬升后的值**不是**模型给的值 ⇒ source 是 `ai_adjusted` 而非 `ai`。
+    第三轮复审指出：上一轮把 source 落库后，这里标 `ai` 会在产物里
+    声称「第 11 章是模型判断的」，而模型给的是 5 —— 落库后的假来源。
+    """
     end, source, note = resolve_storyline_end(10, 5)
     assert end == 11
-    assert source == SOURCE_AI
+    assert source == SOURCE_AI_ADJUSTED
+    assert source != SOURCE_AI
     assert "不晚于" in note
 
 

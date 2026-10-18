@@ -905,3 +905,194 @@ def test_perf_guard_uses_a_size_where_quadratic_actually_exceeds_threshold():
     assert f"assert len(common) == {size}" in body, (
         "断言里的期望值与构造规模不一致 —— 那条断言实际没在承重"
     )
+
+
+# ── 恢复：091cded5 静默删掉了 819aac33 的这两条守卫 ───────────────────────
+#
+# 第三轮复审发现：我在 091cded5 改写「flag → None 语义」时，把 819aac33
+# 刚补好的两条守卫**整段删掉**了，而它们当时正挡着两类回归。独立变异证实
+# 两类回退后仍全绿：
+#   · audit 两分支的标记/取值方向对调
+#   · D-02 主路径 slot_weights=slot_weights 改成 =None
+# 「改测试时顺手删掉旧守卫」本身就是回归 —— 记在这里以防第三次。
+
+
+def test_audit_branch_direction_is_not_swapped():
+    """⚠ 本条曾被静默删除。audit 的两个分支方向**不能对调**。
+
+    方向语义：评估过的分支写真值；未评估的分支写 None。
+    对调之后「没测过」会被报成真实张力（红线），或反过来把真实值丢掉。
+    这里按**分支归属**判定，不是「两个值都出现过就算过」。
+    """
+    tree = _ast("engine/runtime/audit_delegate.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "run_chapter_audit"
+    )
+
+    def hits(target, name):
+        if isinstance(target, ast.Name):
+            return target.id == name
+        return isinstance(target, ast.Attribute) and target.attr == name
+
+    def values_in(body, name):
+        return [
+            ast.unparse(node.value)
+            for node in body
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Assign) and any(hits(t, name) for t in sub.targets)
+        ]
+
+    branches = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
+        and (values_in(n.body, "last_chapter_tension") or n.orelse)
+    ]
+    assert branches, "没找到按 tension_evaluated 分支的张力写入"
+
+    for node in branches:
+        if_values = values_in(node.body, "last_chapter_tension")
+        else_values = values_in(node.orelse, "last_chapter_tension") if node.orelse else []
+        if if_values:
+            assert "None" not in if_values, (
+                f"评估过的分支写了 None：{if_values} —— 真实值会被丢掉"
+            )
+        if else_values:
+            assert "0" not in else_values, (
+                f"未评估分支写了 0：{else_values} —— 「没测过」又变回「张力 0」"
+            )
+
+    # 至少存在一对：评估分支写真值 + 未评估分支写 None
+    assert any(
+        values_in(n.body, "last_chapter_tension")
+        and values_in(n.orelse, "last_chapter_tension") if n.orelse else False
+        for n in branches
+    ), f"没有任何一对分支同时写两侧：{[n.lineno for n in branches]}"
+
+
+def test_workflow_main_path_forwards_the_actual_slot_weights_value():
+    """⚠ 本条曾被静默删除。主路径必须转发**原值**，不是 None。
+
+    `prepare_chapter_generation` 的主路径是生产 daemon 恒走的那一条
+    （`start_daemon` -> `StoryPipelineRunner` -> `ctx.chapter_workflow`）。
+    改成 `=None` 权重算完即丢，而旧守卫只查 `"slot_weights" in body`，
+    根本抓不住 —— token 在、值没了。
+    """
+    tree = _ast("application/workflows/auto_novel_generation_workflow.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "prepare_chapter_generation"
+    )
+    calls = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "build_structured_context"
+    ]
+    assert calls, "没找到 build_structured_context 调用"
+    for call in calls:
+        forwarded = [kw for kw in call.keywords if kw.arg == "slot_weights"]
+        assert forwarded, "存在不传 slot_weights 的 build_structured_context 调用"
+        for kw in forwarded:
+            assert ast.unparse(kw.value) == "slot_weights", (
+                f"slot_weights 被改成了 {ast.unparse(kw.value)!r} —— "
+                f"生产 daemon 恒走主路径，权重会算完即丢"
+            )
+
+
+def test_signals_validator_drops_non_strings_instead_of_stringifying():
+    """⚠ 复审指出：signals 的「真 drop」修复当时**没有守卫**。
+
+    把实现改回 `str(item)`（None -> "None"、123 -> "123"）后相关测试仍全绿 ——
+    那等于把「把模型没给伪装成模型说了 None」的缺陷又放回去。
+    """
+    from application.engine.services.chapter_mode_schema import ChapterModeLlmPayload
+
+    got = ChapterModeLlmPayload(
+        needs_buffer=True, reason="ok",
+        signals=["  张力 87  ", "", None, 123, True, "a", "a"],
+    ).signals
+    assert "None" not in got, f"None 被 str() 伪装成了 'None'：{got}"
+    assert "123" not in got, f"数字被 str() 伪装成了信号：{got}"
+    assert "True" not in got, f"布尔被 str() 伪装成了信号：{got}"
+    assert "" not in got
+    assert got == ["张力 87", "a"], f"归一化结果不对：{got}"
+
+
+# ── 第三轮复审项 ─────────────────────────────────────────────────────────
+
+
+def test_code_adjusted_value_is_not_labelled_as_ai():
+    """⚠ 代码抬高的取值**不得**标 'ai'。
+
+    第三轮复审指出：上一轮把 source 落库之后，`resolve_storyline_end(10, 8)`
+    会把代码抬到 11、却在产物里写 source='ai' —— 模型给的是 8，落库声称
+    「AI 判断第 11 章」。那是**落库后的假来源**，比落日志时的不精确严重：
+    下游会把它当可信 provenance 消费。
+    """
+    from application.world.services.foreshadow_pacing import (
+        SOURCE_AI,
+        SOURCE_AI_ADJUSTED,
+        resolve_storyline_end,
+    )
+
+    end, source, note = resolve_storyline_end(10, 8)
+    assert end == 11, "不变量：收尾章必须晚于当前章"
+    assert source == SOURCE_AI_ADJUSTED, (
+        f"代码抬高的取值被标成了 {source!r} —— 落库后会伪造 provenance"
+    )
+    assert source != SOURCE_AI
+    assert "模型" in note and "抬" in note, "说明里应写明是代码抬升"
+
+    # 原值确实来自模型时才是 ai
+    end2, source2, _ = resolve_storyline_end(10, 40)
+    assert (end2, source2) == (40, SOURCE_AI)
+
+
+def test_state_updater_reads_the_aligned_offset_key():
+    """G-01 的 AI 优先通道必须**真的可达**。
+
+    第三轮复审：state_updater 读 `resolve_offset`，而 prompt 与
+    narrative_sync 都用 `suggested_resolve_offset` ⇒ 字段名对不上，
+    模型给什么都不影响结果，「AI 优先」是条死通道。
+
+    这里判定读的是**对齐后的键名**，且旧键作为兼容保留。
+    """
+    tree = _ast("application/analyst/services/state_updater.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "update_chapter_state"
+    ) if any(
+        isinstance(n, ast.FunctionDef) and n.name == "update_chapter_state"
+        for n in ast.walk(tree)
+    ) else None
+    if fn is None:
+        # 兜底：函数名可能不同，直接扫模块里的字符串字面量
+        fn = tree
+    src = ast.unparse(fn)
+    assert "suggested_resolve_offset" in src, (
+        "没有读 suggested_resolve_offset —— 与 prompt / narrative_sync 键名不一致，"
+        "模型给的偏移根本走不到"
+    )
+    assert "resolve_offset_from_ai" in src or "resolve_offset(" in src, (
+        "没有用共享裁决器 —— 手写 `if x and isinstance(...)` 会把模型明说的 0 "
+        "和字符串当成缺失，再写下「模型未给出」这句假说明"
+    )
+
+
+def test_state_updater_does_not_treat_zero_as_missing():
+    """模型明说的 0 不算「未给出」——由共享裁决器钳制，而不是走兜底分支。"""
+    from application.world.services.foreshadow_pacing import resolve_offset
+
+    _, source_zero, note_zero = resolve_offset(0)
+    assert source_zero != "fallback", "0 是合法的（会被钳到 2），不该走兜底"
+    assert "钳" in note_zero
+
+    _, source_none, _ = resolve_offset(None)
+    assert source_none == "fallback"
+
+    # 字符串数字也能解析，不该判成缺失
+    _, source_str, _ = resolve_offset("7")
+    assert source_str != "fallback", "'7' 是可解析的，不该当成模型没给"

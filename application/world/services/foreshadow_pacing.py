@@ -43,6 +43,11 @@ DEFAULT_STORYLINE_SPAN = 12
 
 SOURCE_AI = "ai"
 SOURCE_FALLBACK = "fallback"
+#: 模型给了值，但**被代码改写**（抬到不变量允许的下界）才算最终值。
+#: ⚠ 不能并进 SOURCE_AI —— 上一轮把 source 落库之后，「ai」会在产物里
+#: 声称「第 11 章是模型判断的」，而模型给的是 8。那是**落库后的假来源**，
+#: 比落日志时的不精确严重得多：它会被下游当成可信 provenance 消费。
+SOURCE_AI_ADJUSTED = "ai_adjusted"
 
 
 def resolve_offset(raw: Any) -> Tuple[int, str, str]:
@@ -91,9 +96,13 @@ def resolve_storyline_end(
         )
 
     if value <= current:
-        # 不变量：收尾章必须晚于当前章
-        return current + 1, SOURCE_AI, (
-            f"模型给出的收尾章 {value} 不晚于当前章 {current}，已抬到第 {current + 1} 章"
+        # 不变量：收尾章必须晚于当前章。
+        # ⚠ 抬升后的值**不是**模型给的值 ⇒ 标 SOURCE_AI_ADJUSTED，不标 SOURCE_AI。
+        # source 已落库（storylines.estimated_chapter_end_source），标错就是在
+        # 产物里伪造 provenance。
+        return current + 1, SOURCE_AI_ADJUSTED, (
+            f"模型给出的收尾章 {value} 不晚于当前章 {current}，"
+            f"已由代码抬到第 {current + 1} 章（取值非模型原值）"
         )
     return value, SOURCE_AI, "采用模型给出的预估收尾章"
 

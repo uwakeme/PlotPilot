@@ -292,36 +292,76 @@ def test_pause_gate_reason_matches_the_real_trigger(anti_evaluated, assessment, 
 def test_callers_do_not_recompute_the_reason_themselves():
     """调用方必须复用 helper 的返回值，而不是自己重抄一遍。
 
-    重抄的那份历史上用了只在 helper 作用域内存在的 `anti_ai_severe` ⇒ NameError。
-    """
-    import ast
-    from pathlib import Path
+    ⚠ 第三轮复审指出旧版是**恒真守卫**：它要求 `if pause_gate` 分支同时出现
+    `buffer_reason` 与 `anti_reason` 赋值，而 `audit_delegate.py` 全文 0 处
+    `buffer_reason` ⇒ 条件恒 False ⇒ 注入真实退化也全绿。
 
-    src = Path("engine/runtime/audit_delegate.py").read_bytes().decode("utf-8-sig")
+    这里只判 `anti_reason`（真正该断言的那个），并**显式确认**判定条件
+    在当前代码里确实可满足 —— 避免再造一个恒真守卫。
+    """
+    src = (REPO_ROOT / "engine/runtime/audit_delegate.py").read_bytes().decode("utf-8-sig")
+    assert "anti_reason" in src, "前置：audit_delegate 应有 anti_reason"
+    assert "buffer_reason" not in src, (
+        "audit_delegate 里出现了 buffer_reason（那是 StoryPipeline 的字段）—— "
+        "若确实需要，请同步更新本守卫的判定条件，别让它退化成恒真"
+    )
+
     tree = ast.parse(src)
     fn = next(
         n for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         and n.name == "run_chapter_audit"
     )
-    # 只看 `if pause_gate:` 那一支
     branches = [
         n for n in ast.walk(fn)
         if isinstance(n, ast.If) and ast.unparse(n.test) == "pause_gate"
     ]
     assert branches, "没找到 if pause_gate 分支"
     for b in branches:
-        assigns_reason = any(
-            isinstance(x, ast.Assign) and "buffer_reason" in ast.unparse(x)
-            for x in ast.walk(b)
-        ) and any(
+        recomputes = any(
             isinstance(x, ast.Assign) and "anti_reason" in ast.unparse(x)
             for x in ast.walk(b)
         )
-        assert not assigns_reason, (
+        assert not recomputes, (
             "if pause_gate 分支又自己重算了一遍 anti_reason —— "
             "那次重抄用的变量只存在于 helper 作用域内，正是 NameError 的来源"
         )
+
+
+def test_unbound_probe_does_not_mask_outer_scope_via_nested_defs():
+    """探针自身回归：嵌套 def 的形参**不得**算进外层作用域。
+
+    旧版把 `def inner(x)` 的 `x` 加进 outer 的 local，于是
+    `def outer(): def inner(x): return x; return x` 里的第二个 `x`
+    （outer 里确实未绑定）会被掩蔽 —— 守卫看起来通过，实际漏报。
+    """
+    import ast as _ast
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_rt",
+        REPO_ROOT / "tests" / "unit" / "test_review_round1_regressions.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    src = """
+def outer():
+    def inner(x):
+        return x
+    return x        # ← outer 里确实没有 x，应该被抓到
+"""
+    tree = _ast.parse(src)
+    fn = tree.body[0]
+    local = mod._scope_local_names(fn)
+    assert "x" not in local, (
+        "嵌套函数的形参被算进了外层作用域 —— 会掩蔽外层真实的未绑定名"
+    )
+    own = list(mod._own_scope_nodes(fn))
+    assert any(
+        isinstance(n, _ast.Name) and n.id == "x" and isinstance(n.ctx, _ast.Load)
+        for n in own
+    ), "own-scope 遍历应能看见外层里的 Load"
 
 
 # ── logger 格式串与实参个数必须一致 ───────────────────────────────────────
@@ -570,7 +610,13 @@ def test_daemon_threshold_follows_the_configured_override(monkeypatch):
     [
         (None, False),   # 从未评估 —— 不参与阈值比较
         (0, False),      # 真实张力 0 —— 合法值，但不触发
-        (8, True),       # 旧刻度 8/10 → ×10 = 80 达阈
+        # ⚠ 8 **不**触发。它是 0-100 刻度下的真实低张力。
+        # 上一版这里是 (8, True)，那等于把「<=10 视为旧刻度 ×10」这个
+        # 与生产写入刻度冲突的假设**固化成了期望**。第三轮复审指出后已改正：
+        # 唯一两个生产写入者产出的都是 0-100 刻度，×10 分支只会把
+        # 真实的低张力章凭空放大成余韵章。
+        (8, False),
+        (10, False),
         (79, False),
         (80, True),
         (85, True),

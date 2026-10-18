@@ -32,6 +32,7 @@ from domain.novel.entities.timeline_registry import TimelineRegistry
 from application.world.services.foreshadow_pacing import (
     SOURCE_AI,
     SOURCE_FALLBACK,
+    resolve_offset as resolve_offset_from_ai,
     resolve_storyline_end,
 )
 
@@ -271,21 +272,32 @@ class StateUpdater:
                 planted_ch = _safe_chapter_int(
                     foreshadow_data.get("chapter"), chapter_number
                 )
-                resolve_offset = foreshadow_data.get("resolve_offset")
-                offset_source, offset_note = "fallback", "模型未给出回收偏移"
-                if resolve_offset and isinstance(resolve_offset, (int, float)):
-                    suggested_resolve = planted_ch + int(resolve_offset)
-                    offset_source = "ai"
-                    offset_note = "采用模型给出的回收偏移"
+                # G-01：模型给了偏移就用模型的；没给才按 importance 推算，并标出来源。
+                #
+                # ⚠ 用共享裁决器而不是手写 `if x and isinstance(x, (int, float))`：
+                #   · 手写版把模型明说的 **0** 和字符串 "7" 当成缺失，然后写下
+                #     「模型未给出回收偏移」这句**假说明**
+                #   · 裁决器还负责钳到 [2, 30]，手写版完全不钳
+                #
+                # ⚠ 键名与 narrative_sync 对齐为 `suggested_resolve_offset`；
+                # `resolve_offset` 保留读取以兼容更早的输出。
+                raw_offset = foreshadow_data.get("suggested_resolve_offset")
+                if raw_offset is None:
+                    raw_offset = foreshadow_data.get("resolve_offset")
+                resolve_offset, offset_source, offset_note = resolve_offset_from_ai(
+                    raw_offset
+                )
+                if offset_source == "ai":
+                    suggested_resolve = planted_ch + resolve_offset
                 else:
-                    # 根据重要性调整回收周期：关键伏笔 +15，普通 +10，低 +5
+                    # 按 importance 推算（模型没给或给得不可解析）
                     if importance.value >= ImportanceLevel.HIGH.value:
                         suggested_resolve = planted_ch + 15
                     elif importance.value >= ImportanceLevel.MEDIUM.value:
                         suggested_resolve = planted_ch + 10
                     else:
                         suggested_resolve = planted_ch + 5
-                    offset_note = "模型未给出回收偏移，按重要性推算"
+                    offset_note = f"{offset_note}；按重要性推算"
 
                 foreshadowing = Foreshadowing(
                     id=str(uuid.uuid4()),
@@ -449,7 +461,7 @@ class StateUpdater:
                     )
                 elif end_source == SOURCE_FALLBACK:
                     logger.info(
-                        "故事线收尾章兜底 novel=%s ch=%s end=%s（%s，未落库标注）",
+                        "故事线收尾章兜底 novel=%s ch=%s end=%s（%s，来源已落库标注）",
                         novel_id, chapter_number, storyline_end, end_note,
                     )
                 new_storyline = Storyline(

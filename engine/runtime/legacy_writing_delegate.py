@@ -35,20 +35,25 @@ BUFFER_TENSION_THRESHOLD = 80
 def _needs_buffer_chapter(last_chapter_tension: Optional[int]) -> tuple[bool, Optional[int]]:
     """上章张力是否够高到该插一章余韵章。返回 ``(是否触发, 原始值)``。
 
-    ★ Phase 1：统一使用 0-100 刻度。
+    统一按 **0-100 刻度**比较，不做 ``<=10 → ×10`` 的刻度猜测。
 
-    `last_chapter_tension` 是 ``Optional[int]``：**None = 从未评估过**。
-    None 时**不触发** —— 把「没测过」当成 0 参与阈值比较，
-    等于让一个没发生过的结论驱动创作决策。
+    ⚠ 上一版这里有 ``raw * 10 if raw <= 10`` 的「旧刻度兼容」，
+    第三轮复审指出它与生产写入刻度冲突：当前**唯二**的写入者
+    （``audit_delegate`` 的 ``int(tension_composite)`` 与 ``writing_delegate``
+    的 ``result.tension``）产出的都是 0-100 刻度，没有一个会产出 ≤10 的值。
+    那个分支只能命中**历史遗留行**，代价却是：真实的低张力章
+    （比如 8/100）会被放大成 80，**凭空插一章余韵章** ——
+    拿「陈旧数据可能多触发」换「活数据被误触发」，不划算。已删除。
 
-    刻度兼容（``<= 10`` 视为旧刻度 ×10）只留给 legacy 写入者：
-    该路径早已不生产这种值，但它可能读到历史数据。
+    若确需兼容某批历史数据，应当先做一次性数据迁移把它归一到 0-100，
+    而不是在这里留一个每次判定都要赌一把的启发式。
     """
     raw = last_chapter_tension
     if raw is None:
+        # 从未评估过 —— 不参与阈值比较。让一个没发生过的结论驱动创作决策，
+        # 就是在编造。
         return False, None
-    tension_100 = raw * 10 if raw <= 10 else raw
-    return tension_100 >= BUFFER_TENSION_THRESHOLD, raw
+    return raw >= BUFFER_TENSION_THRESHOLD, raw
 
 
 def _get_autopilot_orchestrator(host: "DaemonHostProtocol") -> AutopilotInvocationOrchestrator:

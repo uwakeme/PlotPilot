@@ -194,24 +194,46 @@ def _module_scope_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _scope_local_names(fn) -> set[str]:
-    """一个函数体内**直接**绑定的名字（含嵌套结构）。
+def _own_scope_nodes(fn):
+    """遍历 fn **自身作用域**内的所有节点，不下降进嵌套 def / lambda。
 
-    两个曾经的误报来源：
-    - lambda / 推导式的参数是 ``ast.arg``，不是 ``Name(Store)`` ——
-      ``key=lambda item: item[0]`` 里的 ``item`` 曾被报成未绑定。
-    - 嵌套 ``def`` / ``class`` 自己的名字在本作用域可见。
+    嵌套函数有自己的作用域，它的名字不属于外层。第二版把嵌套函数的
+    形参也算进外层 local，于是 `def inner(x)` 会把 `x` 当成 outer 的绑定
+    —— **掩蔽 outer 里真实的未绑定名**（第三轮复审在 sandbox 复现）。
+
+    ⚠ 第三版踩了更糟的坑：只 yield **语句**节点（Return/Assign…），
+    而调用方要的是 `ast.Name` 叶子 ⇒ 一个 Name 都拿不到 ⇒ 探针**完全失效**，
+    而「没报出来」和「没问题」在断言里长得一模一样。
+    所以这里 yield 作用域内的**所有**节点，只在「嵌套 def/lambda」处止步。
+    """
+    stack = list(fn.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda, ast.ClassDef)):
+            # 嵌套函数/类有自己的作用域。类体尤其特殊：方法体里的名字既不在
+            # 类作用域也不在闭包里（类作用域不构成闭包），把它当外层绑定会漏报。
+            # 类自身的名字确实绑定在外层，所以先 yield 再止步。
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _scope_local_names(fn) -> set[str]:
+    """函数自身作用域里**直接**绑定的名字（含推导式自己的目标变量）。
+
+    不含嵌套函数的形参/名字 —— 那属于它们各自的作用域。
     """
     local: set[str] = set()
-    for arg in (list(fn.args.posonlyargs) + list(fn.args.args)
-                + list(fn.args.kwonlyargs)):
+    args = fn.args
+    for arg in (list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)):
         local.add(arg.arg)
-    if fn.args.vararg:
-        local.add(fn.args.vararg.arg)
-    if fn.args.kwarg:
-        local.add(fn.args.kwarg.arg)
+    if args.vararg:
+        local.add(args.vararg.arg)
+    if args.kwarg:
+        local.add(args.kwarg.arg)
 
-    for node in ast.walk(fn):
+    for node in _own_scope_nodes(fn):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             local.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -220,28 +242,14 @@ def _scope_local_names(fn) -> set[str]:
         elif isinstance(node, ast.ExceptHandler) and node.name:
             local.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # 嵌套 def/class 的**名字**绑定在外层作用域（虽然它们的体不进来）。
+            # 漏了这一支，`def _replace` / `class _LLM` 会被报成未绑定 —— 探针
+            # 立刻对全仓报出一堆假阳性，反而让人开始忽略它的输出。
             local.add(node.name)
-        elif isinstance(node, (ast.Lambda, ast.comprehension)):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.arg):
-                    local.add(sub.arg)
-                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+        elif isinstance(node, ast.comprehension):
+            for sub in ast.walk(node.target):
+                if isinstance(sub, ast.Name):
                     local.add(sub.id)
-
-    # ⚠ 嵌套函数的**形参**也算本作用域的绑定。
-    # 少了这一段会把 `def _replace(match: re.Match): match.group(1)` 里的
-    # `match` 报成未绑定 —— 它是软关键字，同时也是形参名，纯属误报。
-    for node in ast.walk(fn):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            for arg in (
-                list(node.args.posonlyargs) + list(node.args.args)
-                + list(node.args.kwonlyargs)
-            ):
-                local.add(arg.arg)
-            if node.args.vararg:
-                local.add(node.args.vararg.arg)
-            if node.args.kwarg:
-                local.add(node.args.kwarg.arg)
     return local
 
 
@@ -272,7 +280,7 @@ def _unbound_names(rel_path: str) -> list[str]:
                 visible |= _scope_local_names(cursor)
             cursor = parent.get(id(cursor))
 
-        for node in ast.walk(fn):
+        for node in _own_scope_nodes(fn):
             if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
                     and node.id not in visible):
                 unbound.append(f"{fn.name}:{node.lineno} 引用未绑定的 {node.id!r}")

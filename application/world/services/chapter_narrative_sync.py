@@ -33,6 +33,7 @@ from application.world.services.storyline_normalization import (
 from application.world.services.foreshadow_pacing import (  # noqa: E402
     DEFAULT_RESOLVE_OFFSET,
     SOURCE_AI,
+    SOURCE_AI_ADJUSTED,
     SOURCE_FALLBACK,
     check_resolve_after_plant,
     resolve_offset as resolve_offset_from_ai,
@@ -391,16 +392,27 @@ def _log_storyline_end_source(
     novel_id: str, chapter_number: int, name: str,
     end: int, source: str, note: str,
 ) -> None:
-    """G-03 来源落日志。``source == 'fallback'`` 表示这是代码兜底的收尾章。"""
+    """G-03 来源落日志。
+
+    与落库同源：``estimated_chapter_end_source`` 列就是这里的 ``source``。
+    三种取值都要区分：``ai``（模型原值）/ ``ai_adjusted``（模型给了但被代码
+    抬到不变量下界，最终值不是模型给的）/ ``fallback``（模型没给，代码兜底）。
+    """
     if source == SOURCE_AI:
         logger.info(
             "故事线收尾章 novel=%s ch=%s name=%s 采用模型判断 end=%s",
             novel_id, chapter_number, name, end,
         )
+    elif source == SOURCE_AI_ADJUSTED:
+        logger.info(
+            "故事线收尾章 novel=%s ch=%s name=%s end=%s（%s）"
+            " —— 模型给了值但被代码改写，最终取值非模型原值",
+            novel_id, chapter_number, name, end, note,
+        )
     else:
         logger.info(
             "故事线收尾章兜底 novel=%s ch=%s name=%s end=%s（%s）"
-            " —— 该值由代码推出，未落库标注",
+            " —— 该值由代码推出，来源已落库标注",
             novel_id, chapter_number, name, end, note,
         )
 
@@ -2062,7 +2074,7 @@ def _auto_adjust_storyline_range(
                 logger.info(
                     "自动延长故事线 novel=%s storyline=%s new_end=%d"
                     "（代码决定 +5：模型本章报告该线仍在推进，非模型给出的收尾章；"
-                    "该值未落库来源标记）",
+                    "来源已落库标注为 fallback）",
                     novel_id,
                     matched.name,
                     matched.estimated_chapter_end,
