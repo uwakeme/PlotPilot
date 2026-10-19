@@ -382,6 +382,10 @@ def _match_pattern_loads(pattern) -> list:
 
     ``case MissingPoint(p)`` 的 ``MissingPoint`` 必须已定义；``case int(x)``
     的 ``int`` 同理。捕获名本身不是 Load（它是绑定）。
+
+    ⚠ 第十四轮复审：``case {Keys.KEY: val}`` 的 ``Keys.KEY`` 也要算 ——
+    mapping 的**键**是表达式（与 MatchClass 的 `kwd_attrs` 不同，后者是字符串）。
+    字面键 ``{'k': val}`` 的 'k' 是字符串常量，不产生 Load。
     """
     out = []
     for node in ast.walk(pattern):
@@ -393,6 +397,11 @@ def _match_pattern_loads(pattern) -> list:
             # 已删。属性名不产生 Load。
         elif isinstance(node, ast.MatchValue):
             out.append(node.value)
+        elif isinstance(node, ast.MatchMapping):
+            # ⚠ 第十四轮复审：mapping 的**键**是表达式（`Keys.KEY`），
+            # 在外层作用域求值 ⇒ 未定义必须报出。
+            # （值 `val` 是捕获名，由 `_match_pattern_names` 负责。）
+            out += [k for k in node.keys if k is not None]
     return out
 
 
@@ -528,6 +537,8 @@ def _scope_local_names_of_body(body) -> set[str]:
             # **类体内含 elif 或嵌套复合语句**的代码让探针直接抛
             # `AttributeError: 'list' object has no attribute '_fields'`。
             # 守卫文件恰好都没触发，所以一直没人撞上。
+            # `_ex`（exclusive）在这里用不到 —— 名字收集不关心分支是否互斥，
+            # 只有**遍历**路径才需要它（见 `_load_nodes` / `_class_scope_nodes`）。
             _bodies, _ex = _compound_sub_bodies(stmt)
             for inner in _bodies:
                 names |= _scope_local_names_of_body(inner)
@@ -645,6 +656,13 @@ def _match_scope_nodes(stmt, seen):
         # 但这里把前一个 case 的定义并进了 outer ⇒ 该情形被**放行**（漏报）。
         # 这是刻意的保守近似：match 的 case 何时命中取决于运行期数据，
         # 静态判定「B=A 是否可达」需要值流分析，代价远大于收益。
+        #
+        # ⚠ 第十四轮复审（另一处保守近似）：**捕获名**不进 outer，
+        # 所以 `match v: case [a]: X=1` 之后的 `B=a` 会被报未绑定 ——
+        # 而运行期若该 case 命中，a 是有绑定的。
+        # 这里同样选择保守（宁可多报），因为「该 case 是否命中」是运行期数据。
+        # 两个保守方向相反（跨 case 的普通定义放行、捕获名不放行），
+        # 根源都是同一个：静态无法判定 case 是否命中。
         outer |= _scope_local_names_of_body(case.body) | case_names
 
 
@@ -747,6 +765,13 @@ def _class_scope_nodes(node, outer_seen=None):
                         sub_seen = sub_seen | {s2.name}
                         branch_defs.add(s2.name)
                         continue
+                    # ⚠ 第十四轮复审：这里**不需要**特判 ast.Match ——
+                    # 类体复合分支里的 match 由 `_load_nodes` 那条路径处理
+                    # （`class C: if True: match v: case [a]: B=a`）。
+                    # 本函数是**嵌套类**路径，类体里的 match 走
+                    # `_class_scope_nodes` 自己的 Match 分支（见上）。
+                    # ⚠ 我曾在这里也加过一份 Match 特判，变异验证显示它
+                    # **完全不被走到**（GREEN）⇒ 属冗余，已删。
                     here = sub_seen | _scope_local_names_of_body([s2])
                     if here:
                         yield _ClassScopeMarker(sorted(here), enter=True)
@@ -914,6 +939,13 @@ def _load_nodes(fn):
                                 yield from _class_scope_nodes(s2, outer_seen=sub_seen)
                                 sub_seen = sub_seen | {s2.name}
                                 continue
+                            if isinstance(s2, ast.Match):
+                                # ⚠ 第十四轮复审：同上，嵌套类路径的
+                                # 复合分支 inner 循环也要特判 Match。
+                                yield from _match_scope_nodes(s2, sub_seen)
+                                sub_seen = sub_seen | _scope_local_names_of_body([s2])
+                                branch_defs |= (sub_seen - prefix)
+                                continue
                             h2 = sub_seen | _scope_local_names_of_body([s2])
                             if h2:
                                 yield _ClassScopeMarker(sorted(h2), enter=True)
@@ -933,14 +965,12 @@ def _load_nodes(fn):
                 here = seen | _scope_local_names_of_body([stmt])
                 if here:
                     yield _ClassScopeMarker(sorted(here), enter=True)
+                # ⚠ 这里**不需要**特判 ast.Match —— 类体里的 match 已被上面的
+                # `_COMPOUND_STMTS` 分支先拦截（Match 在该元组里），
+                # 走的是 `_match_scope_nodes` 路径。
+                # 函数/模块级的 match 走下面的**通用下降路径**（:980 附近）。
                 yield stmt
-                if isinstance(stmt, ast.Match):
-                    # ⚠ 第十三轮复审：函数/模块级的 match 也需要捕获名建模 ——
-                    # 此前 Match 建模只在**类体**路径，函数体里
-                    # `def f(): match v: case [a]: return a` 的 a 被误报。
-                    yield from _match_scope_nodes(stmt, here)
-                else:
-                    yield from _ordered_subtree(stmt)
+                yield from _ordered_subtree(stmt)
                 if here:
                     yield _ClassScopeMarker(enter=False)
                 seen = here
@@ -1918,6 +1948,11 @@ def test_probe_never_crashes_on_class_bodies_with_elif_or_nested_compounds():
 
     ⚠ 这条守卫的形态是「**不许抛异常**」而不是「报出某物」——
     崩溃与误报是两种不同的失败，前者必须单独锁住。
+
+    ⚠ 第十四轮复审指出：只断言「不抛」的话，一个**恒返回 [] 的探针**
+    也能通过（探针彻底失灵时不会崩）。所以这里补一组「应当有输出」的
+    对照样本 —— 同一批形态里放一个**真未绑定名**，必须被报出。
+    这样「探针不崩」与「探针还在干活」两件事都被锁住。
     """
     cases = [
         ("elif", "class C:\n    if True:\n        A = 1\n    elif False:\n        B = 2\n"),
@@ -1928,6 +1963,9 @@ def test_probe_never_crashes_on_class_bodies_with_elif_or_nested_compounds():
         ("elif-in-method",
          "class C:\n    def m(self):\n        if True:\n            A = 1\n"
          "        elif False:\n            B = 2\n"),
+        # 复合分支内的 match（第十四轮复审：这类曾误报捕获名）
+        ("match-in-if", "class C:\n    v=[1]\n    if True:\n        match v:\n"
+                        "            case [a]:\n                B=a\n"),
     ]
     for label, src in cases:
         try:
@@ -1936,6 +1974,24 @@ def test_probe_never_crashes_on_class_bodies_with_elif_or_nested_compounds():
             raise AssertionError(
                 f"探针在「{label}」上崩溃：{type(e).__name__}: {e}\n{src!r}"
             ) from e
+
+    # ⚠ 对照组：同样形态里放一个**真未绑定名**，必须被报出 ——
+    # 否则「探针彻底失灵、恒返回 []」也能通过上面的 no-crash 断言。
+    probes = [
+        ("elif", "class C:\n    if True:\n        A = missing1\n"
+                 "    elif False:\n        B = 2\n", "missing1"),
+        ("if-in-if", "class C:\n    if True:\n        if True:\n            A = missing2\n",
+         "missing2"),
+        ("for-in-if", "class C:\n    for _i in (1,):\n        if True:\n"
+                      "            A = missing3\n", "missing3"),
+        ("try-in-if", "class C:\n    if True:\n        try:\n            A = missing4\n"
+                      "        except Exception:\n            pass\n", "missing4"),
+    ]
+    for label, src, want in probes:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"探针在「{label}」上没报出 {want!r} —— 探针可能已失灵：{problems}"
+        )
 
 
 def test_match_subject_guard_and_mapping_captures():
@@ -1967,6 +2023,66 @@ def test_match_subject_guard_and_mapping_captures():
     # 「`_match_pattern_loads` 里加回那句 `[kw for kw in node.kwd_attrs if False]`」
     # 同样测不出来 —— `kwd_attrs` 是字符串列表，`if False` 恒为空，纯死代码。
     # 这两条都不是空洞测试，而是**变异本身不成立**。
+
+
+def test_match_inside_class_body_compound_branches():
+    """⚠ 第十四轮复审：类体复合分支**内层**的 match 也需要捕获名建模。
+
+    inner 循环原先只特判 FunctionDef/ClassDef，Match 走 `_ordered_subtree`
+    铺平下降 ⇒ `class C: if True: match v: case [a]: B=a` 的 a 被误报。
+    （函数/模块级 match-in-if 一直正常，因为通用路径已有 Match 分支。）
+    """
+    must_not = {
+        "if 内": "class C:\n    v=[1]\n    if True:\n        match v:\n"
+                 "            case [a]:\n                B=a\n",
+        "for 内": "class C:\n    v=[1]\n    for _i in (1,):\n        match v:\n"
+                  "            case [a]:\n                B=a\n",
+        "while 内": "class C:\n    v=[1]\n    while True:\n        match v:\n"
+                    "            case [a]:\n                B=a\n",
+        "try 内": "class C:\n    v=[1]\n    try:\n        match v:\n"
+                  "            case [a]:\n                B=a\n    except Exception:\n        pass\n",
+    }
+    for label, src in must_not.items():
+        problems = _probe_run(src)
+        assert not problems, f"复合分支内 match 的捕获名被误报：{label} ⇒ {problems}"
+
+
+def test_match_mapping_keys_are_expressions_not_captures():
+    """⚠ 第十四轮复审：mapping 的**键**是表达式，在外层作用域求值。
+
+    `case {Keys.KEY: val}` 的 `Keys.KEY` 未定义必须报出；
+    字面键 `case {'k': val}` 的 'k' 是字符串常量，不产生 Load。
+    （与 MatchClass 的 `kwd_attrs` 不同 —— 那是字符串属性名。）
+    """
+    problems = _probe_run(
+        "class C:\n    match v:\n        case {Keys.KEY: val}:\n            B=1\n")
+    assert any("'Keys'" in p for p in problems), (
+        f"mapping 键未报出：{problems}"
+    )
+
+    problems = _probe_run(
+        "class C:\n    match v:\n        case {'k': val}:\n            B=1\n")
+    assert not any("'k'" in p for p in problems), (
+        f"字面键被误报成未绑定名：{problems}"
+    )
+
+
+def test_after_match_capture_name_is_a_known_conservative_gap():
+    """⚠ 第十四轮复审：match 之后的捕获名引用是**已知的保守近似**。
+
+    `match v: case [a]: X=1` 之后的 `B=a` 会被报未绑定 ——
+    而运行期若该 case 命中，a 是有绑定的。
+    这里选择保守（宁可多报），因为「该 case 是否命中」是运行期数据。
+
+    这条测试**锁定当前行为**，让将来若有人改动它会立刻看见，
+    而不是当成 bug 顺手"修掉"（那会与跨 case 保守方向冲突）。
+    """
+    problems = _probe_run(
+        "class C:\n    v=[1]\n    match v:\n        case [a]:\n            X=1\n    B=a\n")
+    assert any("'a'" in p for p in problems), (
+        f"after-match 捕获名的保守行为变了（若是有意修改，请更新本测试"
+        f"与 `_match_scope_nodes` 的注释）：{problems}"
+    )
 
 
 def test_compound_sub_bodies_marks_exclusive_branches_correctly():
