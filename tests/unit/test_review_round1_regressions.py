@@ -368,6 +368,12 @@ def _match_pattern_names(pattern) -> set[str]:
         elif isinstance(node, ast.MatchStar):
             if node.name:
                 names.add(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            # ⚠ 第十三轮复审：`case {'k': val, **rest}` 的 rest 是捕获名
+            # （**rest 形式的 rest 绑定到整个剩余字典），
+            # 此前完全没建模 ⇒ `B = rest` 被误报。
+            if node.rest:
+                names.add(node.rest)
     return names
 
 
@@ -382,7 +388,9 @@ def _match_pattern_loads(pattern) -> list:
         if isinstance(node, ast.MatchClass):
             if node.cls is not None:
                 out.append(node.cls)
-            out += [kw for kw in node.kwd_attrs if False]   # 占位：kwd_attrs 是 str
+            # ⚠ `kwd_attrs` 是**字符串**（属性名），不是表达式 —— 第十三轮复审
+            # 指出这里原有一句 `[kw for kw in node.kwd_attrs if False]` 的死表达式，
+            # 已删。属性名不产生 Load。
         elif isinstance(node, ast.MatchValue):
             out.append(node.value)
     return out
@@ -505,12 +513,23 @@ def _scope_local_names_of_body(body) -> set[str]:
                         names.add(h.name)
             # `match` 的捕获名（`case [a, b]:` 的 a/b）绑定在**该 case 体内**，
             # 不是外层。收集时逐 case 处理（第十二轮复审）。
+            #
+            # ⚠ 第十三轮复审：捕获名**不能**并进外层 names ——
+            # 并进去后 case 体里的 `a` 反而被判成「外层可见但未定义」。
+            # 只收 case **体**里定义的普通名字（那些对后续 case 可见）。
             if isinstance(stmt, ast.Match):
                 for case in stmt.cases:
-                    names |= _match_pattern_names(case.pattern)
                     names |= _scope_local_names_of_body(case.body)
                 continue
-            for inner in _compound_sub_bodies(stmt):
+            # ⚠ 第十二/十三轮复审：`_compound_sub_bodies` 的返回值是
+            # `(bodies, exclusive)` **元组**，这里必须解包 ——
+            # 上一轮改了它的签名却漏改这一处，于是
+            # `class C: if True: A=1 / elif False: B=2` 这类
+            # **类体内含 elif 或嵌套复合语句**的代码让探针直接抛
+            # `AttributeError: 'list' object has no attribute '_fields'`。
+            # 守卫文件恰好都没触发，所以一直没人撞上。
+            _bodies, _ex = _compound_sub_bodies(stmt)
+            for inner in _bodies:
                 names |= _scope_local_names_of_body(inner)
             # 头部表达式（条件 / except 类型 / 迭代目标本身）只产生 Load，
             # 不产生绑定，这里无需处理。
@@ -573,8 +592,16 @@ def _match_scope_nodes(stmt, seen):
     """
     outer = set(seen)
     if stmt.subject is not None:
-        yield stmt.subject
+        # ⚠ 第十三轮复审：原先 `yield stmt.subject` 之后又
+        # `yield from _ordered_subtree(stmt.subject)` —— subject 被扫**两遍**，
+        # 于是 `class C: v=[1,2]; match v:` 的 v 被报两次未绑定。
+        # 而且 subject 没包 `_ClassScopeMarker` ⇒ 它看不见外层已定义的 v。
+        with_marker = sorted(outer)
+        if with_marker:
+            yield _ClassScopeMarker(with_marker, enter=True)
         yield from _ordered_subtree(stmt.subject)
+        if with_marker:
+            yield _ClassScopeMarker(enter=False)
 
     for case in stmt.cases:
         case_names = _match_pattern_names(case.pattern)
@@ -583,10 +610,19 @@ def _match_scope_nodes(stmt, seen):
             yield _ClassScopeMarker(with_marker, enter=True)
         for load in _match_pattern_loads(case.pattern):
             yield from _ordered_subtree(load)
-        if case.guard is not None:
-            yield from _ordered_subtree(case.guard)
         if with_marker:
             yield _ClassScopeMarker(enter=False)
+
+        # ⚠ 第十三轮复审：guard 表达式在 case 体**之前**求值，
+        # 但此时捕获名**已经**绑定（`case [a, b] if a > 0:` 的 a 在 guard 里可用）。
+        # 原先 guard 只包 outer marker ⇒ 把 a 报成未绑定。
+        if case.guard is not None:
+            guard_names = sorted(outer | case_names)
+            if guard_names:
+                yield _ClassScopeMarker(guard_names, enter=True)
+            yield from _ordered_subtree(case.guard)
+            if guard_names:
+                yield _ClassScopeMarker(enter=False)
 
         body_names = sorted(outer | case_names)
         if body_names:
@@ -604,6 +640,11 @@ def _match_scope_nodes(stmt, seen):
         if body_names:
             yield _ClassScopeMarker(enter=False)
         # case 体里定义的类属性对后续 case 可见（match 是顺序执行的）
+        # ⚠ 第十三轮复审（已知保守近似）：不同 case 之间**实际是互斥**的
+        # （`case 1: A=1 / case 2: B=A` 在 v≠1 时 B=A 会 NameError），
+        # 但这里把前一个 case 的定义并进了 outer ⇒ 该情形被**放行**（漏报）。
+        # 这是刻意的保守近似：match 的 case 何时命中取决于运行期数据，
+        # 静态判定「B=A 是否可达」需要值流分析，代价远大于收益。
         outer |= _scope_local_names_of_body(case.body) | case_names
 
 
@@ -893,10 +934,22 @@ def _load_nodes(fn):
                 if here:
                     yield _ClassScopeMarker(sorted(here), enter=True)
                 yield stmt
-                yield from _ordered_subtree(stmt)
+                if isinstance(stmt, ast.Match):
+                    # ⚠ 第十三轮复审：函数/模块级的 match 也需要捕获名建模 ——
+                    # 此前 Match 建模只在**类体**路径，函数体里
+                    # `def f(): match v: case [a]: return a` 的 a 被误报。
+                    yield from _match_scope_nodes(stmt, here)
+                else:
+                    yield from _ordered_subtree(stmt)
                 if here:
                     yield _ClassScopeMarker(enter=False)
                 seen = here
+            continue
+        if isinstance(node, ast.Match):
+            # ⚠ 第十三轮复审：函数/模块级的 match 也需要捕获名建模 ——
+            # 通用下降路径会把 match 子树铺平下降，捕获名
+            # \case [a]:\ 的 a 因而被判未绑定。改走 _match_scope_nodes。
+            yield from _match_scope_nodes(node, set())
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -1797,14 +1850,16 @@ def test_sequential_blocks_share_their_scope():
     `try: A=1; B=A / except: C=B` 里 B 在 except 体可见 ——
     上一版把 if/else 的「分支互斥」语义套到 try 上 ⇒ 误报。
 
-    ⚠ 已知的**不可观测变异**（写下来免得后人重复踩）：
-    「把 `_exclusive` 的判定反过来」测不出来 —— 实测三种实现
-    （当前 / 互斥当顺序 / 顺序当互斥）对下面每条样例的输出**完全相同**。
-    原因是 `sub_seen` 的差别只影响分支体的起点，而分支体里
-    ``B = A`` 的 ``A`` 在**该分支自己的 seen** 里就已能判定/报出，
-    分支跑完后 `branch_defs` 又无条件并回 seen ⇒ 差异被抹平。
-    这两处保留 `exclusive` 是为了语义正确（避免将来改动引入真实偏差），
-    但它们**不是**承重的守卫点 —— 真正承重的是 W1（全分支预收集）。
+    ⚠ 关于「反转 exclusive」的变异（第十三轮复审更正了我上一轮的说法）：
+    真正承重的是 **`_compound_sub_bodies` 返回的 `exclusive` 标志本身** ——
+    反转它（if/else 互斥 → 顺序，或 try 顺序 → 互斥）两个方向都 RED。
+
+    ⚠ 我上一轮说的「两方向不可观测」是**错的**：那次变异打的是下游
+    ``sub_seen = (set(prefix) if _exclusive else ...)`` 那两处**表达式**，
+    而那两处即使语义反了，输出也不变（``sub_seen`` 的差别只影响分支体起点，
+    分支内 ``B = A`` 的 A 在该分支自己的 seen 里就已判定，
+    跑完后 ``branch_defs`` 又无条件并回 seen ⇒ 差异被抹平）。
+    ⇒ **变异打错位置 ≠ 变异不成立**。这次是审查员反转标志本身才发现的。
     """
     ok = [
         "class C:\n    try:\n        A = 1\n        B = A\n    except Exception:\n        C = B\n",
@@ -1847,6 +1902,99 @@ def test_nested_class_method_body_is_not_class_scope():
     src = "class A:\n    class B:\n        def m(self):\n            z = 1\n            return z\n"
     problems = _probe_run(src)
     assert not problems, f"嵌套类方法体被误报：{problems}"
+
+
+def test_probe_never_crashes_on_class_bodies_with_elif_or_nested_compounds():
+    """⚠ 第十三轮复审【需修】：本轮重构引入的**崩溃回归**。
+
+    `_compound_sub_bodies` 的返回值从 list 改成 `(bodies, exclusive)` 元组，
+    `_scope_local_names_of_body` 里那处调用**忘了解包** ⇒
+    ``inner`` 变成 ``(list, bool)``，被当语句体递归时抛
+    ``AttributeError: 'list' object has no attribute '_fields'``。
+
+    触发条件：类体内任何 `elif` 或嵌套复合语句 ——
+    `class C: if True: A=1 / elif False: B=2`、if-in-if、for-in-if、try-in-if。
+    `elif` 是极常见写法，只是当前 8 个守卫文件恰好没触发。
+
+    ⚠ 这条守卫的形态是「**不许抛异常**」而不是「报出某物」——
+    崩溃与误报是两种不同的失败，前者必须单独锁住。
+    """
+    cases = [
+        ("elif", "class C:\n    if True:\n        A = 1\n    elif False:\n        B = 2\n"),
+        ("if-in-if", "class C:\n    if True:\n        if True:\n            A = 1\n"),
+        ("for-in-if", "class C:\n    for _i in (1,):\n        if True:\n            A = 1\n"),
+        ("try-in-if", "class C:\n    if True:\n        try:\n            A = 1\n"
+                     "        except Exception:\n            pass\n"),
+        ("elif-in-method",
+         "class C:\n    def m(self):\n        if True:\n            A = 1\n"
+         "        elif False:\n            B = 2\n"),
+    ]
+    for label, src in cases:
+        try:
+            _probe_run(src)
+        except Exception as e:
+            raise AssertionError(
+                f"探针在「{label}」上崩溃：{type(e).__name__}: {e}\n{src!r}"
+            ) from e
+
+
+def test_match_subject_guard_and_mapping_captures():
+    """⚠ 第十三轮复审：match 的 4 类残留。
+
+      · subject 被产出两次 + 没有类作用域 marker ⇒ `v` 被报两次未绑定
+      · guard 表达式在 case 体之前求值，但捕获名**已**绑定
+        （`case [a, b] if a > 0:` 的 a 在 guard 里可用）
+      · `case {'k': val, **rest}` 的 rest 是捕获名
+      · 函数/模块级 match 也要建模（此前只在类体路径）
+    """
+    must_not = {
+        "subject 已定义": "class C:\n    v = [1]\n    match v:\n        case [a]:\n            B = a\n",
+        "guard 用捕获名": ("class C:\n    v = [1]\n    match v:\n"
+                           "        case [a, b] if a > 0:\n            B = b\n"),
+        "mapping rest": ("class C:\n    v = {}\n    match v:\n"
+                         "        case {'k': val, **rest}:\n            B = rest\n"),
+        "函数级捕获名": ("def f():\n    v = [1]\n    match v:\n"
+                         "        case [a]:\n            return a\n"),
+    }
+    for label, src in must_not.items():
+        problems = _probe_run(src)
+        assert not problems, f"{label} 被误报：{src!r} ⇒ {problems}"
+
+    # ⚠ 已知的**不可观测变异**（写下来免得后人重复踩）：
+    # 「把捕获名并回 `_scope_local_names_of_body` 的外层 names」测不出来 ——
+    # `_match_scope_nodes` 内部自己算 `body_names = outer | case_names`，
+    # 不依赖调用方传入的 seen ⇒ 两处是**双重防线**，输出完全相同。
+    # 「`_match_pattern_loads` 里加回那句 `[kw for kw in node.kwd_attrs if False]`」
+    # 同样测不出来 —— `kwd_attrs` 是字符串列表，`if False` 恒为空，纯死代码。
+    # 这两条都不是空洞测试，而是**变异本身不成立**。
+
+
+def test_compound_sub_bodies_marks_exclusive_branches_correctly():
+    """⚠ 第十三轮复审：`_compound_sub_bodies` 的 `exclusive` 标志是**承重点**。
+
+    反转它（if/else 互斥 → 顺序，或 try 顺序 → 互斥）两个方向都会 RED。
+    ⚠ 我上一轮说它「不可观测」是错的 —— 那次变异打的是下游 `sub_seen` 表达式，
+    而真正承重的是**标志本身**。这条把它显式锁住。
+    """
+    import ast as _ast
+
+    cases = [
+        # (源码, 分支数, exclusive)
+        ("if c:\n    A=1\nelse:\n    B=2\n", 2, True),
+        ("if c:\n    A=1\n", 1, True),
+        ("try:\n    A=1\nexcept Exception:\n    B=2\n", 2, False),
+        ("for _i in (1,):\n    A=_i\nelse:\n    B=2\n", 2, False),
+        ("with open(f) as fh:\n    A=fh\n", 1, False),
+    ]
+    for src, n_bodies, expect_excl in cases:
+        stmt = _ast.parse(src).body[0]
+        bodies, excl = _compound_sub_bodies(stmt)
+        assert len(bodies) == n_bodies, (
+            f"{src!r}: 分支数 {len(bodies)} != {n_bodies}"
+        )
+        assert excl is expect_excl, (
+            f"{src!r}: exclusive={excl}，期望 {expect_excl}"
+        )
 
 
 def test_probe_accepts_class_scope_as_a_namespace():
