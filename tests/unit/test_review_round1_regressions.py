@@ -639,15 +639,11 @@ def _match_scope_nodes(stmt, seen):
         if body_names:
             yield _ClassScopeMarker(body_names, enter=True)
         for s2 in case.body:
-            if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                yield s2
-                for e2 in _signature_exprs(s2):
-                    yield from _ordered_subtree(e2)
-                continue
-            if isinstance(s2, ast.ClassDef):
-                yield from _class_scope_nodes(s2, outer_seen=set(body_names))
-                continue
-            yield from _ordered_subtree(s2)
+            # ⚠ 第十五轮复审：case 体里**再嵌** match（match-in-match）
+            # 时，内层 match 的捕获名也必须建模 ——
+            # 否则 `case [inner]: match inner: case [b]: X=b` 的 b 被误报。
+            # 复用共享的 `_compound_body_nodes`（它按类型分派：def/class/match/复合/普通）。
+            yield from _compound_body_nodes(s2, set(body_names))
         if body_names:
             yield _ClassScopeMarker(enter=False)
         # case 体里定义的类属性对后续 case 可见（match 是顺序执行的）
@@ -750,35 +746,12 @@ def _class_scope_nodes(node, outer_seen=None):
                 sub_seen = (set(prefix) if _exclusive
                             else set(prefix) | _shared_seen | body_prefix)
                 for s2 in inner:
-                    if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        # ⚠ 第十二轮复审：嵌套类方法体曾被当类作用域语句下降
-                        # ⇒ `class A: class B: def m: z=1; return z` 假红 z。
-                        # 方法**体**另有作用域，只扫签名部件。
-                        yield s2
-                        for e2 in _signature_exprs(s2):
-                            yield from _ordered_subtree(e2)
-                        sub_seen = sub_seen | {s2.name}
-                        branch_defs.add(s2.name)
-                        continue
-                    if isinstance(s2, ast.ClassDef):
-                        yield from _class_scope_nodes(s2, outer_seen=sub_seen)
-                        sub_seen = sub_seen | {s2.name}
-                        branch_defs.add(s2.name)
-                        continue
-                    # ⚠ 第十四轮复审：这里**不需要**特判 ast.Match ——
-                    # 类体复合分支里的 match 由 `_load_nodes` 那条路径处理
-                    # （`class C: if True: match v: case [a]: B=a`）。
-                    # 本函数是**嵌套类**路径，类体里的 match 走
-                    # `_class_scope_nodes` 自己的 Match 分支（见上）。
-                    # ⚠ 我曾在这里也加过一份 Match 特判，变异验证显示它
-                    # **完全不被走到**（GREEN）⇒ 属冗余，已删。
-                    here = sub_seen | _scope_local_names_of_body([s2])
-                    if here:
-                        yield _ClassScopeMarker(sorted(here), enter=True)
-                    yield from _ordered_subtree(s2)
-                    if here:
-                        yield _ClassScopeMarker(enter=False)
-                    sub_seen = here
+                    # ⚠ 第十五轮复审：改为调用共享实现 `_compound_body_nodes`
+                    # （原先此处与 `_class_scope_nodes` 各写一份 ⇒ 改一处漏一处：
+                    #  第十四轮我删掉其中一份的 Match 特判，而当时的测试全用
+                    #  顶层 class，没发现那条路径**可达**）。
+                    yield from _compound_body_nodes(s2, sub_seen)
+                branch_defs |= (sub_seen - prefix)
                 if not _exclusive:
                     _shared_seen |= (sub_seen - prefix)
                 branch_defs |= (sub_seen - prefix)
@@ -791,6 +764,121 @@ def _class_scope_nodes(node, outer_seen=None):
         if here:
             yield _ClassScopeMarker(enter=False)
         seen = here
+
+
+def _compound_body_nodes(s2, seen):
+    """处理**单条**语句 ``s2``，产出节点并**就地更新** ``seen``（可变集合）。
+
+    第十五轮复审：`_load_nodes` 与 `_class_scope_nodes` 各写了一份几乎相同的
+    inner 循环 ⇒ 改一处漏一处（第十四轮的 N1b：删掉其中一份的 Match 特判，
+    而当时的测试全用顶层 class，没发现那条路径**可达** —— 审查员用
+    `_ordered_subtree` 计数器证实了可达性）。
+
+    语句按作用域分四类：
+      · def / class  —— 名字绑定在当前作用域，**体**另有作用域
+      · match        —— 捕获名绑定在 case 体内，走 `_match_scope_nodes`
+      · 复合语句     —— **递归**走 `_compound_statement_nodes`
+                        （match-in-for-in-if 等深层嵌套）
+      · 其它         —— 普通下降
+
+    ⚠ ``seen`` 是**可变集合**且被就地更新 —— 调用点不必搬运返回值，
+    也不会出现「改了返回值忘了传回去」这类半途而废的 bug。
+    """
+    if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # ⚠ 第十二轮复审：嵌套类方法体曾被当类作用域语句下降
+        # ⇒ `class A: class B: def m: z=1; return z` 假红 z。
+        # 方法**体**另有作用域，只扫签名部件。
+        yield s2
+        for e2 in _signature_exprs(s2):
+            yield from _ordered_subtree(e2)
+        seen.add(s2.name)
+        return
+    if isinstance(s2, ast.ClassDef):
+        yield from _class_scope_nodes(s2, outer_seen=set(seen))
+        seen.add(s2.name)
+        return
+    if isinstance(s2, ast.Match):
+        # ⚠ 第十四轮复审（我上轮**误判**了一次）：
+        # 我曾因「变异 GREEN」认定某处不需要 Match 特判、把它删了。
+        # 那是**覆盖缺口导致的假 GREEN** —— 当时的测试全用顶层 class，
+        # 没覆盖「嵌套类 + 复合分支 + match」，而那条路径**可达**
+        # （审查员用 `_ordered_subtree` 计数器证实）。
+        # ⚠ 教训：**变异 GREEN 时要先确认自己打的是不是承重的那处**，
+        # 更根本的是先确认**这条路径可达**（计数器 / 可达性分析），
+        # 而不是从「测不出来」推断「代码冗余」。
+        #
+        # ⚠ 另一条已知的**双重防线**：把本分支改成 `if False` 测不出来 ——
+        # `ast.Match` 同时也在 `_COMPOUND_STMTS` 里，落到复合语句分支后
+        # `_compound_statement_nodes` 内部又有 Match 分派 ⇒ 输出完全相同。
+        # 两处都在（语义清晰），但真正承重的是 `_compound_statement_nodes` 那处。
+        #
+        # ⚠ 第十五轮复审实测：把 **`_compound_statement_nodes`** 里的 Match
+        # 分派也改成 `if False`，输出**仍然不变** —— 因为本函数这一分支
+        # 兜住了。⇒ 这里其实是**三重防线**：
+        #   `_compound_body_nodes` 的 Match 分派
+        #     → `_COMPOUND_STMTS` 分支 → `_compound_statement_nodes` 的 Match 分派
+        #     → （case body 循环）`_compound_body_nodes` 的 Match 分派
+        # 三处任一被关掉，另外两处仍能兜住 ⇒ 对这些位置做「关掉分支」变异
+        # **测不出差异**，这是结构性的，不是守卫缺失。
+        # 真正承重的变异是 S3（case body 循环那处）与 S4（捕获名建模）。
+        yield from _match_scope_nodes(s2, set(seen))
+        seen |= _scope_local_names_of_body([s2])
+        return
+    if isinstance(s2, _COMPOUND_STMTS):
+        # 复合语句要走**完整**的三段式（头部用前置 seen / 分支各自增量 /
+        # 跑完并回），那是 `_compound_statement_nodes` 的职责 ——
+        # 不能递归调用本函数（本函数处理的是「单条语句」）。
+        yield from _compound_statement_nodes(s2, set(seen))
+        seen |= _scope_local_names_of_body([s2])
+        return
+    here = set(seen) | _scope_local_names_of_body([s2])
+    if here:
+        yield _ClassScopeMarker(sorted(here), enter=True)
+    yield from _ordered_subtree(s2)
+    if here:
+        yield _ClassScopeMarker(enter=False)
+    seen.clear()
+    seen |= here
+
+
+def _compound_statement_nodes(stmt, seen):
+    """处理一条**复合语句**（含其分支体），产出节点并就地更新 ``seen``。
+
+    与 `_compound_body_nodes` 的分工：
+      · 本函数：语句本身**是**复合语句 ⇒ 走完整三段式
+        （头部用前置 seen / 各分支各自增量 / 跑完并回）
+      · `_compound_body_nodes`：语句是单条普通语句 ⇒ 按其类型分派
+
+    ⚠ 第十五轮复审：复合分支里**再嵌**复合（match-in-for-in-if、
+    match-in-if-in-if）时，内层必须递归走本函数，
+    否则内层的 match 被铺平下降 ⇒ 捕获名误报。
+    """
+    prefix = set(seen)
+    body_prefix = _compound_target_bindings(stmt)
+    if isinstance(stmt, ast.Match):
+        yield from _match_scope_nodes(stmt, prefix)
+        seen.clear()
+        seen |= prefix | _scope_local_names_of_body([stmt])
+        return
+    for expr in _compound_header_exprs(stmt):
+        if prefix:
+            yield _ClassScopeMarker(sorted(prefix), enter=True)
+        yield from _ordered_subtree(expr)
+        if prefix:
+            yield _ClassScopeMarker(enter=False)
+    branch_defs: set[str] = set()
+    _shared_seen: set[str] = set()
+    _bodies, _exclusive = _compound_sub_bodies(stmt)
+    for inner in _bodies:
+        sub_seen = (set(prefix) if _exclusive
+                    else set(prefix) | _shared_seen | body_prefix)
+        for s2 in inner:
+            yield from _compound_body_nodes(s2, sub_seen)
+        if not _exclusive:
+            _shared_seen |= (sub_seen - prefix)
+        branch_defs |= (sub_seen - prefix)
+    seen.clear()
+    seen |= prefix | branch_defs | _shared_seen
 
 
 def _load_nodes(fn):
@@ -928,31 +1016,12 @@ def _load_nodes(fn):
                         sub_seen = (set(prefix) if _exclusive
                                     else set(prefix) | _shared_seen | body_prefix)
                         for s2 in inner:
-                            if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                yield s2
-                                for expr in _signature_exprs(s2):
-                                    yield from _ordered_subtree(expr)
-                                sub_seen = sub_seen | {s2.name}
-                                branch_defs.add(s2.name)
-                                continue
-                            if isinstance(s2, ast.ClassDef):
-                                yield from _class_scope_nodes(s2, outer_seen=sub_seen)
-                                sub_seen = sub_seen | {s2.name}
-                                continue
-                            if isinstance(s2, ast.Match):
-                                # ⚠ 第十四轮复审：同上，嵌套类路径的
-                                # 复合分支 inner 循环也要特判 Match。
-                                yield from _match_scope_nodes(s2, sub_seen)
-                                sub_seen = sub_seen | _scope_local_names_of_body([s2])
-                                branch_defs |= (sub_seen - prefix)
-                                continue
-                            h2 = sub_seen | _scope_local_names_of_body([s2])
-                            if h2:
-                                yield _ClassScopeMarker(sorted(h2), enter=True)
-                            yield from _ordered_subtree(s2)
-                            if h2:
-                                yield _ClassScopeMarker(enter=False)
-                            sub_seen = h2
+                            # ⚠ 第十五轮复审：改为调用共享实现 `_compound_body_nodes`
+                            # （原先此处与 `_class_scope_nodes` 各写一份 ⇒ 改一处漏一处：
+                            #  第十四轮我删掉其中一份的 Match 特判，而当时的测试全用
+                            #  顶层 class，没发现那条路径**可达**）。
+                            yield from _compound_body_nodes(s2, sub_seen)
+                        branch_defs |= (sub_seen - prefix)
                         if not _exclusive:
                             # 顺序块：把已定义的并回共享 seen
                             _shared_seen |= (sub_seen - prefix)
@@ -1986,6 +2055,10 @@ def test_probe_never_crashes_on_class_bodies_with_elif_or_nested_compounds():
                       "            A = missing3\n", "missing3"),
         ("try-in-if", "class C:\n    if True:\n        try:\n            A = missing4\n"
                       "        except Exception:\n            pass\n", "missing4"),
+        # ⚠ 第十五轮复审补：match 形态的对照（match 的捕获名不该被报，
+        # 但 case 体里**真未绑定**的名字必须报出）
+        ("match 形态", "class C:\n    v=[1]\n    match v:\n        case [a]:\n"
+                       "            B = missing5\n", "missing5"),
     ]
     for label, src, want in probes:
         problems = _probe_run(src)
@@ -2031,6 +2104,11 @@ def test_match_inside_class_body_compound_branches():
     inner 循环原先只特判 FunctionDef/ClassDef，Match 走 `_ordered_subtree`
     铺平下降 ⇒ `class C: if True: match v: case [a]: B=a` 的 a 被误报。
     （函数/模块级 match-in-if 一直正常，因为通用路径已有 Match 分支。）
+
+    ⚠ 第十五轮复审补：嵌套类 + 复合 + match 也要覆盖 ——
+    我上一轮因「变异 GREEN」认定某处代码冗余而删掉，第十四轮复审用
+    `_ordered_subtree` 计数器证明那条路径**可达**，是我**测试覆盖缺口**
+    造成的假 GREEN。
     """
     must_not = {
         "if 内": "class C:\n    v=[1]\n    if True:\n        match v:\n"
@@ -2041,10 +2119,96 @@ def test_match_inside_class_body_compound_branches():
                     "            case [a]:\n                B=a\n",
         "try 内": "class C:\n    v=[1]\n    try:\n        match v:\n"
                   "            case [a]:\n                B=a\n    except Exception:\n        pass\n",
+        # ⚠ 嵌套类 + 复合 + match（第十五轮：上一轮漏覆盖 ⇒ 假 GREEN）
+        "嵌套类 if 内": ("class A:\n    class B:\n        v=[1]\n        if True:\n"
+                        "            match v:\n                case [a]:\n                    B2=a\n"),
+        # ⚠ 深层嵌套：复合里再嵌复合（第十五轮）
+        "match-in-for-in-if": ("class C:\n    v=[1]\n    for _i in (1,):\n"
+                               "        if True:\n            match v:\n"
+                               "                case [a]:\n                    B=a\n"),
+        "match-in-if-in-if": ("class C:\n    v=[1]\n    if True:\n        if True:\n"
+                              "            match v:\n                case [a]:\n"
+                              "                    B=a\n"),
+        # ⚠ match 里再嵌 match
+        "match-in-match": ("class C:\n    v=[1]\n    match v:\n        case [inner]:\n"
+                           "            match inner:\n                case [b]:\n"
+                           "                    X=b\n"),
+        "函数级 match-in-match": ("def f():\n    v=[1]\n    match v:\n"
+                                  "        case [inner]:\n            match inner:\n"
+                                  "                case [b]:\n                    return b\n"),
     }
     for label, src in must_not.items():
         problems = _probe_run(src)
-        assert not problems, f"复合分支内 match 的捕获名被误报：{label} ⇒ {problems}"
+        assert not problems, f"match 捕获名被误报：{label} ⇒ {problems}"
+
+
+def test_probe_reaches_the_nested_class_compound_match_path():
+    """⚠ 第十五轮复审【关键】：**可达性**守卫，比「变异转红」更根本。
+
+    第十四轮我因为「变异 GREEN」认定 `_class_scope_nodes` 里的 Match 特判
+    是冗余并删掉了 —— 实际那条路径**可达**（审查员用 `_ordered_subtree`
+    计数器证实），是我的**测试覆盖缺口**造成的假 GREEN。
+
+    ⚠ 教训：**变异 GREEN 时不能直接推断「代码冗余」**。
+    GREEN 有两种完全不同的成因：
+      ① 变异真的不可观测（等价、不改变行为）
+      ② 我的测试**没覆盖**那条路径
+    区分它们的方法是**可达性分析**（计数器 / 覆盖检查），而不是看变异红不红。
+
+    这条守卫直接断言：那条路径上的 Match 节点**确实被产出**。
+    """
+    src = ("class A:\n    class B:\n        v=[1]\n        if True:\n"
+           "            match v:\n                case [a]:\n                    B2=a\n")
+    tree = ast.parse(src)
+    match_nodes = [n for n in ast.walk(tree) if isinstance(n, ast.Match)]
+    assert match_nodes, "样例里没有 Match 节点"
+
+    # ⚠ 插桩点：`_match_scope_nodes`（Match 走它，**不走** `_ordered_subtree`）
+    produced = []
+    orig = globals()["_match_scope_nodes"]
+
+    def counting(stmt, seen):
+        produced.append(stmt)
+        yield from orig(stmt, seen)
+
+    globals()["_match_scope_nodes"] = counting
+    try:
+        _unbound_in_tree(tree)
+    finally:
+        globals()["_match_scope_nodes"] = orig
+
+    assert produced, (
+        "探针从未走 `_match_scope_nodes` ⇒ 这条路径**不可达**，"
+        "对它的任何断言都是空转"
+    )
+    assert len(produced) >= 1, f"Match 节点产出数异常：{len(produced)}"
+
+
+def test_match_capture_names_are_reachable_in_nested_class_scope():
+    """可达性的第二个角度：捕获名必须真的进入可见集。
+
+    与上一条互补 —— 上一条证明「路径可达」，这条证明「可达之后捕获名
+    确实被算进可见集」（而不是恰好没报错）。
+    """
+    captured = []
+    orig = reg_match_scope_nodes = globals()["_match_scope_nodes"]
+
+    def tracing(stmt, seen):
+        captured.append(sorted(seen))
+        yield from orig(stmt, seen)
+
+    globals()["_match_scope_nodes"] = tracing
+    try:
+        src = ("class A:\n    class B:\n        v=[1]\n        if True:\n"
+               "            match v:\n                case [a]:\n                    B2=a\n")
+        _unbound_in_tree(ast.parse(src))
+    finally:
+        globals()["_match_scope_nodes"] = orig
+
+    assert captured, "嵌套类路径从未调用 `_match_scope_nodes` ⇒ 不可达"
+    assert any("v" in s for s in captured), (
+        f"调用了但可见集里没有外层已定义的 v：{captured}"
+    )
 
 
 def test_match_mapping_keys_are_expressions_not_captures():
@@ -2081,6 +2245,29 @@ def test_after_match_capture_name_is_a_known_conservative_gap():
         "class C:\n    v=[1]\n    match v:\n        case [a]:\n            X=1\n    B=a\n")
     assert any("'a'" in p for p in problems), (
         f"after-match 捕获名的保守行为变了（若是有意修改，请更新本测试"
+        f"与 `_match_scope_nodes` 的注释）：{problems}"
+    )
+
+
+def test_cross_case_definition_is_a_known_conservative_gap():
+    """⚠ 第十五轮复审：**另一个**保守方向也要钉住。
+
+    `match v: case 1: A=1 / case _: B=A` —— 第二个 case 里的 `B=A`：
+    运行期若第一个 case 命中，A 有绑定；若没命中（走 `case _`），
+    A **没有**绑定 ⇒ B=A 是 NameError。
+
+    探针选择**放行**（把前一个 case 的定义并进 outer）⇒ 漏报。
+    这与 after-match 捕获名的方向相反（那个选择多报），
+    但根源同一个：静态无法判定哪个 case 会命中。
+
+    ⚠ 两个方向必须**都**有钉住测试 —— 第十一轮只完成了一半（after-match 已钉，
+    跨 case 放行只有注释没测试），导致将来任一方向被改都不会被发现。
+    """
+    problems = _probe_run(
+        "class C:\n    v=1\n    match v:\n        case 1:\n            A=1\n"
+        "        case _:\n            B=A\n")
+    assert not any("'A'" in p for p in problems), (
+        f"跨 case 放行的保守行为变了（若是有意修改，请更新本测试"
         f"与 `_match_scope_nodes` 的注释）：{problems}"
     )
 
