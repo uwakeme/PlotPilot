@@ -67,6 +67,11 @@ SOURCE_AI_ADJUSTED = "ai_adjusted"
 #: 荒谬的大数」这个事实，不需要完整数值。
 _BRIEF_MAX_CHARS = 40
 
+#: 超过这个 bit 数（≈1234 位十进制）就改用「约 N 位」占位符，不再 repr。
+#: ⚠ 刻意远低于 CPython 3.11+ 的 4300 位 int→str 硬限制：宁可少写精确数字，
+#: 也不冒 ValueError 的风险（那会打穿三条 note 通道）。
+_BRIEF_BIGINT_BITS = 4096
+
 
 def _brief(raw: Any, limit: int = _BRIEF_MAX_CHARS) -> str:
     """回显原始值，但截断到 ``limit`` 字符并标注省略量。
@@ -82,12 +87,22 @@ def _brief(raw: Any, limit: int = _BRIEF_MAX_CHARS) -> str:
 
     修法：先用 ``bit_length()``（不涉及字符串转换，永远安全）描述超大整数，
     根本不去 repr 它。
+
+    ⚠ 第十二轮复审的两处精度口径：
+      · 位数估算用 **301/1000**（log10(2) ≈ 0.30103）。上一版的 302/1000
+        系统性偏高 0.1–0.3%（``10**5000`` 报「约 5017 位」，实际 5001）。
+      · 阈值 ``bit_length() > 4096``（≈1234 位）**远低于** 4300 位的 repr 上限 ——
+        这是**故意的**：宁可少写几个精确数字，也不冒 ValueError 的风险。
+        1234–4300 位的整数会显示为占位符而不是完整数字，这是已知取舍。
+      · 负超大整数会带上符号（``<超大整数 -约 N 位>``），便于分辨正负。
     """
     if isinstance(raw, int) and not isinstance(raw, bool):
         # bit_length 不做 int→str 转换，对任意大的 int 都安全
-        digits_est = (raw.bit_length() * 302 // 1000) + 1   # log10(2)*bits ≈ 0.301
-        if raw.bit_length() > 4096:
-            return f"<超大整数 约 {digits_est} 位>"
+        bits = raw.bit_length()
+        digits_est = (bits * 301 // 1000) + 1   # log10(2) ≈ 0.30103
+        if bits > _BRIEF_BIGINT_BITS:
+            sign = "-" if raw < 0 else ""
+            return f"<超大整数 {sign}约 {digits_est} 位>"
     try:
         text = repr(raw)
     except Exception as e:
@@ -240,11 +255,15 @@ def resolve_storyline_end(
 
     # ⚠ 第十轮复审：bool 是 int 子类，`float(True)` == 1.0。
     # note 必须自述类型，否则读者以为模型给的是数字 1（与 offset 侧对齐）。
-    # ⚠ bool 值必然 ≤ current（True→1、False→0），所以它**总是**走抬升分支 ——
-    # 只在 else 分支里写根本到不了，这里单独算一个标记供抬升分支用。
-    is_bool = isinstance(ai_end, bool)
-    if is_bool:
-        why = f"模型给出的是布尔 {ai_end!r}（按数值 {value} 采纳），不是收尾章"
+    # ⚠ bool 值必然 ≤ current（True→1、False→0），所以在正常情况下它总是走
+    #   抬升分支 —— 只在 else 分支里写根本到不了，这里单独算一个标记。
+    # ⚠ 第十二轮复审：current=0 时 `True`(1) > 0，**不走**抬升分支，
+    #   于是留下 `source='ai'` 与 note「不是收尾章」自相矛盾 ⇒
+    #   bool 一律标 adjusted：布尔不是模型给的收尾章。
+    if isinstance(ai_end, bool):
+        source = SOURCE_AI_ADJUSTED
+        why = (f"模型给出的是布尔 {ai_end!r}（按数值 {value} 采纳），"
+               f"不是收尾章（采用值非模型原值）")
 
     if value > MAX_STORYLINE_END:
         # 超出任何现实小说的跨度 ⇒ 视同不可用，而不是原样落库。

@@ -9,6 +9,7 @@
    ⇒ note 里出现的章数/偏移必须与返回值一致。
 """
 import math
+import re
 import typing
 
 import pytest
@@ -298,6 +299,69 @@ def test_brief_never_raises_for_any_hashable_value():
     # 边界：恰好在临界内/临界外的整数
     for exp in (4299, 4300, 4301):
         assert isinstance(_brief(10 ** exp), str)
+
+
+def test_brief_digit_estimate_is_accurate_enough():
+    """⚠ 第十二轮复审：位数估算是**近似**，但不能差太多。
+
+    上一版用 `bits * 302 // 1000`，系统性偏高 0.1–0.3%
+    （`10**5000` 报「约 5017 位」，实际 5001 —— 差 16）。
+    改用 `301/1000`（log10(2) ≈ 0.30103）后误差降到 1 位内。
+    """
+    from application.world.services.foreshadow_pacing import _brief
+
+    for exponent, actual in ((5000, 5001), (10000, 10001)):
+        out = _brief(10 ** exponent)
+        m = re.search(r"约 (\d+) 位", out)
+        assert m, f"占位符缺位数信息：{out!r}"
+        reported = int(m.group(1))
+        assert abs(reported - actual) <= 1, (
+            f"10**{exponent}: 报「约 {reported} 位」，实际 {actual}，偏差 >1"
+        )
+
+
+def test_brief_bigint_placeholder_keeps_the_sign():
+    """负超大整数要带符号，否则分不清正负。"""
+    from application.world.services.foreshadow_pacing import _brief
+
+    pos = _brief(10 ** 5000)
+    neg = _brief(-(10 ** 5000))
+    assert pos != neg, f"正负超大整数的占位符相同：{pos!r} vs {neg!r}"
+    assert "-" in neg and "-" not in pos
+
+
+def test_storyline_end_bool_never_claims_ai_source():
+    """⚠ 第十二轮复审：`(0, True)` 曾返回 `source='ai'` 配 note「不是收尾章」。
+
+    布尔值必然 ≤ current，**通常**走抬升分支（那里已标 adjusted），
+    但 current=0 时 `True`(1) > 0 不走抬升 ⇒ 留下 source 与 note 矛盾。
+    红线：布尔不是模型给的收尾章，source 一律 `ai_adjusted`。
+    """
+    for current in (0, 1, 10):
+        end, source, note = resolve_storyline_end(current, True)
+        assert source == "ai_adjusted", (
+            f"current={current} raw=True → {source!r}，但 note 自述「不是收尾章」"
+        )
+        assert end > current
+        assert "布尔" in note
+
+
+def test_storyline_end_fallback_may_exceed_the_model_value_cap():
+    """⚠ 第十一轮声明、但**没有测试钉住**的语义口径（第十二轮复审点名）。
+
+    `MAX_STORYLINE_END` 只约束**模型给的值**；兜底路径守的是不变量
+    「收尾章 > 当前章」。所以 `current=9999`（< MAX）时兜底 `+12` 得到 10011
+    会**超过** MAX —— 这是「不变量优先于护栏」的直接后果，不是 bug。
+    这里把它钉住，避免将来被当成缺陷"顺手修掉"。
+    """
+    end, source, note = resolve_storyline_end(9999, None)
+    assert end == 9999 + 12 == 10011, f"兜底跨度口径变了：{end}"
+    assert end > MAX_STORYLINE_END, (
+        "本测试钉住的是「兜底可越过 MAX」这一口径；若口径有意变更，"
+        "请同时更新本测试与 MAX_STORYLINE_END 的注释"
+    )
+    assert source == "fallback"
+    assert "+12 章" in note
 
 
 def test_storyline_end_bool_note_declares_its_type():

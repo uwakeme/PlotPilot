@@ -320,8 +320,12 @@ def _compound_header_exprs(stmt):
     于是 `class C: try: ... except MissingExc:` 整条漏报。
 
     返回顺序与源码一致：
-      · If            → test（及其 orelse 的 test）
-      · For/While     → iter（While 没有）、target 本身只产生绑定不产生 Load
+      · If            → test（elif 的 test 靠 orelse 递归覆盖）
+      · For           → iter
+      · While         → test（第十二轮复审：原先这里写 `pass`，
+                         注释还称「While 没有头部表达式」—— 是错的，
+                         `while cond:` 的 cond 就在 test 上，
+                         类体路径下它压根没被扫 ⇒ `class C: while missing: pass` 漏报）
       · With          → 每个 item.context_expr
       · Try           → 每个 handler.type
       · Match         → subject / 每个 case.guard
@@ -332,7 +336,7 @@ def _compound_header_exprs(stmt):
     elif isinstance(stmt, (ast.For, ast.AsyncFor)):
         out.append(stmt.iter)
     elif isinstance(stmt, ast.While):
-        pass                                   # While 没有头部表达式
+        out.append(stmt.test)
     elif isinstance(stmt, (ast.With, ast.AsyncWith)):
         out += [i.context_expr for i in stmt.items]
     elif isinstance(stmt, (ast.Try, ast.TryStar)):
@@ -344,23 +348,101 @@ def _compound_header_exprs(stmt):
     return [e for e in out if e is not None]
 
 
+def _match_pattern_names(pattern) -> set[str]:
+    """从 ``match`` 的模式里取出**在 case 体中已绑定**的捕获名。
+
+    ⚠ 第十二轮复审：``case [a, b]: B = a`` 的 a/b 是捕获模式（as 模式），
+    运行期在进入 case 体前就已绑定。此前完全没建模 ⇒ 3 类假红。
+    同时 ``case MissingPoint(p)`` 的 ``MissingPoint`` 是**要加载的类名**
+    （必须在外层作用域可见），不能算捕获名 —— 它属于 header 表达式。
+    """
+    names: set[str] = set()
+    for node in ast.walk(pattern):
+        if isinstance(node, ast.MatchAs):
+            if node.pattern is None and node.name:
+                # 捕获名：`case x:` / `case [a]:` 里的 a
+                names.add(node.name)
+            elif node.pattern is not None and node.name:
+                # `case [a] as whole:` 的 whole
+                names.add(node.name)
+        elif isinstance(node, ast.MatchStar):
+            if node.name:
+                names.add(node.name)
+    return names
+
+
+def _match_pattern_loads(pattern) -> list:
+    """模式里需要在外层作用域**解析**的 Load（类名等）。
+
+    ``case MissingPoint(p)`` 的 ``MissingPoint`` 必须已定义；``case int(x)``
+    的 ``int`` 同理。捕获名本身不是 Load（它是绑定）。
+    """
+    out = []
+    for node in ast.walk(pattern):
+        if isinstance(node, ast.MatchClass):
+            if node.cls is not None:
+                out.append(node.cls)
+            out += [kw for kw in node.kwd_attrs if False]   # 占位：kwd_attrs 是 str
+        elif isinstance(node, ast.MatchValue):
+            out.append(node.value)
+    return out
+
+
+def _compound_target_bindings(stmt) -> set[str]:
+    """复合语句里「头部之后、分支体之前」绑定的名字。
+
+    Python 的求值顺序：``for x in xs:`` 先算 ``xs``、再绑 ``x``；
+    ``with C() as x:`` 先求上下文表达式、再绑 ``x``；
+    ``except E as e:`` 先解包异常、再绑 ``e``。这三类都落在
+    「头部表达式之后、分支体之前」那一层，漏了会让
+    ``for _i in (1,): B = _i`` 把 ``_i`` 误报成未绑定。
+    """
+    out: set[str] = set()
+    if isinstance(stmt, (ast.For, ast.AsyncFor)):
+        for sub in ast.walk(stmt.target):
+            if isinstance(sub, ast.Name):
+                out.add(sub.id)
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        for item in stmt.items:
+            if item.optional_vars is not None:
+                for sub in ast.walk(item.optional_vars):
+                    if isinstance(sub, ast.Name):
+                        out.add(sub.id)
+    if isinstance(stmt, (ast.Try, ast.TryStar)):
+        for h in stmt.handlers:
+            if h.name:
+                out.add(h.name)
+    return out
+
+
 def _compound_sub_bodies(stmt):
-    """取复合语句里所有「同作用域」的分支体语句列表。"""
+    """取复合语句里所有「同作用域」的分支体语句列表。
+
+    ⚠ 第十二轮复审（语义区分）：并非所有分支都「各自独立」。
+      · ``try`` / ``except`` / ``finally``、``for`` / ``while`` 的 body 与
+        orelse —— **顺序执行、共享一个作用域**：
+        ``try: A=1; B=A / except: C=B`` 里 B 在 except 体可见。
+      · 只有 ``if`` / ``elif`` / ``else`` 是**互斥分支**：
+        ``if: A=1 / else: B=A`` 里 B=A 在运行期是 NameError。
+    用 ``exclusive=True`` 标记互斥分支，调用方据此决定 seen 是否共享。
+    """
     if isinstance(stmt, ast.If):
         out = [stmt.body]
         if stmt.orelse:
             out.append(stmt.orelse)
-        return out
+        return out, True          # if/else 互斥
     if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
-        return [stmt.body] + ([stmt.orelse] if stmt.orelse else [])
+        # body 与 orelse 顺序执行（循环可能跑 0 次，但 Python 里它们同属
+        # 一个函数/类作用域，名字可见性不按分支切分）
+        return [stmt.body] + ([stmt.orelse] if stmt.orelse else []), False
     if isinstance(stmt, (ast.With, ast.AsyncWith)):
-        return [stmt.body]
+        return [stmt.body], False
     if isinstance(stmt, ast.Match):
-        return [c.body for c in stmt.cases]
-    # Try / TryStar
+        return [c.body for c in stmt.cases], True    # case 互斥（但捕获名另算）
+    # Try / TryStar：body → handlers → orelse → finalbody 顺序执行
     out = [stmt.body, stmt.orelse, stmt.finalbody]
     out += [h.body for h in stmt.handlers]
-    return [b for b in out if b]
+    return [b for b in out if b], False
 
 
 def _scope_local_names_of_body(body) -> set[str]:
@@ -421,6 +503,13 @@ def _scope_local_names_of_body(body) -> set[str]:
                 for h in stmt.handlers:
                     if h.name:
                         names.add(h.name)
+            # `match` 的捕获名（`case [a, b]:` 的 a/b）绑定在**该 case 体内**，
+            # 不是外层。收集时逐 case 处理（第十二轮复审）。
+            if isinstance(stmt, ast.Match):
+                for case in stmt.cases:
+                    names |= _match_pattern_names(case.pattern)
+                    names |= _scope_local_names_of_body(case.body)
+                continue
             for inner in _compound_sub_bodies(stmt):
                 names |= _scope_local_names_of_body(inner)
             # 头部表达式（条件 / except 类型 / 迭代目标本身）只产生 Load，
@@ -471,6 +560,53 @@ def _signature_exprs(node):
     return out
 
 
+def _match_scope_nodes(stmt, seen):
+    """产出 `match` 语句的节点序列，返回结束时的 `seen`。
+
+    ⚠ 第十二轮复审：`match` 里有**两种**可见性，不能混为一谈：
+      · subject 与**模式类名**（``case MissingPoint(p)`` 的 MissingPoint、
+        ``case int(x)`` 的 int、``case CONST`` 的值）—— 在**外层**作用域求值，
+        未定义必须报出
+      · **捕获名**（``case [a, b]:`` 的 a/b、``case x:`` 的 x、
+        ``case [a] as whole:`` 的 whole、``case [a, *rest]:`` 的 rest）——
+        运行期在进入 case 体**之前**已绑定，在 case 体内可见
+    """
+    outer = set(seen)
+    if stmt.subject is not None:
+        yield stmt.subject
+        yield from _ordered_subtree(stmt.subject)
+
+    for case in stmt.cases:
+        case_names = _match_pattern_names(case.pattern)
+        with_marker = sorted(outer)
+        if with_marker:
+            yield _ClassScopeMarker(with_marker, enter=True)
+        for load in _match_pattern_loads(case.pattern):
+            yield from _ordered_subtree(load)
+        if case.guard is not None:
+            yield from _ordered_subtree(case.guard)
+        if with_marker:
+            yield _ClassScopeMarker(enter=False)
+
+        body_names = sorted(outer | case_names)
+        if body_names:
+            yield _ClassScopeMarker(body_names, enter=True)
+        for s2 in case.body:
+            if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield s2
+                for e2 in _signature_exprs(s2):
+                    yield from _ordered_subtree(e2)
+                continue
+            if isinstance(s2, ast.ClassDef):
+                yield from _class_scope_nodes(s2, outer_seen=set(body_names))
+                continue
+            yield from _ordered_subtree(s2)
+        if body_names:
+            yield _ClassScopeMarker(enter=False)
+        # case 体里定义的类属性对后续 case 可见（match 是顺序执行的）
+        outer |= _scope_local_names_of_body(case.body) | case_names
+
+
 def _ordered_subtree(node):
     """产出 ``node`` 及其全部后代，顺序严格等于源码顺序。
 
@@ -515,6 +651,15 @@ def _class_scope_nodes(node, outer_seen=None):
     seen = set()
 
     for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # ⚠ 第十二轮复审：嵌套类里的方法。方法**体**另有作用域 ——
+            # 整条下降会把 `def m: z=1; return z` 的 z 当成类作用域的名字
+            # ⇒ 假红。只扫签名部件，方法名绑定在类作用域。
+            yield stmt
+            for expr in _signature_exprs(stmt):
+                yield from _ordered_subtree(expr)
+            seen.add(stmt.name)
+            continue
         if isinstance(stmt, ast.ClassDef):
             # 头继承**外层** seen（含本类此前定义的属性），
             # 类体用自己的作用域 —— 见上面 outer_seen / seen=set() 的分工。
@@ -524,21 +669,42 @@ def _class_scope_nodes(node, outer_seen=None):
         if isinstance(stmt, _COMPOUND_STMTS):
             # 分支与本类同作用域：分支体里的赋值也要进 seen；
             # 头部表达式（except 类型 / if 条件 / 迭代目标）在当前作用域求值。
-            extra = _scope_local_names_of_body([stmt])
-            seen_before = set(seen)
-            seen = seen_before | extra
+            # ⚠ 第十二轮复审：头部与分支体都用**前置** seen（顺序语义），
+            # 全部跑完后才把分支内定义并回 seen。
+            prefix = set(seen)
+            body_prefix = _compound_target_bindings(stmt)
+            if isinstance(stmt, ast.Match):
+                for n in _match_scope_nodes(stmt, prefix):
+                    yield n
+                seen = prefix | _scope_local_names_of_body([stmt])
+                continue
             for expr in _compound_header_exprs(stmt):
-                if seen:
-                    yield _ClassScopeMarker(sorted(seen), enter=True)
+                if prefix:
+                    yield _ClassScopeMarker(sorted(prefix), enter=True)
                 yield from _ordered_subtree(expr)
-                if seen:
+                if prefix:
                     yield _ClassScopeMarker(enter=False)
-            for inner in _compound_sub_bodies(stmt):
-                sub_seen = seen
+            branch_defs: set[str] = set()
+            _shared_seen: set[str] = set()
+            _bodies, _exclusive = _compound_sub_bodies(stmt)
+            for inner in _bodies:
+                sub_seen = (set(prefix) if _exclusive
+                            else set(prefix) | _shared_seen | body_prefix)
                 for s2 in inner:
+                    if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        # ⚠ 第十二轮复审：嵌套类方法体曾被当类作用域语句下降
+                        # ⇒ `class A: class B: def m: z=1; return z` 假红 z。
+                        # 方法**体**另有作用域，只扫签名部件。
+                        yield s2
+                        for e2 in _signature_exprs(s2):
+                            yield from _ordered_subtree(e2)
+                        sub_seen = sub_seen | {s2.name}
+                        branch_defs.add(s2.name)
+                        continue
                     if isinstance(s2, ast.ClassDef):
                         yield from _class_scope_nodes(s2, outer_seen=sub_seen)
                         sub_seen = sub_seen | {s2.name}
+                        branch_defs.add(s2.name)
                         continue
                     here = sub_seen | _scope_local_names_of_body([s2])
                     if here:
@@ -547,7 +713,10 @@ def _class_scope_nodes(node, outer_seen=None):
                     if here:
                         yield _ClassScopeMarker(enter=False)
                     sub_seen = here
-                seen = sub_seen
+                if not _exclusive:
+                    _shared_seen |= (sub_seen - prefix)
+                branch_defs |= (sub_seen - prefix)
+            seen = prefix | branch_defs | _shared_seen
             continue
         here = seen | _scope_local_names_of_body([stmt])
         if here:
@@ -652,26 +821,53 @@ def _load_nodes(fn):
                     # 复合语句的分支与本类**同属一个作用域**：
                     # `if True:` 不引入新作用域，类属性在分支内外都可见。
                     # 但分支内的 def/class 体另算 —— 逐分支递归。
-                    # ⚠ 循环目标（`for _i in xs` 的 _i）、`with as x`、
-                    #   `except E as e` 都绑定在**当前**作用域，须先进 seen；
-                    #   头部表达式（`except MissingExc:` 的 MissingExc、
-                    #   `if x > 0` 的 x、`for _ in xs` 的 xs）也要扫，
-                    #   它们在当前作用域求值但不属于任何分支体。
-                    seen = seen | _scope_local_names_of_body([stmt])
+                    #
+                    # ⚠ 第十二轮复审（顺序语义）：头部与分支体都只能用
+                    # **前置**的 seen。原先先把整条语句的绑定并进 seen 再扫头部，
+                    # 于是 `if later: later = 1` / `while cond: cond = False`
+                    # 的条件提前看见**后面才定义**的名字 ⇒ 4 类漏报
+                    # （运行期都是 NameError）。
+                    # 正确顺序：
+                    #   ① 头部用前置 seen（条件里的名字必须在**之前**已绑定）
+                    #   ② 分支体各自从前置 seen 起步，逐语句增量推进
+                    #   ③ 全部分支跑完后，才把分支体内定义的并回 seen
+                    prefix = set(seen)
+                    _shared_seen: set[str] = set()
+                    # `for _i in xs` 的 _i、`with as x`、`except E as e`
+                    # 绑定在**当前**作用域，但**晚于**头部表达式求值
+                    # （`for x in xs:` 先算 xs 再绑 x）⇒ 头部用 prefix 即可，
+                    # 它们属于 body_prefix（头部与分支体之间那一层）。
+                    body_prefix = _compound_target_bindings(stmt)
+                    if isinstance(stmt, ast.Match):
+                        for n in _match_scope_nodes(stmt, prefix):
+                            yield n
+                        seen = prefix | _scope_local_names_of_body([stmt])
+                        continue
                     for expr in _compound_header_exprs(stmt):
-                        if seen:
-                            yield _ClassScopeMarker(sorted(seen), enter=True)
+                        if prefix:
+                            yield _ClassScopeMarker(sorted(prefix), enter=True)
                         yield from _ordered_subtree(expr)
-                        if seen:
+                        if prefix:
                             yield _ClassScopeMarker(enter=False)
-                    for inner in _compound_sub_bodies(stmt):
-                        sub_seen = seen
+                    branch_defs: set[str] = set()
+                    _bodies, _exclusive = _compound_sub_bodies(stmt)
+                    for inner in _bodies:
+                        # ⚠ 互斥分支（if/else、match case）各自从前置 seen 起步 ——
+                        # `if: A=1 / else: B=A` 的 B=A 运行期是 NameError。
+                        # 顺序执行的块（try/except、for/while）共享 seen：
+                        # `try: A=1; B=A / except: C=B` 里 B 在 except 可见。
+                        # ⚠ 循环目标 / with-as / except-as 在**头部之后、
+                        # 分支体之前**绑定 —— Python 先算 `xs` 再绑 `_i`。
+                        # 所以顺序块的起点是 prefix ∪ 这些绑定。
+                        sub_seen = (set(prefix) if _exclusive
+                                    else set(prefix) | _shared_seen | body_prefix)
                         for s2 in inner:
                             if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
                                 yield s2
                                 for expr in _signature_exprs(s2):
                                     yield from _ordered_subtree(expr)
                                 sub_seen = sub_seen | {s2.name}
+                                branch_defs.add(s2.name)
                                 continue
                             if isinstance(s2, ast.ClassDef):
                                 yield from _class_scope_nodes(s2, outer_seen=sub_seen)
@@ -684,7 +880,11 @@ def _load_nodes(fn):
                             if h2:
                                 yield _ClassScopeMarker(enter=False)
                             sub_seen = h2
-                        seen = sub_seen
+                        if not _exclusive:
+                            # 顺序块：把已定义的并回共享 seen
+                            _shared_seen |= (sub_seen - prefix)
+                        branch_defs |= (sub_seen - prefix)
+                    seen = prefix | branch_defs | _shared_seen
                     continue
                 # ⚠ 本条语句的可见集 = 之前已定义的 ∪ **本条自己定义的**。
                 # 后者不可省：`dec = staticmethod(lambda f: f)` 是首条语句，
@@ -1569,6 +1769,84 @@ def test_nested_class_header_sees_the_enclosing_class_scope():
         assert any(want in p for p in problems), (
             f"嵌套类漏报 {want!r}：{src!r} ⇒ {problems}"
         )
+
+
+def test_compound_statement_ordering_semantics():
+    """⚠ 第十二轮复审（顺序语义）：条件与头部只能用**前置**可见名。
+
+    原先把整条语句的绑定并进 `seen` 再扫头部，于是条件提前看见
+    **后面才定义**的名字 ⇒ 4 类漏报（运行期都是 NameError）。
+    """
+    must_report = [
+        ("class C:\n    if later:\n        later = 1\n", "later"),
+        ("class C:\n    for x in xs:\n        xs = []\n", "xs"),
+        ("class C:\n    while cond:\n        cond = False\n", "cond"),
+        # if/else 互斥：else 里看不见 if 分支定义的 A
+        ("class C:\n    if cond:\n        A = 1\n    else:\n        B = A\n", "A"),
+    ]
+    for src, want in must_report:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"顺序语义漏报 {want!r}：{src!r} ⇒ {problems}"
+        )
+
+
+def test_sequential_blocks_share_their_scope():
+    """⚠ 顺序执行的块**共享**一个作用域，与 if/else 互斥分支不同。
+
+    `try: A=1; B=A / except: C=B` 里 B 在 except 体可见 ——
+    上一版把 if/else 的「分支互斥」语义套到 try 上 ⇒ 误报。
+
+    ⚠ 已知的**不可观测变异**（写下来免得后人重复踩）：
+    「把 `_exclusive` 的判定反过来」测不出来 —— 实测三种实现
+    （当前 / 互斥当顺序 / 顺序当互斥）对下面每条样例的输出**完全相同**。
+    原因是 `sub_seen` 的差别只影响分支体的起点，而分支体里
+    ``B = A`` 的 ``A`` 在**该分支自己的 seen** 里就已能判定/报出，
+    分支跑完后 `branch_defs` 又无条件并回 seen ⇒ 差异被抹平。
+    这两处保留 `exclusive` 是为了语义正确（避免将来改动引入真实偏差），
+    但它们**不是**承重的守卫点 —— 真正承重的是 W1（全分支预收集）。
+    """
+    ok = [
+        "class C:\n    try:\n        A = 1\n        B = A\n    except Exception:\n        C = B\n",
+        "class C:\n    for _i in (1,):\n        B = _i\n",
+        # ⚠ 上下文表达式里用已绑定的名字（`f` 若是未定义，报出来才是对的）
+        "class C:\n    f = 'p'\n    with open(f) as fh:\n        B = fh\n",
+        # for 的 orelse 与 body 共享作用域（循环跑完 _i 已绑定）
+        "class C:\n    for _i in (1,):\n        B = _i\n    else:\n        C = _i\n",
+    ]
+    for src in ok:
+        problems = _probe_run(src)
+        assert not problems, f"顺序块内合法写法被误报：{src!r} ⇒ {problems}"
+
+
+def test_match_case_captures_and_pattern_classes():
+    """⚠ 第十二轮复审：`match` 有**两种**可见性，不能混为一谈。
+
+      · 捕获名（``case [a, b]:`` 的 a/b）—— 运行期在进入 case 体前已绑定
+      · 模式类名（``case MissingPoint(p)`` 的 MissingPoint）—— 必须在外层可见
+    """
+    ok = "class C:\n    match v:\n        case [a, b]:\n            B = a\n"
+    problems = _probe_run(ok)
+    assert not any("'a'" in p or "'b'" in p for p in problems), (
+        f"match 捕获名被误报：{problems}"
+    )
+
+    bad = "class C:\n    match v:\n        case MissingPoint(p):\n            B = 1\n"
+    problems = _probe_run(bad)
+    assert any("MissingPoint" in p for p in problems), (
+        f"模式类名漏报：{bad!r} ⇒ {problems}"
+    )
+
+
+def test_nested_class_method_body_is_not_class_scope():
+    """⚠ 第十二轮复审（§3.1-4，第十轮遗留）：嵌套类里的方法体另有作用域。
+
+    `class A: class B: def m(self): z = 1; return z` —— z 是方法的局部，
+    报未绑定是假红。
+    """
+    src = "class A:\n    class B:\n        def m(self):\n            z = 1\n            return z\n"
+    problems = _probe_run(src)
+    assert not problems, f"嵌套类方法体被误报：{problems}"
 
 
 def test_probe_accepts_class_scope_as_a_namespace():
