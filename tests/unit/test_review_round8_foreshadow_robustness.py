@@ -223,8 +223,12 @@ def test_every_note_channel_is_truncated():
       · `_resolve_plant_offset` 的 fallback（落 registry JSON）
       · `resolve_storyline_end` 的 >MAX 分支（落 storylines.note）
     实测两者曾分别产出 437 / 342 字符的 note。
+
+    ⚠ 第十一轮复审追加：`repr()` **本身也会抛**。
+    CPython 3.11+ 对 int→str 有 4300 位硬限制（`sys.set_int_max_str_digits`），
+    `repr(10**5000)` 直接 ValueError ⇒ 三条通道全被打穿。
+    修法是 `_brief` 先用 `bit_length()`（不做 int→str）描述超大整数。
     """
-    # 通道 2：state_updater 的 G-01 纯函数
     from application.analyst.services.state_updater import _resolve_plant_offset
 
     for raw in (10 ** 400, "x" * 5000):
@@ -233,12 +237,67 @@ def test_every_note_channel_is_truncated():
             f"_resolve_plant_offset raw={raw!r:.20} → note {len(note)} 字符，未截断"
         )
 
-    # 通道 3：storyline 的 >MAX 分支
     for raw in (float("1e308"), 10 ** 400):
         _end, _src, note = resolve_storyline_end(10, raw)
         assert len(note) < 200, (
             f"resolve_storyline_end raw={raw!r:.20} → note {len(note)} 字符，未截断"
         )
+
+
+@pytest.mark.parametrize("exponent", [4301, 5000, 10000])
+def test_huge_ints_never_raise_anywhere(exponent):
+    """⚠ 契约：裁决器对**任何** int 都不抛异常。
+
+    `repr()` 在 3.11+ 对 >4300 位整数抛 ValueError（实测本机
+    `sys.get_int_max_str_digits()` = 4300）。若这条没被接住，
+    调用方的 `except` 只会记 warning ⇒ 该章状态更新被静默跳过
+    （数据丢失，不是崩溃）。
+
+    ⚠ 变异的教训：只测「三条裁决函数对 10**N 不抛」是不够的 ——
+    ``float(10**5000)`` 会先抛 OverflowError，被裁决器的 except 吃掉，
+    于是根本走不到 ``_brief``，去掉 ``_brief`` 的护栏也照样全绿。
+    所以这里**直接测 `_brief` 本身**，锁住它的契约。
+    """
+    from application.analyst.services.state_updater import _resolve_plant_offset
+    from application.world.services.foreshadow_pacing import _brief
+
+    raw = 10 ** exponent
+
+    # 契约本体：任何输入都不能让 `_brief` 抛
+    out = _brief(raw)
+    assert isinstance(out, str) and out, f"_brief({exponent}) 返回 {out!r}"
+    assert len(out) < 200, f"_brief(10**{exponent}) → {len(out)} 字符，未截断"
+    assert "超大整数" in out or "已截断" in out, (
+        f"超大整数应有专门描述而非裸数字：{out!r}"
+    )
+
+    # 三条裁决路径也不抛（这里它们会被 except 吃掉而走 fallback，
+    # 但仍要确认「不抛」这个契约）
+    offset, source, note = resolve_offset(raw)
+    assert source == "fallback" and isinstance(offset, int) and len(note) < 200
+
+    off2, src2, note2 = _resolve_plant_offset(3, raw)
+    assert src2 == "fallback" and isinstance(off2, int) and len(note2) < 200
+
+    end, src3, note3 = resolve_storyline_end(10, raw)
+    assert src3 == "fallback" and isinstance(end, int) and len(note3) < 200
+
+
+def test_brief_never_raises_for_any_hashable_value():
+    """`_brief` 的兜底契约：连 repr 会抛的输入也必须返回字符串。"""
+    from application.world.services.foreshadow_pacing import _brief
+
+    class _ReprExplodes:
+        def __repr__(self):
+            raise RuntimeError("boom")
+
+    out = _brief(_ReprExplodes())
+    assert isinstance(out, str) and out, "_brief 对会抛的 repr 未兜住"
+    assert "无法 repr" in out, f"兜底文案应说明原因：{out!r}"
+
+    # 边界：恰好在临界内/临界外的整数
+    for exp in (4299, 4300, 4301):
+        assert isinstance(_brief(10 ** exp), str)
 
 
 def test_storyline_end_bool_note_declares_its_type():
@@ -383,11 +442,36 @@ def test_storyline_end_note_cites_the_value_actually_returned():
     """
     import re
 
-    for current, raw in [(10, 8), (10, 11.9), (10, 42), (10, 1.2), (3, 2),
-                         (10, float("nan")), (10, "十几章")]:
+    cases = [
+        (10, 8), (10, 11.9), (10, 42), (10, 1.2), (3, 2),
+        (10, float("nan")), (10, "十几章"),
+        # ⚠ 第十一轮复审：ai 分支的判据曾是 `str(end) in note` 这个**子串**匹配。
+        # 样本只有 end=42 一例，把 note 里的 42 改成 142 后
+        # `"42" in "...142..."` 仍为 True ⇒ 18 条测试全绿。
+        #
+        # ⚠ 样本必须**真的落在 ai 分支**：end 既晚于 current、又是整数的 raw
+        # 才会被标 ai。4 / 40 这些 ≤ current 的会走抬升或兜底，压根进不了这一支
+        # —— 我第一版就加错了位置，变异依然全绿。
+        # 这里取「数字相邻」的合法 ai 值：14 与 142/141 相邻、141 与 14/142 相邻。
+        (10, 14), (100, 140), (100, 141), (100, 142), (10, 400),
+    ]
+    # 至少要有若干条真的落在 ai 分支，否则这条断言对该分支是空转
+    ai_hits = [c for c in cases
+               if resolve_storyline_end(c[0], c[1])[1] == "ai"]
+    assert len(ai_hits) >= 4, (
+        f"样本里只有 {len(ai_hits)} 条落在 ai 分支（应 >=4）：{cases}"
+    )
+
+    for current, raw in cases:
         end, source, note = resolve_storyline_end(current, raw)
         if source == "ai":
-            assert str(end) in note, f"ai 分支的 note 未点明取值 {end}：{note}"
+            # ⚠ 第十一轮复审：`str(end) in note` 是**子串匹配**。
+            # 实测它对「note 里的数字被改错」完全**不敏感**：生产侧把章号
+            # 改错一位时，词边界判据 RED、子串判据仍 GREEN。
+            # 所以这里必须用 `\b{end}\b`，不能退回 `in`。
+            assert re.search(rf"预估收尾章\s+{end}\b", note), (
+                f"ai 分支的 note 未以结论句式点明取值 {end}：{note}"
+            )
             continue
         # 结论：note 必须说「已由代码抬到第 N 章」且 N == end
         lifted = re.search(r"抬到第 (\d+) 章", note)

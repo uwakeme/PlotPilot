@@ -72,8 +72,31 @@ def _brief(raw: Any, limit: int = _BRIEF_MAX_CHARS) -> str:
     """回显原始值，但截断到 ``limit`` 字符并标注省略量。
 
     ⚠ 不能直接用 ``{raw!r}``：``10**400`` 会产出 401 位数字的 note。
+
+    ⚠⚠ 第十一轮复审：``repr(raw)`` **本身也可能抛异常** ——
+    CPython 3.11+ 对 ``int → str`` 有 4300 位硬限制（``sys.set_int_max_str_digits``），
+    ``repr(10**5000)`` 直接 ``ValueError: Exceeds the limit (4300 digits)``。
+    而本函数在**三条 note 通道**的公共路径上：offset / plant / storyline
+    全被它打穿成 ValueError，违反「裁决器对任何输入都不抛」这条契约
+    （调用方的 except 只会记 warning ⇒ 该章状态更新被静默跳过）。
+
+    修法：先用 ``bit_length()``（不涉及字符串转换，永远安全）描述超大整数，
+    根本不去 repr 它。
     """
-    text = repr(raw)
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        # bit_length 不做 int→str 转换，对任意大的 int 都安全
+        digits_est = (raw.bit_length() * 302 // 1000) + 1   # log10(2)*bits ≈ 0.301
+        if raw.bit_length() > 4096:
+            return f"<超大整数 约 {digits_est} 位>"
+    try:
+        text = repr(raw)
+    except Exception as e:
+        # ⚠ 第十一轮复审：不能只捕 (ValueError, RecursionError) ——
+        # `__repr__` 是用户代码，可以抛**任意**异常（RuntimeError 等）。
+        # 这里只做「把值转成可读文本」这一件纯展示的事，
+        # 绝不该因为它失败而把异常抛给裁决流程。
+        # （这里也**不该**用 BaseException —— KeyboardInterrupt 要能透出。）
+        return f"<无法 repr 的值 类型={type(raw).__name__}: {type(e).__name__}>"
     if len(text) <= limit:
         return text
     return f"{text[:limit]}…（共 {len(text)} 字符，已截断）"

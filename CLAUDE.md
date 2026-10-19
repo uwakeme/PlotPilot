@@ -41,11 +41,11 @@ pytest tests/dag -v
 （`glob`/`wc` 是 bash 的东西，Windows 上跑不了）：
 
 ```powershell
-# PowerShell（默认 shell）—— 实测 356
+# PowerShell（默认 shell）
 (Get-ChildItem -Recurse tests/unit -Filter test_*.py).Count
 # 或只数已跟踪文件。
-# ⚠ 别用 `git ls-files 'tests/unit/**/test_*.py'`：git 的 ** 不跨目录层级，
-#   会漏掉根级那几个文件（实测 351，偏低 5）。
+# ⚠ 别用 `git ls-files 'tests/unit/**/test_*.py'`：`**/` 要求至少一层目录，
+#   会漏掉根级那几个文件（偏低 5）。
 (git ls-files 'tests/unit/test_*.py' 'tests/unit/*/test_*.py' 'tests/unit/*/*/test_*.py' 'tests/unit/*/*/*/test_*.py' | Measure-Object -Line).Lines
 ```
 

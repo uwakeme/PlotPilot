@@ -305,6 +305,64 @@ class _ClassScopeMarker(ast.AST):
         self.enter = enter
 
 
+#: 会把子语句包进**新一层**的语句类型。
+#: 它们的分支体与父语句同属一个作用域（`if`/`for`/`try`/`with` 都不引入作用域），
+#: 但分支体里若嵌套 def/class，那个 def 的**体**另属函数作用域。
+_COMPOUND_STMTS = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                   ast.TryStar, ast.With, ast.AsyncWith, ast.Match)
+
+
+def _compound_header_exprs(stmt):
+    """复合语句里在**当前作用域**求值的头部表达式。
+
+    ⚠ 第十一轮复审：`except MissingExc:` 的 ``MissingExc`` 在 handler 的
+    **type** 上，既不属于分支体、也不属于迭代目标 —— 两处都不产出它，
+    于是 `class C: try: ... except MissingExc:` 整条漏报。
+
+    返回顺序与源码一致：
+      · If            → test（及其 orelse 的 test）
+      · For/While     → iter（While 没有）、target 本身只产生绑定不产生 Load
+      · With          → 每个 item.context_expr
+      · Try           → 每个 handler.type
+      · Match         → subject / 每个 case.guard
+    """
+    out = []
+    if isinstance(stmt, ast.If):
+        out.append(stmt.test)
+    elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+        out.append(stmt.iter)
+    elif isinstance(stmt, ast.While):
+        pass                                   # While 没有头部表达式
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+        out += [i.context_expr for i in stmt.items]
+    elif isinstance(stmt, (ast.Try, ast.TryStar)):
+        out += [h.type for h in stmt.handlers if h.type is not None]
+    elif isinstance(stmt, ast.Match):
+        if stmt.subject is not None:
+            out.append(stmt.subject)
+        out += [c.guard for c in stmt.cases if c.guard is not None]
+    return [e for e in out if e is not None]
+
+
+def _compound_sub_bodies(stmt):
+    """取复合语句里所有「同作用域」的分支体语句列表。"""
+    if isinstance(stmt, ast.If):
+        out = [stmt.body]
+        if stmt.orelse:
+            out.append(stmt.orelse)
+        return out
+    if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+        return [stmt.body] + ([stmt.orelse] if stmt.orelse else [])
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        return [stmt.body]
+    if isinstance(stmt, ast.Match):
+        return [c.body for c in stmt.cases]
+    # Try / TryStar
+    out = [stmt.body, stmt.orelse, stmt.finalbody]
+    out += [h.body for h in stmt.handlers]
+    return [b for b in out if b]
+
+
 def _scope_local_names_of_body(body) -> set[str]:
     """收集「一段类体语句」在自己作用域内定义的名字。
 
@@ -320,6 +378,15 @@ def _scope_local_names_of_body(body) -> set[str]:
 
     ⚠ 这里**不处理前向引用**：``class C: B = A; A = 1`` 的 B 在运行期是
     NameError，应由 `_load_nodes` 的顺序化检查负责（见 `_ClassScopeMarker` 的用法）。
+
+    ⚠ 第十一轮复审修正：复合语句（``if`` / ``for`` / ``while`` / ``try`` /
+    ``with``）原先落到最后的 ``ast.walk(stmt)`` 分支，**无差别下降**，
+    于是
+      ``class C: if True: B = hidden; def m(self): hidden = 1``
+    里 B（类体层）看得见 hidden（方法**体**的局部）⇒ 漏报。
+    Python 里 ``if`` 块属于类作用域、``def`` 体属于函数作用域 ——
+    两层不可互相穿透。现改为对复合语句**逐分支**处理：
+    分支内的赋值算类作用域，嵌套 def/class 只取签名部件。
     """
     names: set[str] = set()
     for stmt in body:
@@ -332,6 +399,32 @@ def _scope_local_names_of_body(body) -> set[str]:
                 for sub in ast.walk(expr):
                     if isinstance(sub, ast.Lambda):
                         names |= _params_of(sub)
+            continue
+        if isinstance(stmt, _COMPOUND_STMTS):
+            # 复合语句：分支内是**同一个**作用域（类作用域），
+            # 但嵌套 def/class 的体另算 —— 递归时必须再进一层。
+            # ⚠ 循环目标（`for _i in xs` 的 _i）绑定在**当前**作用域 ——
+            # 漏了它 `B = _i` 会被误报成未绑定。
+            if isinstance(stmt, (ast.For, ast.AsyncFor)):
+                for sub in ast.walk(stmt.target):
+                    if isinstance(sub, ast.Name):
+                        names.add(sub.id)
+            # `with ... as x` 的 x 同样绑定在当前作用域
+            if isinstance(stmt, (ast.With, ast.AsyncWith)):
+                for item in stmt.items:
+                    if item.optional_vars is not None:
+                        for sub in ast.walk(item.optional_vars):
+                            if isinstance(sub, ast.Name):
+                                names.add(sub.id)
+            # `except E as e` 的 e 绑定在当前作用域
+            if isinstance(stmt, (ast.Try, ast.TryStar)):
+                for h in stmt.handlers:
+                    if h.name:
+                        names.add(h.name)
+            for inner in _compound_sub_bodies(stmt):
+                names |= _scope_local_names_of_body(inner)
+            # 头部表达式（条件 / except 类型 / 迭代目标本身）只产生 Load，
+            # 不产生绑定，这里无需处理。
             continue
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             for alias in stmt.names:
@@ -395,20 +488,66 @@ def _ordered_subtree(node):
         stack.extend(kids)
 
 
-def _class_scope_nodes(node):
+def _class_scope_nodes(node, outer_seen=None):
     """产出一个 ClassDef 自身的类作用域节点序列（供嵌套类复用）。
 
-    嵌套类有**自己的**类作用域：内层不该看见外层的绑定，
-    外层的属性也不该被内层看见（Python 里那是运行期 NameError）。
+    ⚠ 嵌套类有**自己的**类作用域：内层的类体不该看见外层的绑定
+    （``class A: ax=1; class B: bz=ax`` 运行期是 NameError，必须报）。
+
+    ⚠ 但嵌套类的**头**（bases / keywords / 装饰器）在**外层**作用域求值 ——
+    ``class A: Base = object`` 后 ``class B(Base)`` 是**合法**的，
+    基类名要在 `outer_seen` 里才可见。
+    第十一轮复审：原先头表达式无条件 yield、不带可见集 ⇒ 3 个误报。
+
+    ⚠ 复合语句分支与本类同属一个作用域，逐分支递归处理。
     """
+    seen: set[str] = set(outer_seen or ())
+    # 头（基类 / metaclass / 装饰器）在**外层**作用域求值
     for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+        if seen:
+            yield _ClassScopeMarker(sorted(seen), enter=True)
         yield from _ordered_subtree(expr)
-    local = _scope_local_names_of_body(node.body)
-    seen: set[str] = set()
+        if seen:
+            yield _ClassScopeMarker(enter=False)
+    # ⚠ 类体本身**不继承** outer_seen：类作用域不是闭包。
+    # `class A: ax=1; class B: bz=ax` 在运行期是 NameError（须报），
+    # 而 `class B(Base)` 的 Base 在**头**里求值（上面已按外层可见集处理）。
+    seen = set()
+
     for stmt in node.body:
         if isinstance(stmt, ast.ClassDef):
-            yield from _class_scope_nodes(stmt)
+            # 头继承**外层** seen（含本类此前定义的属性），
+            # 类体用自己的作用域 —— 见上面 outer_seen / seen=set() 的分工。
+            yield from _class_scope_nodes(stmt, outer_seen=seen)
             seen.add(stmt.name)
+            continue
+        if isinstance(stmt, _COMPOUND_STMTS):
+            # 分支与本类同作用域：分支体里的赋值也要进 seen；
+            # 头部表达式（except 类型 / if 条件 / 迭代目标）在当前作用域求值。
+            extra = _scope_local_names_of_body([stmt])
+            seen_before = set(seen)
+            seen = seen_before | extra
+            for expr in _compound_header_exprs(stmt):
+                if seen:
+                    yield _ClassScopeMarker(sorted(seen), enter=True)
+                yield from _ordered_subtree(expr)
+                if seen:
+                    yield _ClassScopeMarker(enter=False)
+            for inner in _compound_sub_bodies(stmt):
+                sub_seen = seen
+                for s2 in inner:
+                    if isinstance(s2, ast.ClassDef):
+                        yield from _class_scope_nodes(s2, outer_seen=sub_seen)
+                        sub_seen = sub_seen | {s2.name}
+                        continue
+                    here = sub_seen | _scope_local_names_of_body([s2])
+                    if here:
+                        yield _ClassScopeMarker(sorted(here), enter=True)
+                    yield from _ordered_subtree(s2)
+                    if here:
+                        yield _ClassScopeMarker(enter=False)
+                    sub_seen = here
+                seen = sub_seen
             continue
         here = seen | _scope_local_names_of_body([stmt])
         if here:
@@ -503,8 +642,49 @@ def _load_nodes(fn):
                     # 外层的属性也不该被内层看见（Python 里那是 NameError）。
                     # 把嵌套类当普通语句下降会让 `class A: class B: x=1; y=x`
                     # 的 y 看见**外层** seen ⇒ 假红。
-                    yield from _class_scope_nodes(stmt)
+                    # ⚠ 第十一轮复审：头表达式（基类/装饰器）在**外层**作用域
+                    # 求值 —— `class A: Base = object` 后 `class B(Base)` 合法。
+                    # 所以把外层 seen 传进去，让头在外层可见集里判。
+                    yield from _class_scope_nodes(stmt, outer_seen=seen)
                     seen.add(stmt.name)
+                    continue
+                if isinstance(stmt, _COMPOUND_STMTS):
+                    # 复合语句的分支与本类**同属一个作用域**：
+                    # `if True:` 不引入新作用域，类属性在分支内外都可见。
+                    # 但分支内的 def/class 体另算 —— 逐分支递归。
+                    # ⚠ 循环目标（`for _i in xs` 的 _i）、`with as x`、
+                    #   `except E as e` 都绑定在**当前**作用域，须先进 seen；
+                    #   头部表达式（`except MissingExc:` 的 MissingExc、
+                    #   `if x > 0` 的 x、`for _ in xs` 的 xs）也要扫，
+                    #   它们在当前作用域求值但不属于任何分支体。
+                    seen = seen | _scope_local_names_of_body([stmt])
+                    for expr in _compound_header_exprs(stmt):
+                        if seen:
+                            yield _ClassScopeMarker(sorted(seen), enter=True)
+                        yield from _ordered_subtree(expr)
+                        if seen:
+                            yield _ClassScopeMarker(enter=False)
+                    for inner in _compound_sub_bodies(stmt):
+                        sub_seen = seen
+                        for s2 in inner:
+                            if isinstance(s2, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                yield s2
+                                for expr in _signature_exprs(s2):
+                                    yield from _ordered_subtree(expr)
+                                sub_seen = sub_seen | {s2.name}
+                                continue
+                            if isinstance(s2, ast.ClassDef):
+                                yield from _class_scope_nodes(s2, outer_seen=sub_seen)
+                                sub_seen = sub_seen | {s2.name}
+                                continue
+                            h2 = sub_seen | _scope_local_names_of_body([s2])
+                            if h2:
+                                yield _ClassScopeMarker(sorted(h2), enter=True)
+                            yield from _ordered_subtree(s2)
+                            if h2:
+                                yield _ClassScopeMarker(enter=False)
+                            sub_seen = h2
+                        seen = sub_seen
                     continue
                 # ⚠ 本条语句的可见集 = 之前已定义的 ∪ **本条自己定义的**。
                 # 后者不可省：`dec = staticmethod(lambda f: f)` 是首条语句，
@@ -1309,6 +1489,86 @@ def test_method_signature_cannot_forward_reference_a_later_class_attr():
     src = "class C:\n    def m(self, x=later):\n        return x\n    later = 1\n"
     problems = _probe_run(src)
     assert any("'later'" in p for p in problems), f"方法签名前向引用漏报：{problems}"
+
+
+def test_compound_statements_inside_a_class_body():
+    """⚠ 第十一轮复审：复合语句（if/for/while/try/with/match）的分支
+    与类体**同属一个作用域** —— `if` 不引入新作用域。
+
+    原先它们落到 `ast.walk(stmt)` 的无差别下降分支，于是
+      ``class C: if True: B = hidden; def m(self): hidden = 1``
+    里 B（类体层）看得见 hidden（方法**体**的局部）⇒ 漏报。
+    Python 里这两层不可互相穿透。
+
+    ⚠ 判据必须锁定**报出的是哪个名字**（``assert problems`` 太松）：
+    我第一版写的就是那样，把整条分支禁掉后它仍全绿 —— 因为
+    for 目标的 `_i` 那条会报另一个名字，凑巧让 ``assert problems`` 成立。
+
+    ⚠ 已知的**不可观测变异**（双重防线，写下来免得后人重复踩）：
+    「关掉 `_load_nodes` 主循环里的复合语句分支」测不出来 ——
+    `_scope_local_names_of_body` 已独立算出正确的可见集
+    （实测返回 ``{'B', 'm'}``），两处任一失效另一处仍生效。
+    能转红的是关掉 `_scope_local_names_of_body` 里那一处（V4b）。
+    """
+    must_report = [
+        # 报出的必须是 hidden（方法**体**的局部，类体层看不见）
+        ("class C:\n    if True:\n        B = hidden\n        def m(self):\n"
+         "            hidden = 1\n", "hidden"),
+        ("class C:\n    for _i in (1,):\n        B = missing\n", "missing"),
+        ("class C:\n    while cond:\n        B = missing2\n", "missing2"),
+        ("class C:\n    try:\n        A = 1\n    except MissingExc:\n"
+         "        pass\n", "MissingExc"),
+    ]
+    for src, want in must_report:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"复合语句内应报出 {want!r}：{src!r} ⇒ {problems}"
+        )
+
+    must_not = [
+        # 类属性在分支内外都可见
+        "class C:\n    A = 1\n    if True:\n        B = A\n",
+        # 分支内先定义后引用
+        "class C:\n    if True:\n        A = 1\n        B = A\n",
+        # try/except 同理
+        "class C:\n    try:\n        A = 1\n        B = A\n    except Exception:\n        C = B\n",
+        # ⚠ for 目标的绑定在本作用域可见（这一条是 for 循环的正常语义）
+        "class C:\n    for _i in (1,):\n        B = _i\n",
+    ]
+    for src in must_not:
+        problems = _probe_run(src)
+        assert not problems, f"复合语句内合法写法被误报：{src!r} ⇒ {problems}"
+
+
+def test_nested_class_header_sees_the_enclosing_class_scope():
+    """⚠ 第十一轮复审：嵌套类的**头**与**体**可见性不同。
+
+    `class A: Base = object` 后 `class B(Base)` 合法 —— 基类名在**外层**求值。
+    但 `class A: ax = 1` 后 `class B: bz = ax` 在运行期是 NameError ——
+    类作用域不是闭包，类体看不见外层类属性。
+    """
+    ok = [
+        "class A:\n    Base = object\n    class B(Base):\n        pass\n",
+        "class A:\n    class B:\n        x = 1\n        y = x\n",
+        # 两层嵌套：头要继承**本类**此前定义的属性
+        "class A:\n    class B:\n        C = object\n        class D(C):\n            pass\n",
+    ]
+    for src in ok:
+        problems = _probe_run(src)
+        assert not problems, f"嵌套类合法写法被误报：{src!r} ⇒ {problems}"
+
+    bad = [
+        ("class A:\n    class B(Missing):\n        pass\n", "Missing"),
+        ("class A:\n    ax = 1\nclass B:\n    bz = ax\n", "ax"),
+        ("class A:\n    ax = 1\n    class B:\n        bz = ax\n", "ax"),
+        ("class A:\n    class B:\n        C = 1\n        class D(Missing):\n            pass\n",
+         "Missing"),
+    ]
+    for src, want in bad:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"嵌套类漏报 {want!r}：{src!r} ⇒ {problems}"
+        )
 
 
 def test_probe_accepts_class_scope_as_a_namespace():
