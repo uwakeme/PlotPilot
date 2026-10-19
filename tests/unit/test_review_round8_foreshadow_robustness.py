@@ -212,25 +212,106 @@ def test_offset_note_never_grows_unbounded_with_the_raw_value():
     for raw in (10 ** 400, 10 ** 30, float("1e308")):
         _off, _src, note = resolve_offset(raw)
         assert len(note) < 200, (
-            f"raw 长 {len(str(raw))} 位 → note {len(note)} 字符，未截断"
+            f"resolve_offset raw 长 {len(str(raw))} 位 → note {len(note)} 字符，未截断"
         )
 
 
-def test_storyline_end_never_exceeds_the_cap_on_any_path():
-    """⚠ 第九轮复审 §3.5：MAX_STORYLINE_END 原先只约束**模型给的值**。
+def test_every_note_channel_is_truncated():
+    """⚠ 第十轮复审 §2.4：`_brief` 上一轮只接进了 `resolve_offset`。
 
-    `resolve_storyline_end(15000, None)` 曾返回 15012 ——
-    兜底路径把一个自称「绝对上限」的常量绕过去了。
-    抬升路径（`value <= current` → `current + 1`）同样能越过。
+    另外两条通道仍会把超长 repr 写进 note：
+      · `_resolve_plant_offset` 的 fallback（落 registry JSON）
+      · `resolve_storyline_end` 的 >MAX 分支（落 storylines.note）
+    实测两者曾分别产出 437 / 342 字符的 note。
     """
-    for current, raw in [(10000, None), (15000, None), (10 ** 6, None),
-                         (MAX_STORYLINE_END, 1), (MAX_STORYLINE_END + 5, 1),
-                         (10 ** 9, "十几章")]:
-        end, _src, _note = resolve_storyline_end(current, raw)
-        assert end <= MAX_STORYLINE_END, (
-            f"resolve_storyline_end({current}, {raw!r}) → {end} 越过上限 "
-            f"{MAX_STORYLINE_END}"
+    # 通道 2：state_updater 的 G-01 纯函数
+    from application.analyst.services.state_updater import _resolve_plant_offset
+
+    for raw in (10 ** 400, "x" * 5000):
+        _off, _src, note = _resolve_plant_offset(1, raw)
+        assert len(note) < 200, (
+            f"_resolve_plant_offset raw={raw!r:.20} → note {len(note)} 字符，未截断"
         )
+
+    # 通道 3：storyline 的 >MAX 分支
+    for raw in (float("1e308"), 10 ** 400):
+        _end, _src, note = resolve_storyline_end(10, raw)
+        assert len(note) < 200, (
+            f"resolve_storyline_end raw={raw!r:.20} → note {len(note)} 字符，未截断"
+        )
+
+
+def test_storyline_end_bool_note_declares_its_type():
+    """bool 是 int 子类，`float(True)` == 1.0 ⇒ note 必须自述类型。
+
+    与 offset 侧对齐（那里第九轮已修）。
+    """
+    for raw in (True, False):
+        end, source, note = resolve_storyline_end(10, raw)
+        assert "bool" in note.lower() or "布尔" in note, (
+            f"storyline bool note 未自述类型：{raw!r} → {note}"
+        )
+        assert source == "ai_adjusted", (
+            f"{raw!r} 不是模型给的收尾章，不该标 ai：{source!r}"
+        )
+        assert end > 10, f"{raw!r} → {end}"
+
+
+def test_storyline_end_never_exceeds_the_cap_on_model_values():
+    """⚠ `MAX_STORYLINE_END` 是**模型值**上限，不约束 current/兜底/抬升。
+
+    第十轮复审：上一版用 `min(current + step, MAX)` 一刀切，
+    于是 `resolve_storyline_end(15000, None)` 返回 10000 ≤ current，
+    直接违反本模块声明的「收尾章 > 当前章」不变量，note 还写成
+    「按兜底 +-5000 章」（负跨度）。
+    """
+    for current, raw in [(10, MAX_STORYLINE_END + 1), (10, 10 ** 400),
+                         (9999, MAX_STORYLINE_END + 1), (10, float("1e308"))]:
+        end, source, _note = resolve_storyline_end(current, raw)
+        assert source == "fallback", (
+            f"current={current} raw={raw!r:.12}: 超出上限应记 fallback，实为 {source!r}"
+        )
+        assert end > current, (
+            f"current={current} raw={raw!r:.12}: end={end} 未越过 current"
+        )
+
+
+def test_storyline_end_always_stays_after_the_current_chapter():
+    """不变量「收尾章 > 当前章」必须在**每一条路径**上成立。
+
+    ⚠ 这是上一轮漏掉的断言：当时只断言 `end ≤ MAX`，
+    于是「为了守住 MAX 而破坏不变量」的变异全绿。
+
+    MAX 只该约束模型给的值；current 是代码自己维护的写作进度，
+    不该被护栏按下去。现实章数远小于 MAX，但一旦可达就必须自洽。
+    """
+    import re
+
+    cases = [
+        (10000, None), (15000, None), (10 ** 6, None), (10 ** 9, "十几章"),
+        (15000, 2), (MAX_STORYLINE_END, 1), (MAX_STORYLINE_END + 5, 1),
+        (MAX_STORYLINE_END, None), (9999, None), (10, 10001),
+        (10, None), (10, 42), (3, 2), (0, None),
+    ]
+    for current, raw in cases:
+        end, source, note = resolve_storyline_end(current, raw)
+        assert end > current, (
+            f"resolve_storyline_end({current}, {raw!r:.12}) → {end} "
+            f"[{source}]：违反「收尾章 > 当前章」不变量。note={note}"
+        )
+        # 兜底跨度不得是负数（曾出现「按兜底 +-5000 章」）
+        if "兜底" in note:
+            span_txt = re.search(r"兜底 \+(-?\d+) 章", note)
+            assert span_txt, f"兜底 note 未写明跨度：{note}"
+            assert int(span_txt.group(1)) > 0, f"兜底跨度非正：{note}"
+        # 抬升 note 里的章号必须等于返回值，且确实晚于 current
+        if "抬到第" in note:
+            m = re.search(r"抬到第 (\d+) 章", note)
+            assert m, f"抬升 note 未写明章号：{note}"
+            assert int(m.group(1)) == end == current + 1, (
+                f"抬升 note 与返回值/不变量不一致：end={end} current={current} "
+                f"note={note}"
+            )
 
 
 def test_isfinite_guard_is_not_the_only_line_of_defence():
@@ -288,35 +369,56 @@ def test_storyline_end_never_returns_an_absurd_chapter_marked_ai():
 
 
 def test_storyline_end_note_cites_the_value_actually_returned():
-    """与 G-01 同一条红线：note 自述的章号必须等于落库值。
+    """note 必须以**结论句式**点明最终采用值。
 
-    ⚠ 第九轮复审 §3.8：ai 分支的 note（`模型给出的预估收尾章 42`）里
-    没有「第 N 章」字样，原来的正则抽不出任何章号 ⇒ 空集 ≤ {end} 恒成立，
-    这条断言对 ai 分支是**空转**的。所以额外断言 ai 分支的 note
-    必须以结论句式点明取值。
+    ⚠ 判据**不是**「note 里出现的所有章号都等于落库值」。
+    一条 note 可以合法地提到中间值：「不是整数，已截断为 1；…已由代码抬到第 11 章」
+    —— 截断值 1 与采用值 11 同时出现，且都如实标注了角色。
+    红线是：**结论（最终采用值）必须出现在结论句式里**。
+
+    ⚠ 第九轮复审 §3.8 的另一面：ai 分支的 note
+    （`模型给出的预估收尾章 42`）不含「第 N 章」字样，
+    正则抽不出章号 ⇒ 空集 ≤ {end} 恒成立，这条断言对它是**空转**的。
+    所以 ai 分支单独断言「note 点明了取值」。
     """
     import re
 
-    for current, raw in [(10, 8), (10, 11.9), (10, 42), (10, 1.2), (3, 2)]:
+    for current, raw in [(10, 8), (10, 11.9), (10, 42), (10, 1.2), (3, 2),
+                         (10, float("nan")), (10, "十几章")]:
         end, source, note = resolve_storyline_end(current, raw)
-        cited = set(re.findall(r"第 (\d+) 章|截断为 (\d+)", note))
-        flat = {x for pair in cited for x in pair if x}
-        assert flat <= {str(end)}, (
-            f"current={current} raw={raw!r} → {end}，note 引用了非落库章号 "
-            f"{flat - {str(end)}}：{note}"
-        )
         if source == "ai":
-            # ai 分支 note 不含「第 N 章」/「截断为 N」字样 ⇒ 抽取结果必然是空集，
-            # 上面那条断言对它恒成立（空转）。所以单独断言它点明了取值。
-            assert str(end) in note, (
-                f"ai 分支的 note 未点明取值 {end}：{note}"
+            assert str(end) in note, f"ai 分支的 note 未点明取值 {end}：{note}"
+            continue
+        # 结论：note 必须说「已由代码抬到第 N 章」且 N == end
+        lifted = re.search(r"抬到第 (\d+) 章", note)
+        if lifted:
+            assert int(lifted.group(1)) == end, (
+                f"current={current} raw={raw!r} → {end}，"
+                f"note 的抬升章号 {lifted.group(1)} 不符：{note}"
+            )
+        elif source == "fallback":
+            span_txt = re.search(r"兜底 \+(\d+) 章", note)
+            assert span_txt, f"fallback note 未写明跨度：{note}"
+            assert current + int(span_txt.group(1)) == end, (
+                f"fallback 跨度与落库值不符："
+                f"current={current} end={end} note={note}"
             )
         else:
-            assert flat, (
-                f"current={current} raw={raw!r} [{source}]：note 里没抽出任何章号，"
-                f"说明正则已与措辞脱节：{note}"
+            # adjusted 且无需抬升：结论句式是「已截断为 N」，N 必须等于 end
+            trunc = re.search(r"已截断为 (\d+)", note)
+            assert trunc, (
+                f"current={current} raw={raw!r} [{source}]："
+                f"note 既非抬升也无截断结论句式：{note}"
             )
-
+            assert int(trunc.group(1)) == end, (
+                f"current={current} raw={raw!r} → {end}，"
+                f"note 的截断值 {trunc.group(1)} 与落库值不符：{note}"
+            )
+        if source == "ai_adjusted":
+            # ⚠ 不断言整句文案（措辞会改），只断言「声明了非模型原值」这一事实
+            assert "非模型原值" in note, (
+                f"adjusted note 必须声明取值非模型原值：{note}"
+            )
 
 def test_resolve_offset_accepts_scientific_notation():
     """⚠ 第九轮复审 §3.8 记录的行为变更（此前未被任何测试锁定）。

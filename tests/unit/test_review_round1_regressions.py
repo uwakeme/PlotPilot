@@ -378,6 +378,47 @@ def _signature_exprs(node):
     return out
 
 
+def _ordered_subtree(node):
+    """产出 ``node`` 及其全部后代，顺序严格等于源码顺序。
+
+    ⚠ 第十轮复审：不能用外层 LIFO ``stack`` 下降 —— 那些节点会在
+    ``_ClassScopeMarker(enter=False)`` **之后**才被弹出，落���类作用域之外。
+    这里用**独立** LIFO 做有序 DFS（push 反序、pop 正序）。
+    """
+    stack = [node]
+    stack.reverse()
+    while stack:
+        cur = stack.pop()
+        yield cur
+        kids = list(ast.iter_child_nodes(cur))
+        kids.reverse()
+        stack.extend(kids)
+
+
+def _class_scope_nodes(node):
+    """产出一个 ClassDef 自身的类作用域节点序列（供嵌套类复用）。
+
+    嵌套类有**自己的**类作用域：内层不该看见外层的绑定，
+    外层的属性也不该被内层看见（Python 里那是运行期 NameError）。
+    """
+    for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+        yield from _ordered_subtree(expr)
+    local = _scope_local_names_of_body(node.body)
+    seen: set[str] = set()
+    for stmt in node.body:
+        if isinstance(stmt, ast.ClassDef):
+            yield from _class_scope_nodes(stmt)
+            seen.add(stmt.name)
+            continue
+        here = seen | _scope_local_names_of_body([stmt])
+        if here:
+            yield _ClassScopeMarker(sorted(here), enter=True)
+        yield from _ordered_subtree(stmt)
+        if here:
+            yield _ClassScopeMarker(enter=False)
+        seen = here
+
+
 def _load_nodes(fn):
     """函数体内需要在**该函数作用域**下判定的 Load 节点。
 
@@ -422,40 +463,49 @@ def _load_nodes(fn):
             #   · 类体语句按源码顺序 ⇒ 用 enter/leave 成对包住
             #   · 类体之后的同级语句看不见它们
             #
-            # ⚠ 前向引用（`class C: B = A; A = 1` 运行期 NameError）：
-            #   class_local 是**整段类体**的绑定，B=A 时 A 已在集合里 ⇒ 放行。
-            #   要按顺序正确处理需逐语句做快照，代价与收益不匹配；
-            #   这里显式记录为已知限制，见 `test_class_body_forward_reference_is_known_gap`。
-            class_local = _scope_local_names_of_body(node.body)
-            # 基类 / metaclass 关键字 / 类装饰器 —— 外层作用域，先 yield
-            for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
-                yield expr
-            # ⚠ 第九轮复审：类体是**顺序执行**的，`class C: B = A; A = 1`
-            # 在运行期就是 NameError。若用整段类体的绑定快照（class_local），
-            # B 那行会看见后面才定义的 A ⇒ 漏报。
+            # ⚠ 类体是**顺序执行**的，`class C: B = A; A = 1`
+            # 在运行期就是 NameError。若用整段类体的绑定快照，B 那行会
+            # 看见后面才定义的 A ⇒ 漏报。
             # 改为**逐语句** enter/leave：每条语句只看见它**之前**已定义的名字。
-            # 方法的签名部件要看**整段**类体（方法定义本身不影响后续可见性），
-            # 所以方法单独用 class_local。
+            #
+            # 基类 / metaclass 关键字 / 类装饰器在**外层作用域**求值，
+            # 且必须**子树下降** —— 第十轮复审：
+            # 只 `yield expr` 根节点会让 `class C(undefined_mod.Base)`、
+            # `@undefined_mod.deco`、`x: undefined_mod.T` 全部漏报。
+            for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+                yield from _ordered_subtree(expr)
             seen: set[str] = set()
             for stmt in node.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # 方法签名部件（装饰器/默认值/注解）在**类体作用域**求值，
                     # 单独扫它们的表达式（第六轮复审 §3.3）。
-                    if seen or class_local:
-                        names_here = sorted(seen | class_local)
+                    # ⚠ 方法签名部件的可见集 = **之前**已定义的类属性
+                    # （不是整段快照 —— 否则 `def m(self, x=later)` + 后面的
+                    # `later=1` 会被放行，而 def 执行时 later 尚未绑定）
+                    #  ∪ 签名部件里那些 lambda 的形参（它们绑定在类作用域）。
+                    sig_lambda_params: set[str] = set()
+                    for expr in _signature_exprs(stmt):
+                        for sub in ast.walk(expr):
+                            if isinstance(sub, ast.Lambda):
+                                sig_lambda_params |= _params_of(sub)
+                    names_here = sorted(seen | sig_lambda_params)
+                    if names_here:
                         yield _ClassScopeMarker(names_here, enter=True)
                     yield stmt
                     for expr in _signature_exprs(stmt):
-                        yield expr
-                    if seen or class_local:
+                        yield from _ordered_subtree(expr)
+                    if names_here:
                         yield _ClassScopeMarker(enter=False)
                     seen.add(stmt.name)
                     continue  # ⚠ 方法**体**另有作用域，绝不能下降进去
-                # ⚠ 第九轮复审：类体子树必须**整体按源码顺序**就地深度优先产出。
-                # 一旦有任何一层走外层 `stack`（LIFO），它的后代（Assign→Call→Lambda→Name）
-                # 就会在 leave 标记**之后**才被弹出 ——
-                # `class C: dec = staticmethod(lambda f: f)` 的 f 事实落在类作用域之外 ⇒ 误报。
-                # 独立 LIFO 做**有序** DFS：push 时反序、pop 时正序。
+                if isinstance(stmt, ast.ClassDef):
+                    # ⚠ 嵌套类有**自己的**类作用域：内层的 x 不该看见外层的，
+                    # 外层的属性也不该被内层看见（Python 里那是 NameError）。
+                    # 把嵌套类当普通语句下降会让 `class A: class B: x=1; y=x`
+                    # 的 y 看见**外层** seen ⇒ 假红。
+                    yield from _class_scope_nodes(stmt)
+                    seen.add(stmt.name)
+                    continue
                 # ⚠ 本条语句的可见集 = 之前已定义的 ∪ **本条自己定义的**。
                 # 后者不可省：`dec = staticmethod(lambda f: f)` 是首条语句，
                 # seen 为空，但 lambda 形参 f 在这条语句里就要能看见。
@@ -463,14 +513,7 @@ def _load_nodes(fn):
                 if here:
                     yield _ClassScopeMarker(sorted(here), enter=True)
                 yield stmt
-                inner = list(ast.iter_child_nodes(stmt))
-                inner.reverse()
-                while inner:
-                    child = inner.pop()
-                    yield child
-                    kids = list(ast.iter_child_nodes(child))
-                    kids.reverse()
-                    inner.extend(kids)
+                yield from _ordered_subtree(stmt)
                 if here:
                     yield _ClassScopeMarker(enter=False)
                 seen = here
@@ -1212,6 +1255,60 @@ def test_class_body_traversal_is_source_ordered():
         f"lambda 形参的 Load (idx={f_load}) 落在类作用域区间 "
         f"[{enter_idx}, {leave_idx}] 之外"
     )
+
+
+def test_probe_descends_into_class_header_expressions():
+    """⚠ 第十轮复审：**本笔新引入的漏报**。
+
+    ClassDef 分支原先对 bases/keywords/decorator_list 只 ``yield expr``
+    产出根节点、不再下降 ⇒ 子树里的未绑定名全部看不见：
+      · `class C(undefined_mod.Base)`
+      · `class C(metaclass=undefined_mod.Meta)`
+      · `@undefined_mod.deco class C`
+      · `def m(self, x: undefined_mod.T)`
+      · `def m(self, x=missing_factory())`
+    而函数级的同类写法仍能报 —— 说明只有类/方法分支受影响。
+    """
+    cases = [
+        ("class C(undefined_mod.Base):\n    pass\n", "undefined_mod"),
+        ("class C(metaclass=undefined_mod.Meta):\n    pass\n", "undefined_mod"),
+        ("@undefined_mod.deco\nclass C:\n    pass\n", "undefined_mod"),
+        ("class C:\n    def m(self, x: undefined_mod.T):\n        return x\n",
+         "undefined_mod"),
+        ("class C:\n    def m(self, x=missing_factory()):\n        return x\n",
+         "missing_factory"),
+    ]
+    for src, want in cases:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), f"类头部表达式漏报 {want!r}：{problems}"
+
+
+def test_nested_class_has_its_own_scope():
+    """⚠ 第十轮复审：嵌套类不该继承外层类作用域，反之亦然。
+
+    `class A: ax = 1` 后 `class B: bz = ax` 在运行期是 NameError
+    （类作用域不是闭包）；而 `class A: class B: x=1; y=x` 里的 y
+    看得见 B 自己的 x，不该被外层作用域影响。
+    """
+    ok = "class A:\n    class B:\n        x = 1\n        y = x\n"
+    assert not _probe_run(ok), f"嵌套类内自引用被误报：{_probe_run(ok)}"
+
+    bad = "class A:\n    ax = 1\nclass B:\n    bz = ax\n"
+    problems = _probe_run(bad)
+    assert any("'ax'" in p for p in problems), (
+        f"嵌套类不该看见兄弟类的属性：{problems}"
+    )
+
+
+def test_method_signature_cannot_forward_reference_a_later_class_attr():
+    """⚠ 第十轮复审：方法签名部件的可见集只能用**之前**已定义的类属性。
+
+    `def m(self, x=later)` 执行时 `later` 尚未绑定 ⇒ 运行期 NameError。
+    原实现用整段 class_local 快照，把后定义的 later 放行了。
+    """
+    src = "class C:\n    def m(self, x=later):\n        return x\n    later = 1\n"
+    problems = _probe_run(src)
+    assert any("'later'" in p for p in problems), f"方法签名前向引用漏报：{problems}"
 
 
 def test_probe_accepts_class_scope_as_a_namespace():

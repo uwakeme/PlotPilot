@@ -64,10 +64,15 @@ def _resolve_plant_offset(importance_value: int, raw_offset: Any) -> Tuple[int, 
     if source != SOURCE_FALLBACK:
         return offset, source, adjudicator_note
 
+    # ⚠ 第十轮复审：`{raw_offset!r}` 会让 `10**400` 产出 401 位数字的 note，
+    # 而 note 随 `resolve_offset_note` 落 registry JSON ⇒ 必须截断。
+    # 复用裁决器同一套 `_brief`，避免两处规则漂移。
+    from application.world.services.foreshadow_pacing import _brief
+
     if raw_offset is None or (isinstance(raw_offset, str) and not raw_offset.strip()):
         why = "模型未给出回收偏移"
     else:
-        why = f"模型给出的回收偏移不可解析（{raw_offset!r}）"
+        why = f"模型给出的回收偏移不可解析（{_brief(raw_offset)}）"
 
     if importance_value >= ImportanceLevel.HIGH.value:
         delta, by = 15, "+15"

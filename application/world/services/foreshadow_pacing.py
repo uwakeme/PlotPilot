@@ -42,9 +42,15 @@ DEFAULT_RESOLVE_OFFSET = 5
 #: 故事线预估收尾章的兜底跨度
 DEFAULT_STORYLINE_SPAN = 12
 
-#: 故事线预估收尾章的绝对上限（章）。
+#: 故事线预估收尾章的**模型值**上限（章）。
 #: 超出它的值（典型如 10**400）不可能是真实创作判断，原样落库只会在产物里
 #: 放一个看着像「模型判断」、实则毫无意义的数字 ⇒ 视同不可用走 fallback。
+#:
+#: ⚠ 它**只约束模型给的值**，不约束 current / 兜底 / 抬升三条路径 ——
+#: 那三条路径必须守住「收尾章 > 当前章」这条不变量，而 current 可能
+#: （理论上）已经超过本上限。第十轮复审：曾用 min(current+step, MAX) 一刀切，
+#: 结果 current ≥ MAX 时 end ≤ current，不变量被破坏、note 出现「+-5000 章」。
+#: 不变量优先于上限。
 MAX_STORYLINE_END = 10_000
 
 SOURCE_AI = "ai"
@@ -143,11 +149,10 @@ def resolve_offset(raw: Any) -> Tuple[int, str, str]:
             f"模型给出的回收偏移 {_brief(value)}{what} 被钳到 {bounded}"
             f"（区间 [{RESOLVE_OFFSET_MIN}, {RESOLVE_OFFSET_MAX}]，采用值非模型原值）"
         )
-    if is_bool:
-        # 布尔落在合法区间内（如 True）—— 仍然不是「模型给了偏移数字」
-        return bounded, SOURCE_AI_ADJUSTED, (
-            f"模型给出的是布尔 {raw!r}（按数值 1 采纳），不是回收偏移数字"
-        )
+    # ⚠ 没有「bool 落在合法区间内」的分支：`float(True)` == 1.0 恒被钳到
+    # RESOLVE_OFFSET_MIN（2），所以 bool 永远走上面的钳位分支。
+    # （第十轮复审指出曾有一个这样的分支 —— 不可达的死代码，
+    #  留着会让人以为「True 可能原样通过」。）
     return bounded, SOURCE_AI, "采用模型给出的回收偏移"
 
 
@@ -173,14 +178,20 @@ def resolve_storyline_end(
     current = max(int(chapter_number), 0)
 
     def _fallback(why: str) -> Tuple[int, str, str]:
-        """兜底路径也必须守住 MAX_STORYLINE_END（第九轮复审 §3.5）。
+        """兜底路径。
 
-        此前 MAX 只约束模型给的值，于是 `resolve_storyline_end(15000, None)`
-        返回 15012 —— 一个自称「有绝对上限」的常量被兜底路径绕过去了。
+        ⚠ 第十轮复审：上一版写 ``min(current + step, MAX_STORYLINE_END)``，
+        在 ``current >= MAX`` 时返回 ``end <= current`` —— 直接违反本模块
+        声明的「收尾章 > 当前章」不变量，还产出「按兜底 +-5000 章」这种
+        自相矛盾的 note（负的跨度）。
+
+        **不变量优先于上限**：MAX 是防「模型给出荒谬大数」的护栏，
+        而 current 是代码自己维护的写作进度，不该被护栏按下去。
+        现实章数远小于 MAX（长篇也就几千章），该分支实际上不可达，
+        但一旦可达就必须自洽 —— 不变量是**任何分支**都必须守的。
         """
         step = max(int(span), 1)
-        end = min(current + step, MAX_STORYLINE_END)
-        return end, SOURCE_FALLBACK, f"{why}（按兜底 +{end - current} 章）"
+        return current + step, SOURCE_FALLBACK, f"{why}（按兜底 +{step} 章）"
 
     if ai_end is None or (isinstance(ai_end, str) and not ai_end.strip()):
         return _fallback("模型未给出预估收尾章")
@@ -204,10 +215,19 @@ def resolve_storyline_end(
         value = int(numeric)
         source, why = SOURCE_AI, f"模型给出的预估收尾章 {value}"
 
+    # ⚠ 第十轮复审：bool 是 int 子类，`float(True)` == 1.0。
+    # note 必须自述类型，否则读者以为模型给的是数字 1（与 offset 侧对齐）。
+    # ⚠ bool 值必然 ≤ current（True→1、False→0），所以它**总是**走抬升分支 ——
+    # 只在 else 分支里写根本到不了，这里单独算一个标记供抬升分支用。
+    is_bool = isinstance(ai_end, bool)
+    if is_bool:
+        why = f"模型给出的是布尔 {ai_end!r}（按数值 {value} 采纳），不是收尾章"
+
     if value > MAX_STORYLINE_END:
         # 超出任何现实小说的跨度 ⇒ 视同不可用，而不是原样落库。
+        # ⚠ 第十轮复审：`1e308` 的 int() 结果是 309 位，必须走 `_brief`。
         return _fallback(
-            f"模型给出的预估收尾章 {value} 超出上限 {MAX_STORYLINE_END}"
+            f"模型给出的预估收尾章 {_brief(value)} 超出上限 {MAX_STORYLINE_END}"
         )
 
     if value <= current:
@@ -215,11 +235,12 @@ def resolve_storyline_end(
         # ⚠ 抬升后的值**不是**模型给的值 ⇒ 标 SOURCE_AI_ADJUSTED，不标 SOURCE_AI。
         # source 已落库（storylines.estimated_chapter_end_source），标错就是在
         # 产物里伪造 provenance。
-        # ⚠ 抬升同样要守上限（第九轮复审 §3.5）。
-        lifted = min(current + 1, MAX_STORYLINE_END)
-        return lifted, SOURCE_AI_ADJUSTED, (
-            f"模型给出的收尾章 {value} 不晚于当前章 {current}，"
-            f"已由代码抬到第 {lifted} 章（取值非模型原值）"
+        # ⚠ 不加 min(…, MAX)：那会让 current ≥ MAX 时返回 end <= current
+        # （「抬到第 10000 章」而 current 是 15000 —— 实际是降），
+        # 同样违反不变量。不变量优先于上限，与 `_fallback` 保持一致。
+        return current + 1, SOURCE_AI_ADJUSTED, (
+            f"{why}；该值不晚于当前章 {current}，"
+            f"已由代码抬到第 {current + 1} 章（取值非模型原值）"
         )
     return value, source, why
 
