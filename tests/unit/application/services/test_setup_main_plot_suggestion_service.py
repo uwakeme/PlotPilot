@@ -1,3 +1,5 @@
+import pytest
+
 from application.blueprint.services.setup_main_plot_suggestion_service import (
     SetupMainPlotSuggestionService,
 )
@@ -141,3 +143,113 @@ def test_merge_chapter_not_after_introduction_is_reported():
     assert any("不晚于引入章" in i for i in parsed[0]["subline_issues"]), (
         parsed[0]["subline_issues"]
     )
+
+
+# ---------------------------------------------------------------------------
+# 异常归因：代码 bug 不得被说成「请检查模型输出」
+# ---------------------------------------------------------------------------
+
+_BLAME_MODEL = "请检查模型输出或 CPMS 模板"
+
+
+class _BoomLLM:
+    """generate 直接抛非合同异常（模拟超时 / 鉴权 / 连接失败）。"""
+
+    def __init__(self, exc=None):
+        self._exc = exc or TimeoutError("llm read timeout")
+
+    async def generate(self, *_a, **_k):
+        raise self._exc
+
+
+class _Result:
+    def __init__(self, content):
+        self.content = content
+
+
+class _ParseBoomLLM:
+    """generate 正常返回，但后续解析炸在代码路径上。"""
+
+    def __init__(self):
+        self._llm_calls = 0
+
+    async def generate(self, *_a, **_k):
+        self._llm_calls += 1
+        return _Result("{}")
+
+
+def _svc_with(llm, parse_impl=None):
+    svc = SetupMainPlotSuggestionService.__new__(SetupMainPlotSuggestionService)
+    svc._llm = llm
+    svc._build_prompt_and_config = lambda _nid: (_ctx(), "prompt", "config")
+    if parse_impl is not None:
+        svc.parse_suggested_options = parse_impl
+    return svc
+
+
+def _run(svc):
+    import asyncio
+
+    return asyncio.run(svc.suggest_options("n1"))
+
+
+def test_llm_call_failure_is_not_blamed_on_the_model():
+    """LLM 调用本身失败 ⇒ 文案必须说清是调用异常，且不得推给模型输出。"""
+    from application.blueprint.services.setup_main_plot_suggestion_service import (
+        MainPlotSuggestionContractError,
+    )
+
+    svc = _svc_with(_BoomLLM(TimeoutError("llm read timeout")))
+
+    with pytest.raises(MainPlotSuggestionContractError) as ei:
+        _run(svc)
+
+    msg = str(ei.value)
+    assert _BLAME_MODEL not in msg, (
+        f"LLM 调用失败被归因成模型输出问题：{msg}"
+    )
+    assert "LLM 调用异常" in msg, msg
+    assert "TimeoutError" in msg, f"真实异常类型没露出：{msg}"
+    # 原始异常要保留在 __cause__ 上，否则栈里看不出根因
+    assert isinstance(ei.value.__cause__, TimeoutError)
+
+
+def test_parse_failure_is_explicitly_not_a_model_output_problem():
+    """解析阶段的代码异常必须明说「非模型输出本身的问题」。"""
+    from application.blueprint.services.setup_main_plot_suggestion_service import (
+        MainPlotSuggestionContractError,
+    )
+
+    def _boom(*_a, **_k):
+        raise KeyError("结构体少字段")
+
+    svc = _svc_with(_ParseBoomLLM(), parse_impl=_boom)
+
+    with pytest.raises(MainPlotSuggestionContractError) as ei:
+        _run(svc)
+
+    msg = str(ei.value)
+    assert _BLAME_MODEL not in msg, f"代码异常被归因成模型输出问题：{msg}"
+    assert "输出解析异常" in msg, msg
+    assert "非模型输出本身的问题" in msg, msg
+    assert "KeyError" in msg, f"真实异常类型没露出：{msg}"
+
+
+def test_contract_error_is_not_double_wrapped():
+    """合同错误已经说清是模型输出不合规，不该再被包一层「解析异常」。"""
+    from application.blueprint.services.setup_main_plot_suggestion_service import (
+        MainPlotSuggestionContractError,
+    )
+
+    def _contract(*_a, **_k):
+        raise MainPlotSuggestionContractError("主线候选数量不足")
+
+    svc = _svc_with(_ParseBoomLLM(), parse_impl=_contract)
+
+    with pytest.raises(MainPlotSuggestionContractError) as ei:
+        _run(svc)
+
+    assert "输出解析异常" not in str(ei.value), (
+        f"合同错误被二次包装，原始语义丢失：{ei.value}"
+    )
+    assert "数量不足" in str(ei.value)

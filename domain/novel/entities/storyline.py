@@ -29,8 +29,10 @@ class Storyline(BaseEntity):
         parent_id: Optional[str] = None,
         chapter_weight: float = 1.0,
         # G-03：`estimated_chapter_end` 这个**取值**的来源。
-        #   'ai'       模型给了收尾章
-        #   'fallback' 模型没给，代码兜底
+        #   'ai'          模型给了收尾章，且未晚于当前章 ⇒ 直接采用模型原值
+        #   'ai_adjusted' 模型给了但被代码抬到不变量下界（收尾章 > 当前章）
+        #                 ⇒ 最终取值不是模型原值，**不能**标 'ai'
+        #   'fallback'    模型没给/不可解析，代码兜底
         #   ''（默认）旧数据未标注 —— **不等于** 'ai'，读端必须显式判
         # 默认空串而非 'ai'：默认填 'ai' 会把未标注的旧数据
         # 读成「这是模型的判断」。

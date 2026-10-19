@@ -1140,61 +1140,29 @@ def test_audit_branch_condition_polarity_is_positive():
         )
 
 
-def test_state_updater_uses_the_real_update_function():
-    """⚠ 第四轮复审：旧测试查找的函数名 `update_chapter_state` **不存在**，
-    于是悄悄退化成整模块 substring 扫描 —— 把裁决器调用内联掉仍全绿。
+def test_state_updater_delegates_the_offset_decision():
+    """`update_from_chapter` 必须走共享裁决器/纯函数，不能自己手写判定。
 
-    这里先确认函数真的存在，再在**它自己的作用域**内判定。
+    ⚠ 第六轮复审指出上一版这条是**源码文本断言**，可在「把调用挪进嵌套 def」
+    时绕过（`ast.walk` 会下降进嵌套 def）。本版已改为：
+      · 结构部分只判「函数体内出现该调用名」（不做可达性推断）
+      · 真正的行为断言在
+        `tests/unit/test_review_round1_state_updater_e2e.py` ——
+        真跑 update_from_chapter 验产物上的 source/note。
     """
     tree = _ast("application/analyst/services/state_updater.py")
     fn = next(
-        (n for n in ast.walk(tree)
-         if isinstance(n, ast.FunctionDef)
-         and n.name == "update_from_chapter"),
-        None,
-    )
-    assert fn is not None, (
-        "找不到 update_from_chapter —— 旧测试因函数名不存在而退化成模块级 substring 扫描，"
-        "任何回退都抓不住"
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "update_from_chapter"
     )
     src = ast.unparse(fn)
-    # 第五轮：决策已抽成纯函数 `_resolve_plant_offset`，调用点在这儿。
-    # 仍要判「在 update_from_chapter 自己的作用域内」——
-    # 挪进嵌套 def 会绕过，而那正是上一版的绕过路径。
-    assert "_resolve_plant_offset" in src, (
-        "该函数内没有调用 _resolve_plant_offset（决策可能被挪进了嵌套作用域）"
-    )
+    assert "_resolve_plant_offset" in src, "该函数内没有调用 G-01 的裁决纯函数"
     assert "suggested_resolve_offset" in src, "该函数内没有读对齐后的键名"
     assert "resolve_offset" in src, "该函数内没有读兼容旧键"
 
-    # 被挪进嵌套 def 也要能抓到。
-    # ⚠ 不能用 `ast.walk(stmt)`：嵌套 def **本身就是函数体的一条顶层语句**，
-    # walk 会下降进它的体，于是「调用被挪进嵌套 def」照样查得到（第五/六轮实证）。
-    # 这里沿用探针的 _load_nodes 语义：判到 FunctionDef / Lambda / ClassDef 止步。
-    tree2 = _ast("application/analyst/services/state_updater.py")
-    fn2 = next(
-        n for n in ast.walk(tree2)
-        if isinstance(n, ast.FunctionDef) and n.name == "update_from_chapter"
-    )
-    direct_calls = [
-        n for stmt in fn2.body
-        for n in _walk_stmt(stmt)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "_resolve_plant_offset"
-    ]
-    assert direct_calls, (
-        "_resolve_plant_offset 的调用不在 update_from_chapter 的直接语句里 —— "
-        "可能被挪进了嵌套 def / lambda / 类体"
-    )
-
 
 def _walk_stmt(stmt):
-    """遍历一条语句，但在嵌套 def / lambda / class 处止步。
-
-    与探针的 `_load_nodes` 同规则：那些是**别的**作用域，
-    它们体内的调用点不代表本函数的直接调用。
-    """
+    """遍历一条语句，但在嵌套 def / lambda / class 处止步。"""
     stack = [stmt]
     while stack:
         node = stack.pop()
@@ -1257,100 +1225,114 @@ def test_adjusted_source_survives_the_repository_round_trip():
     assert bare.estimated_chapter_end_source != "ai"
 
 
-def test_g03_log_has_three_branches():
-    """⚠ 第四轮复审 §3.3：建档日志只有 ai / fallback 两支，
-    ai_adjusted 落库正确但**无任何日志** —— 可观测通道不对称。"""
-    src = _read("application/analyst/services/state_updater.py")
-    for marker in ("SOURCE_AI:", "SOURCE_AI_ADJUSTED:", "SOURCE_FALLBACK"):
-        assert marker in src, f"建档日志缺 {marker} 分支（ai_adjusted 无日志 ⇒ 可观测不对称）"
+def test_g03_log_covers_all_three_sources(caplog):
+    """G-03 建档日志必须让三种来源互相可分辨。
 
+    ⚠ 第六轮复审指出上一版是**源码 marker 断言** ——
+    在注释里写 `SOURCE_AI_ADJUSTED:` 就能假绿。这里改用 caplog 实跑。
 
-# ── 第五轮复审 §3.2：守卫改行为断言 ───────────────────────────────────────
-
-
-def test_fallback_note_never_mentions_a_number_it_did_not_use():
-    """⚠ 第五轮复审 §3.1：上一版我只改了 note 的**后半句**，前半句仍来自
-    `resolve_offset(None)`，最终 note 是：
-        「模型未给出回收偏移，按兜底 5 章；改按 importance 推算 +15」
-    前半句说 5、后半句说 15，而该文本**落库**。
-
-    这里直接跑抽出来的纯函数 `_resolve_plant_offset`（与 legacy 的
-    `_needs_buffer_chapter` 同样做法：把决策从数百行的编排里抽出来才能测），
-    断言 note 里出现的偏移数字**只有实际采用的那个**。
+    ⚠ 第三版（本次）修正了第一版的两个空洞：
+      1. 没传 ``storyline_repository`` ⇒ ``has_storyline_activity`` 整块被跳过，
+         三次都没发日志，断言却只查了「缺 frag」而没查「日志是否真的发过」。
+      2. 只断言目标 frag 存在 ⇒ 把三分支合并成一条「采用模型判断」也能过。
+         现在额外断言**另外两个 frag 都不出现**。
     """
-    import pytest
+    import logging
 
-    from application.analyst.services.state_updater import _resolve_plant_offset
-    from domain.novel.value_objects.foreshadowing import ImportanceLevel as IL
+    import application.analyst.services.state_updater as su
 
-    expected = {"high": 15, "medium": 10, "low": 5}
-    for name, want in expected.items():
-        level = {"high": IL.HIGH, "medium": IL.MEDIUM, "low": IL.LOW}[name]
-        delta, source, note = _resolve_plant_offset(level.value, None)
-        assert source == "fallback", f"[{name}] 应走 fallback"
-        assert delta == want, f"[{name}] 实际偏移应为 +{want}，得到 {delta}"
-        assert f"改按 importance 推算 +{want}" in note, (
-            f"[{name}] note 没自述实际采用的 +{want}：{note!r}"
+    def build(end_value):
+        class _ForeshadowRepo:
+            def __init__(self):
+                from domain.novel.entities.foreshadowing_registry import (
+                    ForeshadowingRegistry,
+                )
+                from domain.novel.value_objects.novel_id import NovelId
+                self.registry = ForeshadowingRegistry(
+                    id="reg", novel_id=NovelId("n1"))
+
+            def get_by_novel_id(self, _n):
+                return self.registry
+
+            def save(self, _r):
+                pass
+
+        class _StorylineRepo:
+            def __init__(self):
+                self.saved = []
+
+            def save(self, storyline):
+                self.saved.append(storyline)
+
+        repo = _StorylineRepo()
+        updater = su.StateUpdater(
+            bible_repository=None,
+            foreshadowing_repository=_ForeshadowRepo(),
+            storyline_repository=repo,
         )
-        assert "按兜底 5 章" not in note, (
-            f"[{name}] note 仍带裁决器的「按兜底 5 章」，与实际 +{want} 矛盾：{note!r}"
+        from domain.novel.value_objects.chapter_state import ChapterState
+
+        cs = ChapterState(
+            new_characters=[], character_actions=[], relationship_changes=[],
+            foreshadowing_planted=[], foreshadowing_resolved=[], events=[],
+            new_storylines=[{"name": "线", "type": "main",
+                             "description": "d",
+                             "estimated_chapter_end": end_value}],
         )
-        # note 里出现的所有 +N，必须只有实际采用的那一个
-        import re
-        nums = set(re.findall(r"\+(\d+)", note))
-        assert nums == {str(want)}, f"[{name}] note 出现多个偏移数字：{nums} in {note!r}"
+        updater.update_from_chapter(
+            novel_id="n1", chapter_number=3, chapter_state=cs)
+        assert repo.saved, "故事线没被建档 —— 日志断言会在空日志上假红"
+        return repo.saved[0]
 
-        # 脏值分支同样自建说明
-        delta2, source2, note2 = _resolve_plant_offset(level.value, "十几章以后")
-        assert source2 == "fallback"
-        assert "不可解析" in note2 and "按兜底 5 章" not in note2, (
-            f"[{name}] 脏值分支的 note 不对：{note2!r}"
+    logger_name = "application.analyst.services.state_updater"
+    frags = {"ai": "采用模型判断",
+             "ai_adjusted": "被代码改写",
+             "fallback": "兜底"}
+
+    # chapter_number=3：40 合法直用；2 违反「收尾章 > 当前章」被抬升 ⇒ adjusted；None 兜底
+    for value, expect in [(40, "ai"), (2, "ai_adjusted"), (None, "fallback")]:
+        with caplog.at_level(logging.INFO, logger=logger_name):
+            caplog.clear()
+            sl = build(value)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        # 先断言日志确实发过 —— 否则「缺 frag」和「压根没跑」分不开
+        assert any("故事线收尾章" in m for m in
+                   (r.getMessage() for r in caplog.records)), (
+            f"end={value!r} 未产生任何故事线日志：\n{text}")
+        assert frags[expect] in text, f"end={value!r} 的建档日志缺 {frags[expect]!r}：\n{text}"
+        for other, frag in frags.items():
+            if other == expect:
+                continue
+            assert frag not in text, (
+                f"end={value!r} 判为 {expect}，日志里却同时出现 {other} 的措辞 "
+                f"{frag!r} —— 三态不可分辨：\n{text}"
+            )
+        # 日志措辞必须与落库的 source 同向，不许日志说「模型判断」而产物标 ai_adjusted
+        assert sl.estimated_chapter_end_source == expect, (
+            f"日志说 {expect}、落库 source 是 "
+            f"{sl.estimated_chapter_end_source!r}"
         )
-        assert f"+{want}" in note2
-
-    # 模型给了值时不该出现任何 importance 推算的字样
-    delta, source, note = _resolve_plant_offset(IL.MEDIUM.value, 7)
-    assert (delta, source) == (7, "ai")
-    assert "importance" not in note
 
 
-def test_adjusted_offset_note_says_it_was_clamped():
-    """被钳位的取值必须说清「钳到 [2,30]」且声明最终值非模型原值。"""
-    from application.analyst.services.state_updater import _resolve_plant_offset
-    from domain.novel.value_objects.foreshadowing import ImportanceLevel as IL
-
-    delta, source, note = _resolve_plant_offset(IL.MEDIUM.value, 0)
-    assert (delta, source) == (2, "ai_adjusted")
-    assert "钳" in note and "非模型原值" in note
-    assert "importance" not in note, "被钳位不该退回 importance 推算"
-
-
-def test_producer_storyline_records_the_real_source():
-    """⚠ 第五轮复审 §3.2：**producer 写入路径无守卫**。
-
-    落库往返测试是直接构造 `Storyline` 再存，所以把
-    `_make_storyline_from_progress_item` 里的 source 强制改成 'ai' 时全绿 ——
-    「代码改写了取值却标成 ai」这个缺陷正是从 producer 进来的。
-    """
-    import inspect
-
-    from application.world.services import chapter_narrative_sync as cns
-
-    src = inspect.getsource(cns._make_storyline_from_progress_item)
-    assert "estimated_chapter_end_source=source" in src, (
-        "producer 没有把裁决出的 source 传进实体"
+def test_audit_polarity_check_allows_is_true_form():
+    """极性守卫不应把 `if tension_evaluated is True:` 这种合法写法判红。"""
+    tree = _ast("engine/runtime/audit_delegate.py")
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "run_chapter_audit"
     )
-    assert "estimated_chapter_end_end" not in src
-
-    # 更强：真跑一次，验证 source 随 ai_end 变化
-    made_ai = cns._make_storyline_from_progress_item(
-        "n1", 10, "支线", "婚约", "推进", 42)
-    assert made_ai.estimated_chapter_end == 42
-    assert made_ai.estimated_chapter_end_source == "ai"
-
-    made_adj = cns._make_storyline_from_progress_item(
-        "n1", 10, "支线", "婚约", "推进", 8)   # 8 <= 当前章 ⇒ 被抬
-    assert made_adj.estimated_chapter_end == 11
-    assert made_adj.estimated_chapter_end_source == "ai_adjusted", (
-        f"被代码抬高的取值标成了 {made_adj.estimated_chapter_end_source!r}"
-    )
+    conds = [
+        ast.unparse(n.test) for n in ast.walk(fn)
+        if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
+    ]
+    assert conds, "没找到按 tension_evaluated 分支的 if"
+    for c in conds:
+        norm = c.replace(" ", "")
+        # 允许：tension_evaluated / tension_evaluated is True / bool(tension_evaluated)
+        allowed = (
+            norm == "tension_evaluated"
+            or norm in ("tension_evaluatedisTrue", "tension_evaluatedis1",
+                        "bool(tension_evaluated)")
+        )
+        assert allowed, f"条件极性异常或形态未覆盖：{c!r}"

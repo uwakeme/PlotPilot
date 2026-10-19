@@ -33,9 +33,12 @@ cd frontend && npm run tauri:build
 
 # Tests
 pytest tests/ -v
-pytest tests/unit -v              # 272 files — what CI runs
-pytest tests/integration -v       # 31 files
-pytest tests/dag -v               # 9 files
+pytest tests/unit -v              # what CI runs
+pytest tests/integration -v
+pytest tests/dag -v
+
+文件数会漂，别在注释里写死；要引用当前值就用
+`glob tests/unit/**/test_*.py | wc -l`（其余目录同理）现数。
 
 # Single test file / single test
 pytest tests/unit/application/foo/test_bar.py -q
@@ -196,7 +199,7 @@ Store selection is `interfaces/api/container.py::get_vector_store`: `VECTOR_STOR
 
 ### Database migrations
 
-Plain `.sql` files in `infrastructure/persistence/database/migrations/` (32 today), applied idempotently by `infrastructure/persistence/database/migration_runner.py` and tracked in a `migrations_applied` table. Newest files use `NNN_name.sql`; older ones use `add_*.sql`. Add a migration by dropping in a new `.sql` file — do not edit applied ones. The PR template requires a migration note whenever you add a table or column.
+Plain `.sql` files in `infrastructure/persistence/database/migrations/`, applied idempotently by `infrastructure/persistence/database/migration_runner.py` and tracked in a `migrations_applied` table. Newest files use `NNN_name.sql`; older ones use `add_*.sql`. Add a migration by dropping in a new `.sql` file — do not edit applied ones. The PR template requires a migration note whenever you add a table or column.
 
 ### Frontend taxonomy sync
 
