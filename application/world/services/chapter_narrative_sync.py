@@ -380,9 +380,9 @@ def _storyline_end(chapter_number: int, ai_end: Any = None) -> Tuple[int, str, s
     模型给就用模型的（并校验越界）；没给才走兜底。
     详见 ``foreshadow_pacing.resolve_storyline_end``。
 
-    ⚠ 来源**已落库**：``storylines.estimated_chapter_end_source`` /
+    来源**已落库**：``storylines.estimated_chapter_end_source`` /
     ``_note`` 两列由迁移 ``add_storyline_end_source.sql`` 加入，
-    仓储双向透传。读取时缺失列回落**空串**（不是 ``'ai'``）。
+    仓储双向透传；读取时缺失列回落**空串**（不是 ``'ai'``）。
     与 G-01 不同 —— 伏笔走的是 registry 的 JSON payload，加字段零迁移。
     这里至少保证 source 可被观察到，且不让后来者误以为它已经持久化。
     """
@@ -767,7 +767,8 @@ def persist_bundle_triples_and_foreshadows(
             if offset_fallbacks:
                 logger.info(
                     "伏笔回收节奏兜底汇总 novel=%s ch=%s: %d 条走了代码默认，"
-                    "其余为模型判断（逐条来源见 foreshadowing.resolve_offset_source）",
+                    "其余来自模型判断（其中可能被钳位的条目逐条见 "
+                    "foreshadowing.resolve_offset_source == ai_adjusted）",
                     novel_id, chapter_number, offset_fallbacks,
                 )
 

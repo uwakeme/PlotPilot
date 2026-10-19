@@ -40,6 +40,39 @@ from application.world.services.foreshadow_pacing import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_plant_offset(importance_value: int, raw_offset: Any) -> Tuple[int, str, str]:
+    """G-01：一条新埋伏笔的「回收偏移 + 来源 + 说明」。返回 ``(章数, 来源, 说明)``。
+
+    三种来源，与 ``foreshadow_pacing`` 的三态一致：
+      - ``ai``          模型给了偏移且在 [2,30] 内 ⇒ 直接用
+      - ``ai_adjusted`` 模型给了但被钳位 ⇒ 用钳后的值（最终取值非模型原值）
+      - ``fallback``    模型没给/不可解析 ⇒ 按 importance 推 +15/+10/+5
+
+    ⚠ fallback 分支的说明**完全自建**，不引用裁决器那句「按兜底 5 章」——
+    实际采用的不是 5。这段文本会随 ``resolve_offset_note`` 落 registry JSON，
+    前后半句打架就是假 provenance 落库。
+
+    抽成纯函数是为了可测：整个 StateUpdater 的协作依赖太多，
+    在单测里搭最小替身跑不到这里。
+    """
+    offset, source, adjudicator_note = resolve_offset_from_ai(raw_offset)
+    if source != SOURCE_FALLBACK:
+        return offset, source, adjudicator_note
+
+    if raw_offset is None or (isinstance(raw_offset, str) and not raw_offset.strip()):
+        why = "模型未给出回收偏移"
+    else:
+        why = f"模型给出的回收偏移不可解析（{raw_offset!r}）"
+
+    if importance_value >= ImportanceLevel.HIGH.value:
+        delta, by = 15, "+15"
+    elif importance_value >= ImportanceLevel.MEDIUM.value:
+        delta, by = 10, "+10"
+    else:
+        delta, by = 5, "+5"
+    return delta, SOURCE_FALLBACK, f"{why}；改按 importance 推算 {by}"
+
+
 @dataclass
 class UnresolvedForeshadowingResolution:
     """一条没能配对到已注册伏笔的回收指令。
@@ -266,10 +299,10 @@ class StateUpdater:
                 importance_val = foreshadow_data.get("importance", "medium")
                 importance = _parse_importance(importance_val)
 
-                # G-01：推算 suggested_resolve_chapter。
-                # 模型给了偏移就用模型的；没给才按 importance 推算，
-                # 并且**标出来源** —— 落库后仍要能分辨「AI 判的回收节奏」
-                # 与「代码按重要性推的 +15/+10/+5」。
+                # G-01：推算 suggested_resolve_chapter。决策已抽成纯函数
+                # _resolve_plant_offset（三种来源 + 说明生成），
+                # 那里同时处理了「代码改写了取值就别标成 ai」与
+                # 「note 必须自述实际采用值」两条红线。
                 planted_ch = _safe_chapter_int(
                     foreshadow_data.get("chapter"), chapter_number
                 )
@@ -285,31 +318,10 @@ class StateUpdater:
                 raw_offset = foreshadow_data.get("suggested_resolve_offset")
                 if raw_offset is None:
                     raw_offset = foreshadow_data.get("resolve_offset")
-                offset, offset_source, adjudicator_note = resolve_offset_from_ai(raw_offset)
-
-                if offset_source == SOURCE_FALLBACK:
-                    # 模型没给（或给了脏值）⇒ 走 importance 推算。
-                    #
-                    # ⚠ note **自己生成**，不复用裁决器那句「按兜底 5 章」——
-                    # 实际值是 +15/+10/+5，不是 5。那段文本会随
-                    # resolve_offset_note **落库**，复用等于把假 provenance 存进产物。
-                    # 裁决器的说明只在「先说明模型侧发生了什么」时引用。
-                    if importance.value >= ImportanceLevel.HIGH.value:
-                        suggested_resolve = planted_ch + 15
-                        by_importance = "+15"
-                    elif importance.value >= ImportanceLevel.MEDIUM.value:
-                        suggested_resolve = planted_ch + 10
-                        by_importance = "+10"
-                    else:
-                        suggested_resolve = planted_ch + 5
-                        by_importance = "+5"
-                    offset_source = SOURCE_FALLBACK
-                    offset_note = f"{adjudicator_note}；改按 importance 推算 {by_importance}"
-                else:
-                    # SOURCE_AI / SOURCE_AI_ADJUSTED —— 取值来自模型
-                    # （adjusted 表示被钳位，最终值非模型原值）
-                    suggested_resolve = planted_ch + offset
-                    offset_note = adjudicator_note
+                offset, offset_source, offset_note = _resolve_plant_offset(
+                    importance.value, raw_offset
+                )
+                suggested_resolve = planted_ch + offset
 
 
                 foreshadowing = Foreshadowing(

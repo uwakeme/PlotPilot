@@ -1158,8 +1158,32 @@ def test_state_updater_uses_the_real_update_function():
         "任何回退都抓不住"
     )
     src = ast.unparse(fn)
-    assert "resolve_offset_from_ai" in src, "该函数内没有调用共享裁决器"
+    # 第五轮：决策已抽成纯函数 `_resolve_plant_offset`，调用点在这儿。
+    # 仍要判「在 update_from_chapter 自己的作用域内」——
+    # 挪进嵌套 def 会绕过，而那正是上一版的绕过路径。
+    assert "_resolve_plant_offset" in src, (
+        "该函数内没有调用 _resolve_plant_offset（决策可能被挪进了嵌套作用域）"
+    )
     assert "suggested_resolve_offset" in src, "该函数内没有读对齐后的键名"
+    assert "resolve_offset" in src, "该函数内没有读兼容旧键"
+
+    # 被挪进嵌套 def 也要能抓到：真实调用点必须在函数体本身（不是嵌套 def）
+    tree2 = _ast("application/analyst/services/state_updater.py")
+    fn2 = next(
+        n for n in ast.walk(tree2)
+        if isinstance(n, ast.FunctionDef) and n.name == "update_from_chapter"
+    )
+    direct_calls = [
+        n for stmt in fn2.body
+        for n in ast.walk(stmt)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_resolve_plant_offset"
+    ]
+    assert direct_calls, (
+        "_resolve_plant_offset 的调用不在 update_from_chapter 的直接语句里 —— "
+        "可能被挪进了嵌套 def / try 包装"
+    )
 
 
 def test_adjusted_source_survives_the_repository_round_trip():
@@ -1214,31 +1238,100 @@ def test_adjusted_source_survives_the_repository_round_trip():
     assert bare.estimated_chapter_end_source != "ai"
 
 
-def test_fallback_note_states_the_value_actually_used():
-    """⚠ 第四轮复审 §3.2：fallback 分支曾复用裁决器那句「按兜底 5 章」
-    再拼「按重要性推算」—— 而实际值是 +15/+10/+5。这段文本会**落库**到
-    ``resolve_offset_note``，于是 provenance 与真实取值自相矛盾。
-
-    判据：fallback 分支必须**自述实际采用的 +N**，而不是引用裁决器那句
-    关于「兜底 5 章」的说明。
-    """
-    src = _read("application/analyst/services/state_updater.py")
-    assert "改按 importance 推算 {by_importance}" in src, (
-        "fallback 分支没有自述实际采用的 +N —— 复用裁决器那句「兜底 5 章」"
-        "会让落库的 provenance 与真实取值矛盾"
-    )
-    # 三个分支各自的 +N 必须都出现，说明 by_importance 不是写死的
-    for n in ('"+15"', '"+10"', '"+5"'):
-        assert n in src, f"importance 推算分支缺 {n}"
-    # 不能出现「按重要性推算」这种不带实际值的旧文案
-    assert "；按重要性推算\"" not in src, (
-        "仍有旧文案「；按重要性推算」—— 它不说实际取了 +N，落库后无法核对"
-    )
-
-
 def test_g03_log_has_three_branches():
     """⚠ 第四轮复审 §3.3：建档日志只有 ai / fallback 两支，
     ai_adjusted 落库正确但**无任何日志** —— 可观测通道不对称。"""
     src = _read("application/analyst/services/state_updater.py")
     for marker in ("SOURCE_AI:", "SOURCE_AI_ADJUSTED:", "SOURCE_FALLBACK"):
         assert marker in src, f"建档日志缺 {marker} 分支（ai_adjusted 无日志 ⇒ 可观测不对称）"
+
+
+# ── 第五轮复审 §3.2：守卫改行为断言 ───────────────────────────────────────
+
+
+def test_fallback_note_never_mentions_a_number_it_did_not_use():
+    """⚠ 第五轮复审 §3.1：上一版我只改了 note 的**后半句**，前半句仍来自
+    `resolve_offset(None)`，最终 note 是：
+        「模型未给出回收偏移，按兜底 5 章；改按 importance 推算 +15」
+    前半句说 5、后半句说 15，而该文本**落库**。
+
+    这里直接跑抽出来的纯函数 `_resolve_plant_offset`（与 legacy 的
+    `_needs_buffer_chapter` 同样做法：把决策从数百行的编排里抽出来才能测），
+    断言 note 里出现的偏移数字**只有实际采用的那个**。
+    """
+    import pytest
+
+    from application.analyst.services.state_updater import _resolve_plant_offset
+    from domain.novel.value_objects.foreshadowing import ImportanceLevel as IL
+
+    expected = {"high": 15, "medium": 10, "low": 5}
+    for name, want in expected.items():
+        level = {"high": IL.HIGH, "medium": IL.MEDIUM, "low": IL.LOW}[name]
+        delta, source, note = _resolve_plant_offset(level.value, None)
+        assert source == "fallback", f"[{name}] 应走 fallback"
+        assert delta == want, f"[{name}] 实际偏移应为 +{want}，得到 {delta}"
+        assert f"改按 importance 推算 +{want}" in note, (
+            f"[{name}] note 没自述实际采用的 +{want}：{note!r}"
+        )
+        assert "按兜底 5 章" not in note, (
+            f"[{name}] note 仍带裁决器的「按兜底 5 章」，与实际 +{want} 矛盾：{note!r}"
+        )
+        # note 里出现的所有 +N，必须只有实际采用的那一个
+        import re
+        nums = set(re.findall(r"\+(\d+)", note))
+        assert nums == {str(want)}, f"[{name}] note 出现多个偏移数字：{nums} in {note!r}"
+
+        # 脏值分支同样自建说明
+        delta2, source2, note2 = _resolve_plant_offset(level.value, "十几章以后")
+        assert source2 == "fallback"
+        assert "不可解析" in note2 and "按兜底 5 章" not in note2, (
+            f"[{name}] 脏值分支的 note 不对：{note2!r}"
+        )
+        assert f"+{want}" in note2
+
+    # 模型给了值时不该出现任何 importance 推算的字样
+    delta, source, note = _resolve_plant_offset(IL.MEDIUM.value, 7)
+    assert (delta, source) == (7, "ai")
+    assert "importance" not in note
+
+
+def test_adjusted_offset_note_says_it_was_clamped():
+    """被钳位的取值必须说清「钳到 [2,30]」且声明最终值非模型原值。"""
+    from application.analyst.services.state_updater import _resolve_plant_offset
+    from domain.novel.value_objects.foreshadowing import ImportanceLevel as IL
+
+    delta, source, note = _resolve_plant_offset(IL.MEDIUM.value, 0)
+    assert (delta, source) == (2, "ai_adjusted")
+    assert "钳" in note and "非模型原值" in note
+    assert "importance" not in note, "被钳位不该退回 importance 推算"
+
+
+def test_producer_storyline_records_the_real_source():
+    """⚠ 第五轮复审 §3.2：**producer 写入路径无守卫**。
+
+    落库往返测试是直接构造 `Storyline` 再存，所以把
+    `_make_storyline_from_progress_item` 里的 source 强制改成 'ai' 时全绿 ——
+    「代码改写了取值却标成 ai」这个缺陷正是从 producer 进来的。
+    """
+    import inspect
+
+    from application.world.services import chapter_narrative_sync as cns
+
+    src = inspect.getsource(cns._make_storyline_from_progress_item)
+    assert "estimated_chapter_end_source=source" in src, (
+        "producer 没有把裁决出的 source 传进实体"
+    )
+    assert "estimated_chapter_end_end" not in src
+
+    # 更强：真跑一次，验证 source 随 ai_end 变化
+    made_ai = cns._make_storyline_from_progress_item(
+        "n1", 10, "支线", "婚约", "推进", 42)
+    assert made_ai.estimated_chapter_end == 42
+    assert made_ai.estimated_chapter_end_source == "ai"
+
+    made_adj = cns._make_storyline_from_progress_item(
+        "n1", 10, "支线", "婚约", "推进", 8)   # 8 <= 当前章 ⇒ 被抬
+    assert made_adj.estimated_chapter_end == 11
+    assert made_adj.estimated_chapter_end_source == "ai_adjusted", (
+        f"被代码抬高的取值标成了 {made_adj.estimated_chapter_end_source!r}"
+    )

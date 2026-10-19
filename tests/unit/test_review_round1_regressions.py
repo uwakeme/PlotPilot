@@ -194,44 +194,20 @@ def _module_scope_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _own_scope_nodes(fn):
-    """遍历 fn **自身作用域**内的所有节点，不下降进嵌套 def / lambda。
-
-    嵌套函数有自己的作用域，它的名字不属于外层。第二版把嵌套函数的
-    形参也算进外层 local，于是 `def inner(x)` 会把 `x` 当成 outer 的绑定
-    —— **掩蔽 outer 里真实的未绑定名**（第三轮复审在 sandbox 复现）。
-
-    ⚠ 第三版踩了更糟的坑：只 yield **语句**节点（Return/Assign…），
-    而调用方要的是 `ast.Name` 叶子 ⇒ 一个 Name 都拿不到 ⇒ 探针**完全失效**，
-    而「没报出来」和「没问题」在断言里长得一模一样。
-    所以这里 yield 作用域内的**所有**节点，只在「嵌套 def/lambda」处止步。
-    """
-    stack = list(fn.body)
-    while stack:
-        node = stack.pop()
-        yield node
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                             ast.Lambda, ast.ClassDef)):
-            # 嵌套函数/类有自己的作用域。类体尤其特殊：方法体里的名字既不在
-            # 类作用域也不在闭包里（类作用域不构成闭包），把它当外层绑定会漏报。
-            # 类自身的名字确实绑定在外层，所以先 yield 再止步。
-            continue
-        stack.extend(ast.iter_child_nodes(node))
-
-
 def _scope_local_names(fn) -> set[str]:
     """函数自身作用域里**直接**绑定的名字（含推导式自己的目标变量）。
 
     不含嵌套函数的形参/名字 —— 那属于它们各自的作用域。
     """
     local: set[str] = set()
-    args = fn.args
-    for arg in (list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)):
-        local.add(arg.arg)
-    if args.vararg:
-        local.add(args.vararg.arg)
-    if args.kwarg:
-        local.add(args.kwarg.arg)
+    args = getattr(fn, "args", None)
+    if args is not None:  # ast.Module 没有 .args
+        for arg in (list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)):
+            local.add(arg.arg)
+        if args.vararg:
+            local.add(args.vararg.arg)
+        if args.kwarg:
+            local.add(args.kwarg.arg)
 
     # 与 _load_nodes 同一套遍历：跳过嵌套 def/class 的体、但下降进 lambda 体。
     # 用 _own_scope_nodes（遇 lambda 也止步）会漏收 lambda 形参，
@@ -277,8 +253,21 @@ def _load_nodes(fn):
     while stack:
         node = stack.pop()
         yield node
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue  # 自己的作用域，另外单独检查
+        if isinstance(node, ast.ClassDef):
+            # 类体本身在**外层作用域**求值（``class C: attr = missing`` 里的
+            # ``missing`` 该报），但类**方法体**有自己的作用域 —— 类作用域
+            # 对方法不构成闭包。所以进类体、跳过方法。
+            # 基类列表同理：``class C(MissingBase)`` 里的 MissingBase 在外层求值。
+            stack.extend(node.bases)
+            stack.extend(node.keywords)
+            stack.extend(node.decorator_list)
+            for stmt in node.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                stack.append(stmt)
+            continue
         stack.extend(ast.iter_child_nodes(node))
 
 
@@ -296,7 +285,8 @@ def _unbound_in_tree(tree: ast.Module) -> list[str]:
         visible = set(module_bound)
         cursor = scope_fn
         while cursor is not None:
-            if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.Lambda, ast.Module)):
                 visible |= _params_of(cursor)
                 visible |= _scope_local_names(cursor)
             cursor = parent.get(id(cursor))
@@ -315,7 +305,10 @@ def _unbound_in_tree(tree: ast.Module) -> list[str]:
     # 而那次扫描的可见集合只有模块作用域 ⇒ 大批假阳性。
     # ⚠ 更不能直接传 tree.body：那里面只有语句，没有 ast.Name，
     # 模块级的未绑定名会被整个漏掉（第四轮复审实证）。
-    _check("<module>", None, _load_nodes(tree))
+    # ⚠ scope_fn 必须传 tree 本身：传 None 时 `_scope_local_names` 从不执行，
+    # 模块级的 lambda 形参与推导式目标就不在可见集合里 ⇒ 误报
+    #（第五轮复审实证：`f = lambda item: item` 与 `X=[i for i in ...]` 被报未绑定）。
+    _check("<module>", tree, _load_nodes(tree))
     return unbound
 
 
@@ -329,8 +322,10 @@ def _unbound_names(rel_path: str) -> list[str]:
 
 
 def _params_of(fn) -> set[str]:
-    """函数/lambda 的形参名（含 *args / **kwargs）。"""
-    a = fn.args
+    """函数/lambda 的形参名（含 *args / **kwargs）。Module 没有 .args ⇒ 返回空集。"""
+    a = getattr(fn, "args", None)
+    if a is None:
+        return set()
     names = {x.arg for x in (list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs))}
     if a.vararg:
         names.add(a.vararg.arg)
@@ -828,3 +823,45 @@ def test_probe_would_notice_if_it_went_inert():
     assert len(problems) >= 3, (
         f"探针只报了 {len(problems)} 处，期望 >=3 —— 它可能已失效：{problems}"
     )
+
+
+def test_probe_handles_module_level_lambda_and_comprehension():
+    """负样本：模块级 lambda 形参与推导式目标**不是**未绑定名。
+
+    第五轮复审实证的**新误报**：模块级扫描的可见集合没算上模块作用域，
+    于是 `f = lambda item: item` 与 `X=[i for i in range(3)]` 被报未绑定。
+    根因是 `_check` 的上溯链不认 ast.Module，模块作用域的绑定永远算不进来。
+    """
+    assert _probe_run("f = lambda item: item\n") == [], "模块级 lambda 形参被误报"
+    assert _probe_run("X = [i for i in range(3)]\n") == [], "模块级推导式变量被误报"
+
+
+def test_probe_catches_class_bodies_and_bases():
+    """正样本：类体与基类列表在外层作用域求值，未绑定名该报。
+
+    第五轮复审实证的**漏报**：`class C: attr = missing` 与
+    `class C(MissingBase)` 都返回 []。类体不是闭包，它**能**看见外层名字；
+    只有方法体才有自己���作用域。
+    """
+    p1 = _probe_run("class C:\n    attr = missing\n")
+    assert any("missing" in x for x in p1), f"类体未绑定名漏报：{p1}"
+
+    p2 = _probe_run("class C(MissingBase):\n    pass\n")
+    assert any("MissingBase" in x for x in p2), f"类基类未绑定名漏报：{p2}"
+
+    p3 = _probe_run("def f():\n    class D:\n        attr = missing\n    return D\n")
+    assert any("missing" in x for x in p3), f"函数内嵌套类体漏报：{p3}"
+
+
+def test_probe_does_not_treat_method_params_as_outer_bindings():
+    """负样本：方法体有自己的作用域 —— 其形参/局部不该算进类体外层。
+
+    防的是「修类体漏报时矫枉过正」：把方法里的东西误报成外层未绑定。
+    """
+    problems = _probe_run(
+        "class C:\n"
+        "    def method(self, value):\n"
+        "        local = value + 1\n"
+        "        return local\n"
+    )
+    assert problems == [], f"方法体作用域被误算到外层：{problems}"

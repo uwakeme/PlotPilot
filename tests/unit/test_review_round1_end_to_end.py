@@ -334,8 +334,11 @@ def test_unbound_probe_does_not_mask_outer_scope_via_nested_defs():
     旧版把 `def inner(x)` 的 `x` 加进 outer 的 local，于是
     `def outer(): def inner(x): return x; return x` 里的第二个 `x`
     （outer 里确实未绑定）会被掩蔽 —— 守卫看起来通过，实际漏报。
+
+    ⚠ 这里调**真实现** `_unbound_in_tree`。最初版本调的是零件
+    （`_scope_local_names` + `_own_scope_nodes`），于是探针本体退化时自测全绿；
+    而且 `_own_scope_nodes` 已在第五轮删除 —— 继续测它就是「测死代码」。
     """
-    import ast as _ast
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -345,23 +348,24 @@ def test_unbound_probe_does_not_mask_outer_scope_via_nested_defs():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    src = """
-def outer():
-    def inner(x):
-        return x
-    return x        # ← outer 里确实没有 x，应该被抓到
-"""
-    tree = _ast.parse(src)
-    fn = tree.body[0]
-    local = mod._scope_local_names(fn)
-    assert "x" not in local, (
-        "嵌套函数的形参被算进了外层作用域 —— 会掩蔽外层真实的未绑定名"
+    src = (
+        "def outer():\n"
+        "    def inner(x):\n"
+        "        return x\n"
+        "    return x\n"
     )
-    own = list(mod._own_scope_nodes(fn))
-    assert any(
-        isinstance(n, _ast.Name) and n.id == "x" and isinstance(n.ctx, _ast.Load)
-        for n in own
-    ), "own-scope 遍历应能看见外层里的 Load"
+    problems = mod._unbound_in_tree(ast.parse(src))
+    assert any("x" in p for p in problems), (
+        f"嵌套形参掩蔽了外层真实的未绑定名：{problems}"
+    )
+    # 负样本：没有那个外层 Load 时不应报
+    clean = mod._unbound_in_tree(ast.parse(
+        "def outer():\n"
+        "    def inner(x):\n"
+        "        return x\n"
+        "    return 1\n"
+    ))
+    assert clean == [], f"误报：{clean}"
 
 
 # ── logger 格式串与实参个数必须一致 ───────────────────────────────────────
