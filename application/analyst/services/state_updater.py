@@ -299,14 +299,14 @@ class StateUpdater:
                 importance_val = foreshadow_data.get("importance", "medium")
                 importance = _parse_importance(importance_val)
 
-                # G-01：推算 suggested_resolve_chapter。决策已抽成纯函数
-                # _resolve_plant_offset（三种来源 + 说明生成），
-                # 那里同时处理了「代码改写了取值就别标成 ai」与
-                # 「note 必须自述实际采用值」两条红线。
+                # G-01：推算 suggested_resolve_chapter。
+                # 决策已抽成纯函数 _resolve_plant_offset —— 三种来源（ai /
+                # ai_adjusted / fallback）与说明生成都在那里，两条红线
+                # （「代码改写了取值就别标成 ai」「note 必须自述实际采用值」）
+                # 也都在那里收口，本段只负责取键与落库。
                 planted_ch = _safe_chapter_int(
                     foreshadow_data.get("chapter"), chapter_number
                 )
-                # G-01：模型给了偏移就用模型的；没给才按 importance 推算，并标出来源。
                 #
                 # ⚠ 用共享裁决器而不是手写 `if x and isinstance(x, (int, float))`：
                 #   · 手写版把模型明说的 **0** 和字符串 "7" 当成缺失，然后写下

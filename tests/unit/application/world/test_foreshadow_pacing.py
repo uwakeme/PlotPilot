@@ -175,3 +175,21 @@ def test_both_sources_are_distinguishable_for_the_same_value():
     fb_offset, fb_source, _ = resolve_offset(None)
     assert ai_offset == fb_offset == 5
     assert ai_source != fb_source, "两种来源被压成了同一个标记"
+
+
+def test_float_offset_is_truncated_and_marked_adjusted():
+    """float 输入被 int() 截断 ⇒ 也是「代码改写了取值」，标 ai 同样是谎称。
+
+    第六轮复审 §3.5。prompt 要求整数，属边缘输入，但原则与钳位一致：
+    最终取值不是模型给的，就不能说「这是模型给的」。
+    """
+    offset, source, note = resolve_offset(7.9)
+    assert offset == 7
+    assert source == SOURCE_AI_ADJUSTED
+    assert source != SOURCE_AI
+    assert "截断" in note and "非模型原值" in note
+
+    # 真正的整数仍然是 ai（字符串数字也算整数）
+    for raw in (7, "7", "7.0"):
+        _, s, _ = resolve_offset(raw)
+        assert s == SOURCE_AI, f"{raw!r} 是整数取值，不该被标 adjusted"

@@ -1167,7 +1167,10 @@ def test_state_updater_uses_the_real_update_function():
     assert "suggested_resolve_offset" in src, "该函数内没有读对齐后的键名"
     assert "resolve_offset" in src, "该函数内没有读兼容旧键"
 
-    # 被挪进嵌套 def 也要能抓到：真实调用点必须在函数体本身（不是嵌套 def）
+    # 被挪进嵌套 def 也要能抓到。
+    # ⚠ 不能用 `ast.walk(stmt)`：嵌套 def **本身就是函数体的一条顶层语句**，
+    # walk 会下降进它的体，于是「调用被挪进嵌套 def」照样查得到（第五/六轮实证）。
+    # 这里沿用探针的 _load_nodes 语义：判到 FunctionDef / Lambda / ClassDef 止步。
     tree2 = _ast("application/analyst/services/state_updater.py")
     fn2 = next(
         n for n in ast.walk(tree2)
@@ -1175,15 +1178,31 @@ def test_state_updater_uses_the_real_update_function():
     )
     direct_calls = [
         n for stmt in fn2.body
-        for n in ast.walk(stmt)
+        for n in _walk_stmt(stmt)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Name)
         and n.func.id == "_resolve_plant_offset"
     ]
     assert direct_calls, (
         "_resolve_plant_offset 的调用不在 update_from_chapter 的直接语句里 —— "
-        "可能被挪进了嵌套 def / try 包装"
+        "可能被挪进了嵌套 def / lambda / 类体"
     )
+
+
+def _walk_stmt(stmt):
+    """遍历一条语句，但在嵌套 def / lambda / class 处止步。
+
+    与探针的 `_load_nodes` 同规则：那些是**别的**作用域，
+    它们体内的调用点不代表本函数的直接调用。
+    """
+    stack = [stmt]
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
 
 
 def test_adjusted_source_survives_the_repository_round_trip():

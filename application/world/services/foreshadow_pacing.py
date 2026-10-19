@@ -66,10 +66,20 @@ def resolve_offset(raw: Any) -> Tuple[int, str, str]:
         return DEFAULT_RESOLVE_OFFSET, SOURCE_FALLBACK, "模型未给出回收偏移，按兜底 5 章"
 
     try:
-        value = int(raw)
+        numeric = float(raw)
     except (TypeError, ValueError):
         return DEFAULT_RESOLVE_OFFSET, SOURCE_FALLBACK, f"模型给出的回收偏移不可解析（{raw!r}），按兜底 5 章"
 
+    # ⚠ 先判「是否被 int() 截断」：**float 输入被代码改写过**，标 'ai'
+    # 就是谎称「这是模型给的整数」。与下面的钳位同一条原则。
+    if numeric != int(numeric):
+        return max(RESOLVE_OFFSET_MIN, min(RESOLVE_OFFSET_MAX, int(numeric))), \
+            SOURCE_AI_ADJUSTED, (
+                f"模型给出的回收偏移 {raw!r} 不是整数，已截断为 {int(numeric)}"
+                f"（采用值非模型原值）"
+            )
+
+    value = int(numeric)
     bounded = max(RESOLVE_OFFSET_MIN, min(RESOLVE_OFFSET_MAX, value))
     if bounded != value:
         return bounded, SOURCE_AI_ADJUSTED, (

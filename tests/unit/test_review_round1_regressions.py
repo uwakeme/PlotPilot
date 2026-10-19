@@ -194,6 +194,25 @@ def _module_scope_names(tree: ast.Module) -> set[str]:
     return names
 
 
+def _binding_nodes(fn):
+    """收集**绑定**时用的遍历：遇到嵌套 def / class 整个止步。
+
+    与 :func:`_load_nodes` 的区别正是类体：
+      · 判定 Load 时要**进**类体（`class C: attr = missing` 该报）
+      · 收集绑定时**不进**类体（`class C: attr = 1` 的 attr 不是外层绑定；
+        类作用域对方法不构成闭包，`def f(): return attr` 运行时就是 NameError）
+
+    第五轮把类体 Store 并进外层 local，造成 3 类新漏报；第六轮修正。
+    """
+    stack = list(fn.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def _scope_local_names(fn) -> set[str]:
     """函数自身作用域里**直接**绑定的名字（含推导式自己的目标变量）。
 
@@ -209,10 +228,10 @@ def _scope_local_names(fn) -> set[str]:
         if args.kwarg:
             local.add(args.kwarg.arg)
 
-    # 与 _load_nodes 同一套遍历：跳过嵌套 def/class 的体、但下降进 lambda 体。
-    # 用 _own_scope_nodes（遇 lambda 也止步）会漏收 lambda 形参，
-    # 于是 `key=lambda item: item[0]` 里的 item 被报成未绑定。
-    for node in _load_nodes(fn):
+    # ⚠ 用 _binding_nodes（遇嵌套 def/**class** 止步）而不是 _load_nodes。
+    # _load_nodes 要进类体（判 Load 用），但类体里的赋值不是外层绑定。
+    # 用 _load_nodes 会让 `class C: attr = 1` 的 attr 泄漏到外层。
+    for node in _binding_nodes(fn):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             local.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -222,9 +241,11 @@ def _scope_local_names(fn) -> set[str]:
             local.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             # 嵌套 def/class 的**名字**绑定在外层作用域（虽然它们的体不进来）。
-            # 漏了这一支，`def _replace` / `class _LLM` 会被报成未绑定 —— 探针
-            # 立刻对全仓报出一堆假阳性，反而让人开始忽略它的输出。
+            # 漏了这一支，`def _replace` / `class _LLM` 会被报成未绑定。
             local.add(node.name)
+            # ⚠ 只加**名字**，不加类体里的赋值：类作用域不是闭包，
+            # `class C: attr = 1` 里的 attr 不是外层可见的名字。
+            # （第六轮修：并入外层会造成 `def f(): return attr` 漏报。）
         elif isinstance(node, ast.Lambda):
             # lambda 的**形参**绑定在外层作用域（lambda 体也在外层求值），
             # 漏掉这一支会把 `key=lambda item: item[0]` 里的 item 报成未绑定。
@@ -254,18 +275,45 @@ def _load_nodes(fn):
         node = stack.pop()
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue  # 自己的作用域，另外单独检查
+            # 签名部件（装饰器/默认值/注解/返回注解）在**定义它的作用域**求值，
+            # 不是在被定义的函数里求值 —— 所以它们属于外层，要继续扫。
+            for expr in (list(node.decorator_list)
+                         + [d for d in node.args.defaults if d is not None]
+                         + ([node.returns] if node.returns else [])
+                         + [a.annotation for a in (
+                             list(node.args.args) + list(node.args.kwonlyargs)
+                             + ([node.args.vararg] if node.args.vararg else [])
+                             + ([node.args.kwarg] if node.args.kwarg else [])
+                         ) if getattr(a, "annotation", None)]):
+                stack.append(expr)
+            continue  # 函数**体**另有作用域
         if isinstance(node, ast.ClassDef):
             # 类体本身在**外层作用域**求值（``class C: attr = missing`` 里的
             # ``missing`` 该报），但类**方法体**有自己的作用域 —— 类作用域
             # 对方法不构成闭包。所以进类体、跳过方法。
             # 基类列表同理：``class C(MissingBase)`` 里的 MissingBase 在外层求值。
+            #
+            # ⚠ 类体里的 ``Name(Store)``（``class C: attr = 1``）**不能**算进
+            # 外层绑定 —— 类名不是闭包，`def f(): return attr` 在运行期就是
+            # NameError。第五轮把类体 Store 并入外层 local 造成 3 类新漏报。
+            # 这里只把「读取」交给外层判，类体自己的赋值不进 visible。
             stack.extend(node.bases)
             stack.extend(node.keywords)
             stack.extend(node.decorator_list)
             for stmt in node.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
+                    # 方法签名部件（装饰器/默认值/注解）在**类体作用域**求值，
+                    # 单独扫它们的表达式（第六轮复审 §3.3）。
+                    for expr in (list(stmt.decorator_list)
+                                 + [d for d in stmt.args.defaults if d is not None]
+                                 + ([stmt.returns] if stmt.returns else [])
+                                 + [a.annotation for a in (
+                                     list(stmt.args.args) + list(stmt.args.kwonlyargs)
+                                     + ([stmt.args.vararg] if stmt.args.vararg else [])
+                                     + ([stmt.args.kwarg] if stmt.args.kwarg else [])
+                                 ) if getattr(a, "annotation", None)]):
+                        stack.append(expr)
+                    continue  # 方法**体**另有作用域
                 stack.append(stmt)
             continue
         stack.extend(ast.iter_child_nodes(node))
@@ -865,3 +913,40 @@ def test_probe_does_not_treat_method_params_as_outer_bindings():
         "        return local\n"
     )
     assert problems == [], f"方法体作用域被误算到外层：{problems}"
+
+
+def test_probe_does_not_leak_class_body_store_to_outer_scope():
+    """⚠ 第六轮复审 §3.2：为扫类体而把类体 Store 并入外层 local，造成 3 类**新漏报**。
+
+    类作用域不是闭包：`class C: attr = 1` 之后，`def f(): return attr`
+    在运行期就是 NameError。判 Load 要进类体，收绑定必须停在类体 —— 两件事。
+    """
+    for src, want in [
+        ("def outer():\n    class C:\n        attr = 1\n    return attr\n", "attr"),
+        ("class C:\n    leak = 1\ndef f():\n    return leak\n", "leak"),
+        ("class C:\n    attr = 1\n    def m(self):\n        return attr\n", "attr"),
+    ]:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"类体赋值泄漏成外层绑定，漏报了 {want!r}：{problems}"
+        )
+
+
+def test_probe_scans_signature_parts():
+    """⚠ 第六轮复审 §3.3：decorator / defaults / annotations / 返回注解此前完全没扫。
+
+    它们在**定义它的那一层作用域**求值（不是函数体里），所以「跳过函数体」
+    时必须显式把它们留下，否则 `@missing_deco`、`x=missing_default`、
+    `x: MissingType`、`-> MissingRet` 全都漏报。
+    """
+    cases = [
+        ("@missing_fn_deco\ndef g():\n    pass\n", "missing_fn_deco"),
+        ("def g(x=missing_default):\n    pass\n", "missing_default"),
+        ("class C:\n    @missing_deco\n    def m(self):\n        pass\n", "missing_deco"),
+        ("class C:\n    def m(self, x=missing_default):\n        pass\n", "missing_default"),
+        ("class C:\n    def m(self, x: MissingType):\n        pass\n", "MissingType"),
+        ("class C:\n    def m(self) -> MissingRet:\n        pass\n", "MissingRet"),
+    ]
+    for src, want in cases:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), f"签名部件漏报 {want!r}：{problems}"
