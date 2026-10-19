@@ -246,16 +246,109 @@ def _scope_local_names(fn) -> set[str]:
             # ⚠ 只加**名字**，不加类体里的赋值：类作用域不是闭包，
             # `class C: attr = 1` 里的 attr 不是外层可见的名字。
             # （第六轮修：并入外层会造成 `def f(): return attr` 漏报。）
+            #
+            # ⚠ 第八轮复审：签名部件在**外层作用域**求值，
+            # 所以其中 lambda 的形参也绑定在外层 ——
+            # `def g(cb=lambda q: q)` 的 q 有定义，不是未绑定名。
+            # _binding_nodes 在此止步进不了函数体，所以这里显式取签名部件。
+            for expr in _signature_exprs(node):
+                for sub in ast.walk(expr):
+                    if isinstance(sub, ast.Lambda):
+                        local |= _params_of(sub)
         elif isinstance(node, ast.Lambda):
             # lambda 的**形参**绑定在外层作用域（lambda 体也在外层求值），
             # 漏掉这一支会把 `key=lambda item: item[0]` 里的 item 报成未绑定。
             local |= _params_of(node)
+        elif isinstance(node, ast.expr):
+            # ⚠ 第八轮复审：函数签名部件里嵌的 lambda（`def g(cb=lambda q: q)`、
+            # `def m(self, r=lambda s: s)`）—— `_load_nodes` 会把签名表达式
+            # 下降进去扫（它们在外层作用域求值），但 lambda 体里的**形参**
+            # 绑定在 lambda 自己身上，不在 `_scope_local_names` 的
+            # ast.walk 覆盖范围内（那条只在遇到 Lambda 节点本身时才收，
+            # 而这里是把 Lambda 作为**表达式的一部分**下降进去的）。
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Lambda):
+                    local |= _params_of(sub)
         elif isinstance(node, ast.comprehension):
             # 推导式有自己的作用域，但目标变量在本作用域可见
             for sub in ast.walk(node.target):
                 if isinstance(sub, ast.Name):
                     local.add(sub.id)
     return local
+
+
+class _ClassScopeMarker(ast.AST):
+    """`_load_nodes` 在进入类体时 yield 的标记：携带该类作用域内的绑定名。
+
+    它不是真实语法节点，只是一条「从这里开始的 Load 可以额外看见这些名字」
+    的通道。**不得**把这些名字并入外层 visible —— 类作用域不是闭包
+    （第五轮把类体 Store 并入外层 local，直接造成 3 类漏报）。
+
+    ⚠ 第八轮复审：没有这条通道时，5 类合法 Python 写法全部假红
+    （类体互引、方法默认值引用类属性、方法注解引用类内别名、
+      模块级/类方法默认 lambda 形参）。
+    """
+
+    _fields = ("names",)
+
+    def __init__(self, names):
+        self.names = names
+
+
+def _scope_local_names_of_body(body) -> set[str]:
+    """收集「一段类体语句」在自己作用域内定义的名字。
+
+    与 `_scope_local_names` 的区别：这里**要**收类体里的赋值
+    （`class C: A = 1` 里 A 是类属性），而 `_scope_local_names` 用于外层可见性、
+    必须**不**收它。两者刻意相反。
+    """
+    names: set[str] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add((alias.asname or alias.name).split(".")[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef)):
+                # 方法/嵌套类的**名字**绑定在类作用域（它们是类属性）
+                names.add(node.name)
+                # ⚠ 但方法**体**里的局部不是 —— 只走签名部件
+                for expr in (list(node.decorator_list)
+                             + [d for d in node.args.defaults if d is not None]
+                             + [getattr(node, "returns", None)]):
+                    for sub in ast.walk(expr) if expr is not None else ():
+                        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                            names.discard(sub.id)
+    return names
+
+
+def _signature_exprs(node):
+    """取 FunctionDef/AsyncFunctionDef 的签名部件表达式。
+
+    装饰器 / 默认值 / 注解 / 返回注解 —— 这些在**定义它的那层作用域**求值，
+    不是在被定义的函数里求值。第五、六轮复审的「签名部件未扫描」就是漏在这里。
+
+    收敛成单一实现：此前同样的表达式列表在 `_load_nodes` 里内联了两遍
+    （函数级与类体方法级），容易只改一处 ⇒ 覆盖不均。
+
+    ⚠ 只接受 FunctionDef —— ``ClassDef`` 没有 ``.args``，调用方需自行判断。
+    """
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return list(getattr(node, "decorator_list", []))
+    out = list(node.decorator_list)
+    out += [d for d in node.args.defaults if d is not None]
+    out += [d for d in node.args.kw_defaults if d is not None]
+    if getattr(node, "returns", None) is not None:
+        out.append(node.returns)
+    for a in (list(node.args.posonlyargs) + list(node.args.args)
+              + list(node.args.kwonlyargs)
+              + ([node.args.vararg] if node.args.vararg else [])
+              + ([node.args.kwarg] if node.args.kwarg else [])):
+        if getattr(a, "annotation", None) is not None:
+            out.append(a.annotation)
+    return out
 
 
 def _load_nodes(fn):
@@ -277,15 +370,7 @@ def _load_nodes(fn):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # 签名部件（装饰器/默认值/注解/返回注解）在**定义它的作用域**求值，
             # 不是在被定义的函数里求值 —— 所以它们属于外层，要继续扫。
-            for expr in (list(node.decorator_list)
-                         + [d for d in node.args.defaults if d is not None]
-                         + ([node.returns] if node.returns else [])
-                         + [a.annotation for a in (
-                             list(node.args.args) + list(node.args.kwonlyargs)
-                             + ([node.args.vararg] if node.args.vararg else [])
-                             + ([node.args.kwarg] if node.args.kwarg else [])
-                         ) if getattr(a, "annotation", None)]):
-                stack.append(expr)
+            stack.extend(_signature_exprs(node))
             continue  # 函数**体**另有作用域
         if isinstance(node, ast.ClassDef):
             # 类体本身在**外层作用域**求值（``class C: attr = missing`` 里的
@@ -300,21 +385,36 @@ def _load_nodes(fn):
             stack.extend(node.bases)
             stack.extend(node.keywords)
             stack.extend(node.decorator_list)
+            # ⚠ 第八轮复审：类体构成一个**独立命名空间**，类体内的引用
+            # 能看见类体的绑定 —— ``class C: A = 1; B = A`` 里的 A 有定义，
+            # ``class C: helper = 1; def m(self, x=helper)`` 的默认值在
+            # 类体作用域求值也能看见 helper，``class C: T = int; def m(self, x: T)``
+            # 的注解同理。把它们报成未绑定是假阳性。
+            #
+            # ⚠ 这些绑定**只**对类体内部与该类的方法签名可见，
+            # 绝不能并入外层：类作用域不是闭包
+            #（``class C: attr = 1`` 后 ``def f(): return attr`` 运行期是 NameError，
+            #  第五轮正是因此造成 3 类漏报）。
+            class_local = _scope_local_names_of_body(node.body)
+            # ⚠ 第八轮复审：方法签名部件里的 **lambda 形参**绑定在**类体作用域**
+            # —— `class C: def m(self, r=lambda s: s)` 的 s 在类体里求值。
+            # 它不是类属性、也不是外层绑定，只对类体内部可见。
+            for stmt in node.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for expr in _signature_exprs(stmt):
+                        for sub in ast.walk(expr):
+                            if isinstance(sub, ast.Lambda):
+                                class_local |= _params_of(sub)
             for stmt in node.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # 方法签名部件（装饰器/默认值/注解）在**类体作用域**求值，
                     # 单独扫它们的表达式（第六轮复审 §3.3）。
-                    for expr in (list(stmt.decorator_list)
-                                 + [d for d in stmt.args.defaults if d is not None]
-                                 + ([stmt.returns] if stmt.returns else [])
-                                 + [a.annotation for a in (
-                                     list(stmt.args.args) + list(stmt.args.kwonlyargs)
-                                     + ([stmt.args.vararg] if stmt.args.vararg else [])
-                                     + ([stmt.args.kwarg] if stmt.args.kwarg else [])
-                                 ) if getattr(a, "annotation", None)]):
-                        stack.append(expr)
+                    stack.extend(_signature_exprs(stmt))
                     continue  # 方法**体**另有作用域
                 stack.append(stmt)
+            # 把类作用域的绑定作为「附加可见名」交给判 Load 的一方
+            if class_local:
+                yield _ClassScopeMarker(sorted(class_local))
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -339,6 +439,11 @@ def _unbound_in_tree(tree: ast.Module) -> list[str]:
                 visible |= _scope_local_names(cursor)
             cursor = parent.get(id(cursor))
         for node in scope_nodes:
+            if isinstance(node, _ClassScopeMarker):
+                # 类作用域的绑定只在这里临时可见，不并入 visible 本身 ——
+                # 它对**外层**不可见（类作用域不是闭包）。
+                visible |= set(node.names)
+                continue
             if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
                     and node.id not in visible):
                 unbound.append(f"{label}:{node.lineno} 引用未绑定的 {node.id!r}")
@@ -399,6 +504,13 @@ def _params_of(fn) -> set[str]:
         # 第四轮复审：扫描器本身能检出该文件的问题，只是此前
         # 不在守卫名单里，于是「死方法里的 NameError」长期无人报警。
         "application/blueprint/services/setup_main_plot_suggestion_service.py",
+        # 第八轮复审（阻塞）：`_resolve_plant_offset` 的返回注解用了 `Tuple`
+        # 而 import 行没有它。本地 Python 3.14 的 PEP 649 懒求值掩盖了它，
+        # CI 的 3.11 在函数定义时求值注解 ⇒ import 该模块直接 NameError。
+        # ⚠ 教训同上一条：**问题在「名单里没有这个文件」**，不是「扫描器看不见」。
+        "application/analyst/services/state_updater.py",
+        # G-01/G-03 的裁决器本体（第八轮复审的 NaN/Inf/假 note 三条都在这里）
+        "application/world/services/foreshadow_pacing.py",
     ],
 )
 def test_no_unbound_names_in_rewritten_modules(rel_path):
@@ -950,3 +1062,110 @@ def test_probe_scans_signature_parts():
     for src, want in cases:
         problems = _probe_run(src)
         assert any(want in p for p in problems), f"签名部件漏报 {want!r}：{problems}"
+
+
+def test_probe_accepts_class_scope_as_a_namespace():
+    """⚠ 第八轮复审 §3.1：5 类**合法** Python 写法被误报成未绑定。
+
+    类体是一个独立命名空间：类体内的引用能看见类属性，方法签名部件
+    （默认值/注解）在类体作用域求值也能看见。探针原先把它们全报红。
+
+    修法不是「放宽断言」，而是引入 `_ClassScopeMarker`：类作用域的绑定
+    只对类体内部与方法签名可见，**不进外层** —— 类作用域不是闭包
+    （第五轮正因并入外层造成 3 类漏报，那两条负样本就是它的守门）。
+    """
+    legal = [
+        "class C:\n    A = 1\n    B = A\n",
+        "class C:\n    helper = 1\n    def m(self, x=helper):\n        return x\n",
+        "class C:\n    T = int\n    def m(self, x: T):\n        return x\n",
+        "def g(cb=lambda q: q):\n    return cb\n",
+        "class C:\n    def m(self, r=lambda s: s):\n        return r\n",
+    ]
+    for src in legal:
+        problems = _probe_run(src)
+        assert not problems, f"合法写法被误报：{src!r} ⇒ {problems}"
+
+    # ⚠ 负样本：类体绑定**不得**泄漏到外层，否则这条守卫等于没有
+    illegal = [
+        ("def outer():\n    class C:\n        attr = 1\n    return attr\n", "attr"),
+        ("class C:\n    leak = 1\ndef f():\n    return leak\n", "leak"),
+        ("class C:\n    def m(self):\n        return attr\n", "attr"),
+    ]
+    for src, want in illegal:
+        problems = _probe_run(src)
+        assert any(want in p for p in problems), (
+            f"类体绑定泄漏到外层导致漏报 {want!r}：{src!r} ⇒ {problems}"
+        )
+
+
+def test_probe_scopes_do_not_leak_between_sibling_classes():
+    """两个类的作用域互不可见 —— 防止 marker 实现得太宽松。"""
+    src = (
+        "class A:\n    x = 1\n"
+        "class B:\n    def m(self, y=x):\n        return y\n"
+    )
+    problems = _probe_run(src)
+    assert any("'x'" in p for p in problems), (
+        f"B 的签名部件不该看见 A 的类属性：{problems}"
+    )
+
+
+def test_scope_local_names_excludes_class_body_stores():
+    """⚠ 直接断 `_scope_local_names` 的返回值，而不只是最终 unbound 列表。
+
+    变异教训：把类作用域 marker 当普通分支处理（`visible |= set(node.names)`
+    但不 `continue`），最终 unbound 列表**一模一样** —— 差别只在这两个
+    辅助函数的返回值上。只测最终输出的话，这类变异 100% 漏过。
+    """
+    tree = ast.parse("class C:\n    attr = 1\ndef f():\n    return attr\n")
+    names = _scope_local_names(tree)
+    assert "attr" not in names, f"类体 Store 泄漏进外层可见名：{names}"
+    assert {"C", "f"} <= names, f"类名与函数名必须在外层可见：{names}"
+
+
+def test_scope_local_names_includes_signature_lambda_params():
+    """`def g(cb=lambda q: q)` 的 q 绑定在外层作用域（签名在外层求值）。"""
+    tree = ast.parse("def g(cb=lambda q: q):\n    return cb\n")
+    names = _scope_local_names(tree)
+    assert "q" in names, f"签名 lambda 形参未收进外层绑定：{names}"
+
+
+def test_class_scope_marker_does_not_mask_later_missing_names():
+    """⚠ `_ClassScopeMarker` 的真实风险：它 `visible |= names` 之后若**不收回**，
+    后续节点就都能看见这些名字 → 真未绑定名被放行（漏报）。
+
+    这比误报危险：误报会吵，漏报不会。第八轮修 marker 时最容易犯这个错。
+    """
+    src = (
+        "def outer():\n"
+        "    class C:\n"
+        "        defined_in_class = 1\n"
+        "    return defined_in_class, totally_unbound\n"
+    )
+    problems = _probe_run(src)
+    assert any("'totally_unbound'" in p for p in problems), (
+        f"marker 生效后放行了后续真未绑定名：{problems}"
+    )
+    assert any("'defined_in_class'" in p for p in problems), (
+        f"类属性不该在外层可见：{problems}"
+    )
+
+
+def test_class_scope_marker_resets_between_two_functions():
+    """⚠ 关键：`_check` 是**逐作用域**调用的，marker 的名字不得跨函数累积。
+
+    若把 marker 名字写进模块级 `visible`（而非 `_check` 的局部），
+    第一个函数里的类属性就会「泄漏」到第二个函数。
+    """
+    src = (
+        "def first():\n"
+        "    class A:\n"
+        "        only_in_a = 1\n"
+        "    return only_in_a\n"
+        "def second():\n"
+        "    return only_in_a\n"
+    )
+    problems = _probe_run(src)
+    assert any("second" in p and "'only_in_a'" in p for p in problems), (
+        f"类作用域的名字泄漏到了另一个函数：{problems}"
+    )

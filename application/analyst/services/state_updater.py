@@ -1,7 +1,7 @@
 import re
 import uuid
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from domain.novel.value_objects.chapter_state import ChapterState
@@ -51,6 +51,11 @@ def _resolve_plant_offset(importance_value: int, raw_offset: Any) -> Tuple[int, 
     ⚠ fallback 分支的说明**完全自建**，不引用裁决器那句「按兜底 5 章」——
     实际采用的不是 5。这段文本会随 ``resolve_offset_note`` 落 registry JSON，
     前后半句打架就是假 provenance 落库。
+
+    ⚠ 必须走共享裁决器而不是手写 ``if x and isinstance(x, (int, float))``：
+      手写版把模型明说的 **0** 和字符串 ``"7"`` 当成缺失，然后写下
+      「模型未给出回收偏移」这句**假说明**；它也完全不钳位。
+      这两条都落在 registry JSON 里，下游只读 source/note 就分不出来。
 
     抽成纯函数是为了可测：整个 StateUpdater 的协作依赖太多，
     在单测里搭最小替身跑不到这里。
@@ -304,17 +309,12 @@ class StateUpdater:
                 # ai_adjusted / fallback）与说明生成都在那里，两条红线
                 # （「代码改写了取值就别标成 ai」「note 必须自述实际采用值」）
                 # 也都在那里收口，本段只负责取键与落库。
+                #
+                # 键名与 narrative_sync 对齐为 `suggested_resolve_offset`；
+                # `resolve_offset` 保留读取以兼容更早的输出。
                 planted_ch = _safe_chapter_int(
                     foreshadow_data.get("chapter"), chapter_number
                 )
-                #
-                # ⚠ 用共享裁决器而不是手写 `if x and isinstance(x, (int, float))`：
-                #   · 手写版把模型明说的 **0** 和字符串 "7" 当成缺失，然后写下
-                #     「模型未给出回收偏移」这句**假说明**
-                #   · 裁决器还负责钳到 [2, 30]，手写版完全不钳
-                #
-                # ⚠ 键名与 narrative_sync 对齐为 `suggested_resolve_offset`；
-                # `resolve_offset` 保留读取以兼容更早的输出。
                 raw_offset = foreshadow_data.get("suggested_resolve_offset")
                 if raw_offset is None:
                     raw_offset = foreshadow_data.get("resolve_offset")

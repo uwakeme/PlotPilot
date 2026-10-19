@@ -44,7 +44,10 @@ class Foreshadowing:
     emotional_weight: float = DEFAULT_EMOTIONAL_WEIGHT
     binding_level: int = DEFAULT_BINDING_LEVEL
     # G-01：``suggested_resolve_chapter`` 这个**取值**的来源。
-    # "ai" = 模型给了判断；"fallback" = 模型没给，代码兜底。
+    # "ai"          = 模型给了偏移且在 [2,30] 内，直接采用模型原值
+    # "ai_adjusted" = 模型给了但被代码改写过（钳位 / int() 截断），
+    #                 最终取值非模型原值 —— 标 "ai" 就是在伪造 provenance
+    # "fallback"    = 模型没给 / 不可解析 / 非有限值，代码兜底
     # 此前这个标记只打进日志，落库后「AI 说的」与「代码编的」完全同形。
     # 空串 = 旧数据/未标注（**不等于** "ai"，读端必须显式判）。
     resolve_offset_source: str = ""

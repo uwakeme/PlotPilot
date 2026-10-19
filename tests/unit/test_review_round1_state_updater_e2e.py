@@ -152,11 +152,13 @@ def _run_storyline(ai_end, *, chapter_number=3):
 @pytest.mark.parametrize(
     "ai_end,expect_end,expect_source,expect_note_frag",
     [
-        (40, 40, "ai", "采用模型给出的预估收尾章"),
+        (40, 40, "ai", "模型给出的预估收尾章"),
         # 当前章 3，模型给 2 ⇒ 违反「收尾章 > 当前章」，抬到 4 ⇒ ai_adjusted
         (2, 4, "ai_adjusted", "已由代码抬到第 4 章"),
         (None, 15, "fallback", "按兜底 +12 章"),
-        ("十几章", 15, "fallback", "不可解析"),
+        # ⚠ 第八轮复审：不可解析与非有限值**同类**，note 统一用「不可用」。
+        # 这里只断言 note 非空且点明原因，具体措辞由 round8 守卫盯。
+        ("十几章", 15, "fallback", ""),
     ],
 )
 def test_storyline_end_source_matches_the_persisted_value(
@@ -172,9 +174,11 @@ def test_storyline_end_source_matches_the_persisted_value(
     assert sl.estimated_chapter_end_source == expect_source, (
         f"source={sl.estimated_chapter_end_source!r}，期望 {expect_source!r}"
     )
-    assert expect_note_frag in sl.estimated_chapter_end_note, (
-        f"note 缺 {expect_note_frag!r}：{sl.estimated_chapter_end_note!r}"
-    )
+    assert sl.estimated_chapter_end_note, "note 不得为空"
+    if expect_note_frag:
+        assert expect_note_frag in sl.estimated_chapter_end_note, (
+            f"note 缺 {expect_note_frag!r}：{sl.estimated_chapter_end_note!r}"
+        )
     # note 里提到的章号必须就是真正落库的那个（否则是假 provenance）
     cited = set(re.findall(r"第 (\d+) 章", sl.estimated_chapter_end_note))
     assert cited <= {str(expect_end)}, (
@@ -237,6 +241,24 @@ def test_cns_producer_persists_the_source_it_adjudicated(
         f"期望 {expect_source!r}"
     )
     assert sl.estimated_chapter_end_note, "producer 没写 provenance 说明"
+
+    # ⚠ 第八轮复审 §3.2：原来只断言 note 非空，把 producer note 改成
+    # 任意错误文案照样全绿。这里断言 note 必须**引用实际落库的章号**。
+    import re
+
+    cited = set(re.findall(r"第 (\d+) 章", sl.estimated_chapter_end_note))
+    assert cited <= {str(expect_end)}, (
+        f"producer note 引用了未落库的章号 {cited - {str(expect_end)}}："
+        f"{sl.estimated_chapter_end_note!r}"
+    )
+    if expect_source == "ai":
+        assert f"模型给出的预估收尾章 {expect_end}" in sl.estimated_chapter_end_note, (
+            f"ai 分支的 note 应自述模型原值 {expect_end}：{sl.estimated_chapter_end_note!r}"
+        )
+    if expect_source == "fallback":
+        assert "兜底" in sl.estimated_chapter_end_note, (
+            f"fallback 分支的 note 必须点明是兜底：{sl.estimated_chapter_end_note!r}"
+        )
 
 
 def test_cns_producer_log_agrees_with_what_it_persisted(caplog):

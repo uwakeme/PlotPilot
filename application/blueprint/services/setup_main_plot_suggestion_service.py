@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from domain.ai.services.llm_service import GenerationConfig, LLMService
@@ -79,56 +78,6 @@ def normalize_main_plot_options_data(raw_data: Any, ctx: Dict[str, Any]) -> List
     if len(normalized) >= 3:
         return normalized[:3]
     raise MainPlotSuggestionContractError("主线候选数量不足：需要至少 3 条有效方案")
-
-
-def _try_extract_next_plot_option(buf: str) -> Optional[Tuple[Dict[str, Any], str]]:
-    """从流式 JSON buffer 中提取 plot_options 数组里的下一个完整对象。"""
-    m = re.search(r'"plot_options"\s*:\s*\[', buf)
-    if m is None:
-        return None
-    arr_start = m.end()
-    depth = 0
-    in_string = False
-    escape_next = False
-    obj_start: Optional[int] = None
-
-    i = arr_start
-    while i < len(buf):
-        ch = buf[i]
-        if escape_next:
-            escape_next = False
-            i += 1
-            continue
-        if ch == "\\" and in_string:
-            escape_next = True
-            i += 1
-            continue
-        if ch == '"' and not escape_next:
-            in_string = not in_string
-            i += 1
-            continue
-        if in_string:
-            i += 1
-            continue
-        if ch == "{":
-            if depth == 0:
-                obj_start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and obj_start is not None:
-                obj_str = buf[obj_start:i + 1]
-                try:
-                    parsed = json.loads(obj_str)
-                except json.JSONDecodeError:
-                    return None
-                rest_start = i + 1
-                while rest_start < len(buf) and buf[rest_start] in " ,\n\r\t":
-                    rest_start += 1
-                remaining = '{"plot_options": [' + buf[rest_start:]
-                return parsed, remaining
-        i += 1
-    return None
 
 
 class SetupMainPlotSuggestionService:

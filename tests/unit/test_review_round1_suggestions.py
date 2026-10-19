@@ -1117,7 +1117,13 @@ def test_audit_branch_condition_polarity_is_positive():
     把 `if tension_evaluated:` 改成 `if not tension_evaluated:`（等价破坏）
     仍然全绿 —— 因为两个分支体还在，只是判断反了。
 
-    这里断言条件**必须是正向的** `tension_evaluated`。
+    这里断言条件**必须正向表达**「已评估」。
+
+    ⚠ 第八轮复审：上一版用「精确等于 `tension_evaluated`」判极性，
+    会把**合法的**等价写法 `if tension_evaluated is True:` / `bool(...)`
+    判红 —— 而同一文件里另一条守卫恰好允许这些形态，两条自相矛盾：
+    合法重构会让旧用例 RED、新用例 GREEN。
+    本版改为**语义判定**：把条件归一化成「是否等价于 bool(tension_evaluated)」。
     """
     tree = _ast("engine/runtime/audit_delegate.py")
     fn = next(
@@ -1126,17 +1132,21 @@ def test_audit_branch_condition_polarity_is_positive():
         and n.name == "run_chapter_audit"
     )
     conds = [
-        ast.unparse(n.test) for n in ast.walk(fn)
+        n.test for n in ast.walk(fn)
         if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
     ]
     assert conds, "没找到按 tension_evaluated 分支的 if"
-    for c in conds:
-        norm = c.replace(" ", "").replace("(", "").replace(")", "")
-        assert norm == "tension_evaluated", (
-            f"条件极性被反转成 {c!r} —— 未评估分支会被当成评估过"
-        )
-        assert "not" not in norm.split("tension_evaluated")[0], (
-            f"条件带否定：{c!r}"
+    for test in conds:
+        # 归一化：bool(tension_evaluated) 与 tension_evaluated 视为同义；
+        # `is True` / `is 1` 视为真值侧；任何 `not` 视为极性反转。
+        src = ast.unparse(test)
+        norm = src.replace(" ", "").replace("(", "").replace(")", "")
+        negated = norm.split("tension_evaluated")[0].endswith("not")
+        assert not negated, f"条件带否定（极性反转）：{src!r}"
+        tail = norm.split("tension_evaluated", 1)[1]
+        # 尾部只能是「是 True / 是 1 / 空」——即真值侧；出现 ==False 等即语义反转
+        assert tail in ("", "isTrue", "is1", "andTrue", "orTrue"), (
+            f"条件不是「已评估为真」的语义（{src!r}）—— 未评估分支可能被当成评估过"
         )
 
 
@@ -1159,18 +1169,6 @@ def test_state_updater_delegates_the_offset_decision():
     assert "_resolve_plant_offset" in src, "该函数内没有调用 G-01 的裁决纯函数"
     assert "suggested_resolve_offset" in src, "该函数内没有读对齐后的键名"
     assert "resolve_offset" in src, "该函数内没有读兼容旧键"
-
-
-def _walk_stmt(stmt):
-    """遍历一条语句，但在嵌套 def / lambda / class 处止步。"""
-    stack = [stmt]
-    while stack:
-        node = stack.pop()
-        yield node
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                              ast.Lambda, ast.ClassDef)):
-            continue
-        stack.extend(ast.iter_child_nodes(node))
 
 
 def test_adjusted_source_survives_the_repository_round_trip():
@@ -1315,24 +1313,41 @@ def test_g03_log_covers_all_three_sources(caplog):
 
 
 def test_audit_polarity_check_allows_is_true_form():
-    """极性守卫不应把 `if tension_evaluated is True:` 这种合法写法判红。"""
+    """正向样本：`is True` 写法必须被上面那条判绿。
+
+    ⚠ 第八轮复审指出本条与 `test_audit_branch_condition_polarity_is_positive`
+    自相矛盾（旧版要求精确等于 `tension_evaluated`，本条却允许 `is True`）。
+    已把两者合并为一条语义判定，本条改为它的**正向样本** ——
+    用真实文件的 AST 喂进同一段归一化逻辑，确认合法写法不会被误判。
+
+    这不是重复断言：上面那条判的是**生产代码当前写法**，本条判的是
+    「若将来有人改写成 `is True`，守卫会不会假红」。
+    """
     tree = _ast("engine/runtime/audit_delegate.py")
     fn = next(
         n for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         and n.name == "run_chapter_audit"
     )
-    conds = [
-        ast.unparse(n.test) for n in ast.walk(fn)
-        if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
-    ]
-    assert conds, "没找到按 tension_evaluated 分支的 if"
-    for c in conds:
-        norm = c.replace(" ", "")
-        # 允许：tension_evaluated / tension_evaluated is True / bool(tension_evaluated)
-        allowed = (
-            norm == "tension_evaluated"
-            or norm in ("tension_evaluatedisTrue", "tension_evaluatedis1",
-                        "bool(tension_evaluated)")
+
+    def polarity_ok(test_node) -> bool:
+        """与 test_audit_branch_condition_polarity_is_positive 同一套判定。"""
+        norm = ast.unparse(test_node).replace(" ", "").replace("(", "").replace(")", "")
+        if norm.split("tension_evaluated")[0].endswith("not"):
+            return False
+        return norm.split("tension_evaluated", 1)[1] in (
+            "", "isTrue", "is1", "andTrue", "orTrue")
+
+    # 正向样本：三种合法写法都必须判绿
+    for src in ("tension_evaluated", "tension_evaluated is True",
+                "bool(tension_evaluated)"):
+        assert polarity_ok(ast.parse(src, mode="eval").body), (
+            f"合法写法被误判为极性反转：{src!r}"
         )
-        assert allowed, f"条件极性异常或形态未覆盖：{c!r}"
+    # 反向样本：否定与 `is False` 必须判红（否则上面那条守卫形同虚设）
+    for src in ("not tension_evaluated", "tension_evaluated is False",
+                "tension_evaluated == False"):
+        assert not polarity_ok(ast.parse(src, mode="eval").body), (
+            f"极性反转写法被放过了：{src!r}"
+        )
+

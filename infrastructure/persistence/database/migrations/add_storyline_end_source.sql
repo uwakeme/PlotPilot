@@ -8,8 +8,13 @@
 --   estimated_chapter_end_source TEXT NOT NULL DEFAULT ''
 --   '' = 旧数据未标注（**不等于** 'ai'）—— 迁移不改写历史行的语义，
 --        凭空回填 'ai' 就是在伪造「这是模型的判断」
---   'ai'       模型给了收尾章
---   'fallback' 模型没给，代码兜底（+12 章等）
+--   'ai'          模型给了收尾章，且未晚于当前章 ⇒ 直接采用模型原值
+--   'ai_adjusted' 模型给了但被代码改写过（抬到不变量下界 / int() 截断），
+--                 最终取值不是模型原值 ⇒ 标 'ai' 就是在产物里伪造 provenance
+--   'fallback'    模型没给 / 不可解析 / 超出上限，代码兜底（+12 章等）
+--
+-- ⚠ 三态的完整定义在 domain/novel/entities/storyline.py 的字段注释处。
+-- 本迁移只负责落库，不参与判定。
 --
 -- 迁移执行器是逐语句执行且中途不 commit，所以这里**不写** PRAGMA foreign_keys：
 -- 见 add_nullable_governance_measurements.sql 顶部的完整理由。

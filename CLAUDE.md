@@ -37,8 +37,15 @@ pytest tests/unit -v              # what CI runs
 pytest tests/integration -v
 pytest tests/dag -v
 
-文件数会漂，别在注释里写死；要引用当前值就用
-`glob tests/unit/**/test_*.py | wc -l`（其余目录同理）现数。
+文件数会漂，别在注释里写死。要引用当前值就用下面任一条现数
+（`glob`/`wc` 是 bash 的东西，Windows 上跑不了）：
+
+```powershell
+# PowerShell（默认 shell）
+(Get-ChildItem -Recurse tests/unit -Filter test_*.py).Count
+# 或只数已跟踪文件
+(git ls-files 'tests/unit/**/test_*.py' | Measure-Object -Line).Lines
+```
 
 # Single test file / single test
 pytest tests/unit/application/foo/test_bar.py -q
