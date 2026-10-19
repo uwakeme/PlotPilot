@@ -2,7 +2,6 @@
 """向导 Step 4：基于 Bible 与小说元数据，由 LLM 推演三条主线候选。"""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 

@@ -15,6 +15,8 @@ import pytest
 
 from application.world.services.foreshadow_pacing import (
     MAX_STORYLINE_END,
+    RESOLVE_OFFSET_MAX,
+    RESOLVE_OFFSET_MIN,
     resolve_offset,
     resolve_storyline_end,
 )
@@ -149,17 +151,22 @@ def test_resolve_offset_never_raises_for_any_json_representable_value():
     [
         (1.9, 2), (35.5, 30), (40.5, 30), (31.2, 30),
         (0.4, 2), (-3.2, 2), (7.9, 7), (2.5, 2), (29.5, 29),
+        # ⚠ 第九轮复审补：整数钳位分支原先写「被钳到 [2, 30]」，
+        # 只给区间不给采用值 —— 读者无法知道实际用的是 2 还是 30。
+        (0, 2), (-100, 2), (-5, 2), (999, 30), (31, 30), (40, 30),
+        (True, 2), (False, 2),
     ],
 )
 def test_offset_note_cites_the_value_actually_returned(raw, expect):
-    """note 必须自述最终采用值。
+    """note 必须以**结论句式**点明最终采用值。
 
     第八轮复审抓到：`1.9 → 2` 但 note 写「已截断为 1」，`35.5 → 30` 但写「35」。
-    假 note 会随 registry JSON 落库，下游据此判断 provenance。
+    第九轮复审抓到：整数钳位写「被钳到 [2, 30]」——只给区间，采用值 2 不出现。
 
-    ⚠ 这里**不**禁止 note 提到中间值 —— 「先截断为 1、再钳到 2」是正确且
-    更完整的表述。真正的红线是：**note 里最后一个数字必须是最终采用值**，
-    也就是不能停在中间值上让读者以为那就是结果。
+    ⚠ 判据是「结论句式」，**不是**「note 末位数字」。
+    修正后的措辞是「被钳到 2（区间 [2, 30]）」——结论在前、区间在括号里，
+    末位是区间上界 30 属正常。「末位 == 采用值」这条判据在这种措辞下
+    必然假红，会逼着把 note 改成更难读的顺序。
     """
     import re
 
@@ -167,18 +174,19 @@ def test_offset_note_cites_the_value_actually_returned(raw, expect):
 
     assert offset == expect, f"{raw!r}: 实际 {offset}，期望 {expect}"
     assert source != "ai", f"{raw!r} 被代码改写过，不该标 ai"
-    assert str(expect) in note, f"{raw!r} → {offset}，note 未提采用值：{note}"
-
-    nums = re.findall(r"\d+", note)
-    assert nums, f"{raw!r} 的 note 里没有数字：{note}"
-    assert nums[-1] == str(expect), (
-        f"{raw!r} → {offset}，note 停在中间值 {nums[-1]}，"
-        f"读者会误以为那是采用值：{note}"
+    # 采用值必须以「钳到 N」「截断为 N」这种结论句式出现，
+    # 而不是只在区间括号里顺带出现。
+    assert re.search(rf"(?:钳到|截断为)\s*{expect}\b", note), (
+        f"{raw!r} → {offset}：note 未以结论句式点明采用值：{note}"
     )
 
 
 def test_offset_note_ends_with_the_exact_returned_int():
-    """note 末位数字必须**逐字**等于返回值。
+    """note 里必须出现返回值，且是**结论句式**。
+
+    ⚠ 判据**不是**「note 末位数字 == 返回值」。修正后的措辞是
+    「被钳到 2（区间 [2, 30]）」—— 结论在前、区间在括号里，
+    末位是区间上界 30。强求末位相等只会逼出更难读的 note 顺序。
 
     ⚠ 已知的**不可观测变异**（写下来免得后人重复踩）：
     「不钳位分支把 `{bounded}` 写成 `{int(numeric)}`」测不出来 ——
@@ -188,15 +196,40 @@ def test_offset_note_ends_with_the_exact_returned_int():
     """
     import re
 
-    for raw in [1.9, 2.5, 7.9, 29.5, 35.5, 40.5, 0.4, -3.2, 31.2]:
+    for raw in [1.9, 2.5, 7.9, 29.5, 35.5, 40.5, 0.4, -3.2, 31.2, 0, -100, 999]:
         offset, _src, note = resolve_offset(raw)
-        nums = re.findall(r"\d+", note)
-        assert nums[-1] == str(offset), (
-            f"{raw!r}: note 末位 {nums[-1]} != 返回值 {offset}\n  {note}"
-        )
-        # 采用值必须以结论句式出现（钳到/截断为），而不是只在「原始值 X」处顺带出现
-        assert re.search(rf"(?:钳到|截断为|被钳到)\s*{offset}\b", note), (
+        assert re.search(rf"(?:钳到|截断为)\s*{offset}\b", note), (
             f"{raw!r} → {offset}：note 未以结论句式点明采用值：{note}"
+        )
+
+
+def test_offset_note_never_grows_unbounded_with_the_raw_value():
+    """⚠ 第九轮复审 §3.4：`{raw!r}` 会让 `10**400` 产出 401 位数字的 note。
+
+    note 随 registry JSON / Storyline 落库，provenance 只需要
+    「模型给了个荒谬的大数」这个事实，不需要完整数值。
+    """
+    for raw in (10 ** 400, 10 ** 30, float("1e308")):
+        _off, _src, note = resolve_offset(raw)
+        assert len(note) < 200, (
+            f"raw 长 {len(str(raw))} 位 → note {len(note)} 字符，未截断"
+        )
+
+
+def test_storyline_end_never_exceeds_the_cap_on_any_path():
+    """⚠ 第九轮复审 §3.5：MAX_STORYLINE_END 原先只约束**模型给的值**。
+
+    `resolve_storyline_end(15000, None)` 曾返回 15012 ——
+    兜底路径把一个自称「绝对上限」的常量绕过去了。
+    抬升路径（`value <= current` → `current + 1`）同样能越过。
+    """
+    for current, raw in [(10000, None), (15000, None), (10 ** 6, None),
+                         (MAX_STORYLINE_END, 1), (MAX_STORYLINE_END + 5, 1),
+                         (10 ** 9, "十几章")]:
+        end, _src, _note = resolve_storyline_end(current, raw)
+        assert end <= MAX_STORYLINE_END, (
+            f"resolve_storyline_end({current}, {raw!r}) → {end} 越过上限 "
+            f"{MAX_STORYLINE_END}"
         )
 
 
@@ -255,14 +288,64 @@ def test_storyline_end_never_returns_an_absurd_chapter_marked_ai():
 
 
 def test_storyline_end_note_cites_the_value_actually_returned():
-    """与 G-01 同一条红线：note 自述的章号必须等于落库值。"""
+    """与 G-01 同一条红线：note 自述的章号必须等于落库值。
+
+    ⚠ 第九轮复审 §3.8：ai 分支的 note（`模型给出的预估收尾章 42`）里
+    没有「第 N 章」字样，原来的正则抽不出任何章号 ⇒ 空集 ≤ {end} 恒成立，
+    这条断言对 ai 分支是**空转**的。所以额外断言 ai 分支的 note
+    必须以结论句式点明取值。
+    """
     import re
 
     for current, raw in [(10, 8), (10, 11.9), (10, 42), (10, 1.2), (3, 2)]:
-        end, _source, note = resolve_storyline_end(current, raw)
+        end, source, note = resolve_storyline_end(current, raw)
         cited = set(re.findall(r"第 (\d+) 章|截断为 (\d+)", note))
         flat = {x for pair in cited for x in pair if x}
         assert flat <= {str(end)}, (
             f"current={current} raw={raw!r} → {end}，note 引用了非落库章号 "
             f"{flat - {str(end)}}：{note}"
+        )
+        if source == "ai":
+            # ai 分支 note 不含「第 N 章」/「截断为 N」字样 ⇒ 抽取结果必然是空集，
+            # 上面那条断言对它恒成立（空转）。所以单独断言它点明了取值。
+            assert str(end) in note, (
+                f"ai 分支的 note 未点明取值 {end}：{note}"
+            )
+        else:
+            assert flat, (
+                f"current={current} raw={raw!r} [{source}]：note 里没抽出任何章号，"
+                f"说明正则已与措辞脱节：{note}"
+            )
+
+
+def test_resolve_offset_accepts_scientific_notation():
+    """⚠ 第九轮复审 §3.8 记录的行为变更（此前未被任何测试锁定）。
+
+    改造前用 ``int(raw)``，``"1e3"`` 不可解析 ⇒ fallback（5 章）。
+    改造后用 ``float(raw)``，``"1e3"`` = 1000.0 ⇒ 钳到 30 并标 ``ai_adjusted``。
+
+    **这是更合理的解释**（模型确实给了个数字，1000），但它是一次行为变更，
+    必须被测试钉住，否则以后有人改回去都不会有人发现。
+    """
+    offset, source, note = resolve_offset("1e3")
+    assert offset == RESOLVE_OFFSET_MAX, f'"1e3" → {offset}，期望 {RESOLVE_OFFSET_MAX}'
+    assert source == "ai_adjusted", (
+        f'"1e3" 给了有效数值却标 {source!r} —— 取值被钳位，不是模型原值'
+    )
+    assert str(offset) in note
+
+
+def test_resolve_offset_bool_is_treated_as_a_number_not_a_missing_value():
+    """⚠ `True`/`False` 的 note 曾写「偏移 1/0」，读起来像模型给了个 1。
+
+    Python 里 `bool` 是 `int` 的子类，`float(True)` = 1.0。这是既定行为
+    （模型输出 JSON 里出现 `true` 是可能的），但 note 必须自述**类型**，
+    否则 provenance 会误导读者以为模型给了数字 1。
+    """
+    for raw in (True, False):
+        offset, source, note = resolve_offset(raw)
+        assert offset == RESOLVE_OFFSET_MIN, f"{raw!r} → {offset}"
+        assert source == "ai_adjusted"
+        assert "bool" in note.lower() or "布尔" in note, (
+            f"{raw!r} 的 note 应自述是布尔值而非数字：{note}"
         )

@@ -55,6 +55,23 @@ SOURCE_FALLBACK = "fallback"
 #: 比落日志时的不精确严重得多：它会被下游当成可信 provenance 消费。
 SOURCE_AI_ADJUSTED = "ai_adjusted"
 
+#: note 里回显原始值的最大字符数（第九轮复审 §3.4）。
+#: ``10**400`` 的 repr 是 401 位数字，整段塞进 note 会把 registry JSON /
+#: Storyline 的 note 字段撑成几百字节 —— 而 provenance 只需要「模型给了个
+#: 荒谬的大数」这个事实，不需要完整数值。
+_BRIEF_MAX_CHARS = 40
+
+
+def _brief(raw: Any, limit: int = _BRIEF_MAX_CHARS) -> str:
+    """回显原始值，但截断到 ``limit`` 字符并标注省略量。
+
+    ⚠ 不能直接用 ``{raw!r}``：``10**400`` 会产出 401 位数字的 note。
+    """
+    text = repr(raw)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…（共 {len(text)} 字符，已截断）"
+
 
 def resolve_offset(raw: Any) -> Tuple[int, str, str]:
     """裁决伏笔回收偏移。返回 ``(偏移, 来源, 说明)``。
@@ -77,6 +94,8 @@ def resolve_offset(raw: Any) -> Tuple[int, str, str]:
 
     ⚠ note 必须自述**最终采用值**。``1.9`` 截断得 1、再钳到 2，若只写
     「已截断为 1」，落 registry 的就是与实际取值矛盾的假 provenance。
+    整数钳位同样如此：「被钳到 [2, 30]」的末位数字是 30 而不是实际采用值 2，
+    下游按末位读会读错 —— 措辞必须是「…被钳到 2（区间 [2,30]）」。
     """
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return DEFAULT_RESOLVE_OFFSET, SOURCE_FALLBACK, "模型未给出回收偏移，按兜底 5 章"
@@ -87,31 +106,47 @@ def resolve_offset(raw: Any) -> Tuple[int, str, str]:
     try:
         numeric = float(raw)
         if not math.isfinite(numeric):
-            raise ValueError(f"non-finite: {raw!r}")
+            raise ValueError(f"non-finite: {_brief(raw)}")
         truncated_to = int(numeric) if numeric != int(numeric) else None
     except (TypeError, ValueError, OverflowError):
         return DEFAULT_RESOLVE_OFFSET, SOURCE_FALLBACK, (
-            f"模型给出的回收偏移不可用（{raw!r}），按兜底 5 章"
+            f"模型给出的回收偏移不可用（{_brief(raw)}），按兜底 5 章"
         )
+
+    # ⚠ `bool` 是 `int` 的子类，`float(True)` == 1.0。模型输出 JSON 里出现
+    # `true` 是可能的，所以这里不是脏值 —— 但 note 必须自述**类型**，
+    # 否则 provenance 会误导读者以为模型给的是数字 1。
+    is_bool = isinstance(raw, bool)
 
     if truncated_to is not None:
         # 先 int 截断，再钳位 —— 两者都可能改变取值。
         bounded = max(RESOLVE_OFFSET_MIN, min(RESOLVE_OFFSET_MAX, truncated_to))
         if bounded != truncated_to:
             return bounded, SOURCE_AI_ADJUSTED, (
-                f"模型给出的回收偏移 {raw!r} 不是整数，先截断为 {truncated_to}、"
-                f"再钳到 {bounded}（采用值非模型原值）"
+                f"模型给出的回收偏移 {_brief(raw)} 不是整数，先截断为 "
+                f"{truncated_to}、再钳到 {bounded}（采用值非模型原值）"
             )
         return bounded, SOURCE_AI_ADJUSTED, (
-            f"模型给出的回收偏移 {raw!r} 不是整数，已截断为 {bounded}（采用值非模型原值）"
+            f"模型给出的回收偏移 {_brief(raw)} 不是整数，已截断为 "
+            f"{bounded}（采用值非模型原值）"
         )
 
     value = int(numeric)
     bounded = max(RESOLVE_OFFSET_MIN, min(RESOLVE_OFFSET_MAX, value))
     if bounded != value:
+        # ⚠ 第九轮复审：必须先点明**采用值**再给区间，否则末位数字是 30，
+        # 而实际采用的是 2。下游按末位读会读成 30。
+        # ⚠ 同时用 `_brief` 而非 `{value}`：`float("1e308")` 有限、`int()` 得
+        # 308 位整数，写进 note 会让 provenance 文本膨胀到几百字符。
+        what = f"（布尔 {raw!r}，按数值）" if is_bool else ""
         return bounded, SOURCE_AI_ADJUSTED, (
-            f"模型给出的回收偏移 {value} 被钳到 [{RESOLVE_OFFSET_MIN}, {RESOLVE_OFFSET_MAX}]"
-            f"（采用值非模型原值）"
+            f"模型给出的回收偏移 {_brief(value)}{what} 被钳到 {bounded}"
+            f"（区间 [{RESOLVE_OFFSET_MIN}, {RESOLVE_OFFSET_MAX}]，采用值非模型原值）"
+        )
+    if is_bool:
+        # 布尔落在合法区间内（如 True）—— 仍然不是「模型给了偏移数字」
+        return bounded, SOURCE_AI_ADJUSTED, (
+            f"模型给出的是布尔 {raw!r}（按数值 1 采纳），不是回收偏移数字"
         )
     return bounded, SOURCE_AI, "采用模型给出的回收偏移"
 
@@ -136,26 +171,33 @@ def resolve_storyline_end(
     3. **float 截断标 adjusted**：``11.9 → 11`` 是代码改写过取值，与钳位同性质。
     """
     current = max(int(chapter_number), 0)
+
+    def _fallback(why: str) -> Tuple[int, str, str]:
+        """兜底路径也必须守住 MAX_STORYLINE_END（第九轮复审 §3.5）。
+
+        此前 MAX 只约束模型给的值，于是 `resolve_storyline_end(15000, None)`
+        返回 15012 —— 一个自称「有绝对上限」的常量被兜底路径绕过去了。
+        """
+        step = max(int(span), 1)
+        end = min(current + step, MAX_STORYLINE_END)
+        return end, SOURCE_FALLBACK, f"{why}（按兜底 +{end - current} 章）"
+
     if ai_end is None or (isinstance(ai_end, str) and not ai_end.strip()):
-        return current + max(int(span), 1), SOURCE_FALLBACK, (
-            f"模型未给出预估收尾章，按兜底 +{max(int(span), 1)} 章"
-        )
+        return _fallback("模型未给出预估收尾章")
 
     try:
         numeric = float(ai_end)
         if not math.isfinite(numeric):
-            raise ValueError(f"non-finite: {ai_end!r}")
+            raise ValueError(f"non-finite: {_brief(ai_end)}")
         truncated_to = int(numeric) if numeric != int(numeric) else None
     except (TypeError, ValueError, OverflowError):
-        return current + max(int(span), 1), SOURCE_FALLBACK, (
-            f"模型给出的预估收尾章不可用（{ai_end!r}），按兜底 +{max(int(span), 1)} 章"
-        )
+        return _fallback(f"模型给出的预估收尾章不可用（{_brief(ai_end)}）")
 
     if truncated_to is not None:
         # ⚠ float 被代码截断 ⇒ 最终取值非模型原值 ⇒ 标 adjusted，不标 ai。
         value = truncated_to
         source, why = SOURCE_AI_ADJUSTED, (
-            f"模型给出的预估收尾章 {ai_end!r} 不是整数，已截断为 {truncated_to}"
+            f"模型给出的预估收尾章 {_brief(ai_end)} 不是整数，已截断为 {truncated_to}"
             f"（采用值非模型原值）"
         )
     else:
@@ -164,9 +206,8 @@ def resolve_storyline_end(
 
     if value > MAX_STORYLINE_END:
         # 超出任何现实小说的跨度 ⇒ 视同不可用，而不是原样落库。
-        return current + max(int(span), 1), SOURCE_FALLBACK, (
-            f"模型给出的预估收尾章 {value} 超出上限 {MAX_STORYLINE_END}，"
-            f"按兜底 +{max(int(span), 1)} 章"
+        return _fallback(
+            f"模型给出的预估收尾章 {value} 超出上限 {MAX_STORYLINE_END}"
         )
 
     if value <= current:
@@ -174,9 +215,11 @@ def resolve_storyline_end(
         # ⚠ 抬升后的值**不是**模型给的值 ⇒ 标 SOURCE_AI_ADJUSTED，不标 SOURCE_AI。
         # source 已落库（storylines.estimated_chapter_end_source），标错就是在
         # 产物里伪造 provenance。
-        return current + 1, SOURCE_AI_ADJUSTED, (
+        # ⚠ 抬升同样要守上限（第九轮复审 §3.5）。
+        lifted = min(current + 1, MAX_STORYLINE_END)
+        return lifted, SOURCE_AI_ADJUSTED, (
             f"模型给出的收尾章 {value} 不晚于当前章 {current}，"
-            f"已由代码抬到第 {current + 1} 章（取值非模型原值）"
+            f"已由代码抬到第 {lifted} 章（取值非模型原值）"
         )
     return value, source, why
 

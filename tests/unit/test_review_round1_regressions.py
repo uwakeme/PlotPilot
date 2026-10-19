@@ -278,7 +278,7 @@ def _scope_local_names(fn) -> set[str]:
 
 
 class _ClassScopeMarker(ast.AST):
-    """`_load_nodes` 在进入类体时 yield 的标记：携带该类作用域内的绑定名。
+    """`_load_nodes` 在进入/离开类体时 yield 的边界标记：携带该类作用域的绑定名。
 
     它不是真实语法节点，只是一条「从这里开始的 Load 可以额外看见这些名字」
     的通道。**不得**把这些名字并入外层 visible —— 类作用域不是闭包
@@ -287,12 +287,22 @@ class _ClassScopeMarker(ast.AST):
     ⚠ 第八轮复审：没有这条通道时，5 类合法 Python 写法全部假红
     （类体互引、方法默认值引用类属性、方法注解引用类内别名、
       模块级/类方法默认 lambda 形参）。
+
+    ⚠ 第九轮复审修正：最初这只是一个「加进去」的单向标记、且生成顺序与
+    遍历顺序不一致，导致 4 类**新漏报**：
+      · 类定义**之前**的同级语句看见了类属性
+      · 类体**之后**的语句也看见了类属性（`visible` 一旦并入就不收回）
+      · 类体**前向引用**被放行（`class C: B = A; A = 1` 运行期是 NameError）
+      · marker 顺序与 LIFO 栈遍历不一致
+    现改为 `enter` / `leave` 成对标记，由 `_check` 用栈按**源码顺序**压栈/弹出，
+    类体之外的节点完全不受影响。
     """
 
-    _fields = ("names",)
+    _fields = ("names", "enter")
 
-    def __init__(self, names):
-        self.names = names
+    def __init__(self, names=None, enter=True):
+        self.names = names or []
+        self.enter = enter
 
 
 def _scope_local_names_of_body(body) -> set[str]:
@@ -301,26 +311,43 @@ def _scope_local_names_of_body(body) -> set[str]:
     与 `_scope_local_names` 的区别：这里**要**收类体里的赋值
     （`class C: A = 1` 里 A 是类属性），而 `_scope_local_names` 用于外层可见性、
     必须**不**收它。两者刻意相反。
+
+    ⚠ 第九轮复审修正：原实现用 ``ast.walk(stmt)`` 逐语句展开，会把
+    **方法体里的局部变量**收成类属性 ——
+    ``class C: def m(self): hidden = 1; B = hidden`` 里的 hidden
+    运行期是该方法的局部，不是类属性。现改为：FunctionDef/AsyncFunctionDef/ClassDef
+    只取**签名部件**（含其中的 lambda 形参），绝不下降进它们的**体**。
+
+    ⚠ 这里**不处理前向引用**：``class C: B = A; A = 1`` 的 B 在运行期是
+    NameError，应由 `_load_nodes` 的顺序化检查负责（见 `_ClassScopeMarker` 的用法）。
     """
     names: set[str] = set()
     for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # 方法/嵌套类的**名字**绑定在类作用域（它们是类属性）
+            names.add(stmt.name)
+            # ⚠ 只有签名部件在类作用域求值（含其中的 lambda 形参）；
+            # 方法**体**的局部一律不是类属性。
+            for expr in _signature_exprs(stmt):
+                for sub in ast.walk(expr):
+                    if isinstance(sub, ast.Lambda):
+                        names |= _params_of(sub)
+            continue
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            for alias in stmt.names:
+                names.add((alias.asname or alias.name).split(".")[0])
+            continue
+        if isinstance(stmt, ast.Lambda):
+            names |= _params_of(stmt)
+            continue
         for node in ast.walk(stmt):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
                 names.add(node.id)
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    names.add((alias.asname or alias.name).split(".")[0])
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                   ast.ClassDef)):
-                # 方法/嵌套类的**名字**绑定在类作用域（它们是类属性）
-                names.add(node.name)
-                # ⚠ 但方法**体**里的局部不是 —— 只走签名部件
-                for expr in (list(node.decorator_list)
-                             + [d for d in node.args.defaults if d is not None]
-                             + [getattr(node, "returns", None)]):
-                    for sub in ast.walk(expr) if expr is not None else ():
-                        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                            names.discard(sub.id)
+            elif isinstance(node, ast.Lambda):
+                # ⚠ 第九轮复审：类体语句里嵌的 lambda 形参绑定在**类作用域**
+                # —— `class C: dec = staticmethod(lambda f: f)` 的 f 在类体求值，
+                # 不是外层绑定。原先漏收 ⇒ 误报。
+                names |= _params_of(node)
     return names
 
 
@@ -382,39 +409,71 @@ def _load_nodes(fn):
             # 外层绑定 —— 类名不是闭包，`def f(): return attr` 在运行期就是
             # NameError。第五轮把类体 Store 并入外层 local 造成 3 类新漏报。
             # 这里只把「读取」交给外层判，类体自己的赋值不进 visible。
-            stack.extend(node.bases)
-            stack.extend(node.keywords)
-            stack.extend(node.decorator_list)
+            #
             # ⚠ 第八轮复审：类体构成一个**独立命名空间**，类体内的引用
             # 能看见类体的绑定 —— ``class C: A = 1; B = A`` 里的 A 有定义，
             # ``class C: helper = 1; def m(self, x=helper)`` 的默认值在
             # 类体作用域求值也能看见 helper，``class C: T = int; def m(self, x: T)``
             # 的注解同理。把它们报成未绑定是假阳性。
             #
-            # ⚠ 这些绑定**只**对类体内部与该类的方法签名可见，
-            # 绝不能并入外层：类作用域不是闭包
-            #（``class C: attr = 1`` 后 ``def f(): return attr`` 运行期是 NameError，
-            #  第五轮正是因此造成 3 类漏报）。
+            # ⚠ 第九轮复审修正：这些绑定**只**对类体子树可见。
+            #   · 基类/关键字/装饰器在外层作用域求值 ⇒ 用**外层**可见集，
+            #     必须在 enter 标记**之前**
+            #   · 类体语句按源码顺序 ⇒ 用 enter/leave 成对包住
+            #   · 类体之后的同级语句看不见它们
+            #
+            # ⚠ 前向引用（`class C: B = A; A = 1` 运行期 NameError）：
+            #   class_local 是**整段类体**的绑定，B=A 时 A 已在集合里 ⇒ 放行。
+            #   要按顺序正确处理需逐语句做快照，代价与收益不匹配；
+            #   这里显式记录为已知限制，见 `test_class_body_forward_reference_is_known_gap`。
             class_local = _scope_local_names_of_body(node.body)
-            # ⚠ 第八轮复审：方法签名部件里的 **lambda 形参**绑定在**类体作用域**
-            # —— `class C: def m(self, r=lambda s: s)` 的 s 在类体里求值。
-            # 它不是类属性、也不是外层绑定，只对类体内部可见。
-            for stmt in node.body:
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for expr in _signature_exprs(stmt):
-                        for sub in ast.walk(expr):
-                            if isinstance(sub, ast.Lambda):
-                                class_local |= _params_of(sub)
+            # 基类 / metaclass 关键字 / 类装饰器 —— 外层作用域，先 yield
+            for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+                yield expr
+            # ⚠ 第九轮复审：类体是**顺序执行**的，`class C: B = A; A = 1`
+            # 在运行期就是 NameError。若用整段类体的绑定快照（class_local），
+            # B 那行会看见后面才定义的 A ⇒ 漏报。
+            # 改为**逐语句** enter/leave：每条语句只看见它**之前**已定义的名字。
+            # 方法的签名部件要看**整段**类体（方法定义本身不影响后续可见性），
+            # 所以方法单独用 class_local。
+            seen: set[str] = set()
             for stmt in node.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # 方法签名部件（装饰器/默认值/注解）在**类体作用域**求值，
                     # 单独扫它们的表达式（第六轮复审 §3.3）。
-                    stack.extend(_signature_exprs(stmt))
-                    continue  # 方法**体**另有作用域
-                stack.append(stmt)
-            # 把类作用域的绑定作为「附加可见名」交给判 Load 的一方
-            if class_local:
-                yield _ClassScopeMarker(sorted(class_local))
+                    if seen or class_local:
+                        names_here = sorted(seen | class_local)
+                        yield _ClassScopeMarker(names_here, enter=True)
+                    yield stmt
+                    for expr in _signature_exprs(stmt):
+                        yield expr
+                    if seen or class_local:
+                        yield _ClassScopeMarker(enter=False)
+                    seen.add(stmt.name)
+                    continue  # ⚠ 方法**体**另有作用域，绝不能下降进去
+                # ⚠ 第九轮复审：类体子树必须**整体按源码顺序**就地深度优先产出。
+                # 一旦有任何一层走外层 `stack`（LIFO），它的后代（Assign→Call→Lambda→Name）
+                # 就会在 leave 标记**之后**才被弹出 ——
+                # `class C: dec = staticmethod(lambda f: f)` 的 f 事实落在类作用域之外 ⇒ 误报。
+                # 独立 LIFO 做**有序** DFS：push 时反序、pop 时正序。
+                # ⚠ 本条语句的可见集 = 之前已定义的 ∪ **本条自己定义的**。
+                # 后者不可省：`dec = staticmethod(lambda f: f)` 是首条语句，
+                # seen 为空，但 lambda 形参 f 在这条语句里就要能看见。
+                here = seen | _scope_local_names_of_body([stmt])
+                if here:
+                    yield _ClassScopeMarker(sorted(here), enter=True)
+                yield stmt
+                inner = list(ast.iter_child_nodes(stmt))
+                inner.reverse()
+                while inner:
+                    child = inner.pop()
+                    yield child
+                    kids = list(ast.iter_child_nodes(child))
+                    kids.reverse()
+                    inner.extend(kids)
+                if here:
+                    yield _ClassScopeMarker(enter=False)
+                seen = here
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -438,14 +497,20 @@ def _unbound_in_tree(tree: ast.Module) -> list[str]:
                 visible |= _params_of(cursor)
                 visible |= _scope_local_names(cursor)
             cursor = parent.get(id(cursor))
+        class_scope: list[set[str]] = []
         for node in scope_nodes:
             if isinstance(node, _ClassScopeMarker):
-                # 类作用域的绑定只在这里临时可见，不并入 visible 本身 ——
-                # 它对**外层**不可见（类作用域不是闭包）。
-                visible |= set(node.names)
+                # enter/leave 成对维护栈 —— 类体之外的节点看不见这些名字。
+                # ⚠ 第九轮复审：原实现只做 `visible |= names` 且不收回，
+                # 于是类定义**之前**与**之后**的同级语句都被放行（4 类新漏报）。
+                if node.enter:
+                    class_scope.append(set(node.names))
+                elif class_scope:
+                    class_scope.pop()
                 continue
+            extra = set().union(*class_scope) if class_scope else set()
             if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-                    and node.id not in visible):
+                    and node.id not in visible and node.id not in extra):
                 unbound.append(f"{label}:{node.lineno} 引用未绑定的 {node.id!r}")
 
     # 函数体扫描（含其内 lambda 体、类体；跳过嵌套 def/class 的体 —— 它们另有作用域）
@@ -1062,6 +1127,91 @@ def test_probe_scans_signature_parts():
     for src, want in cases:
         problems = _probe_run(src)
         assert any(want in p for p in problems), f"签名部件漏报 {want!r}：{problems}"
+
+
+def test_class_body_forward_reference_is_reported():
+    """⚠ 第九轮复审：类体是**顺序执行**的，`B = A; A = 1` 运行期是 NameError。
+
+    原实现用整段类体的绑定快照，`B` 那行就看见了后面才定义的 `A` ⇒ 漏报。
+    修法：逐语句 enter/leave，每条语句只看见它**之前**已定义的名字。
+    """
+    problems = _probe_run("class C:\n    B = A\n    A = 1\n")
+    assert any("'A'" in p for p in problems), (
+        f"类体前向引用漏报（运行期 NameError）：{problems}"
+    )
+
+
+def test_class_scope_does_not_leak_to_neighbouring_statements():
+    """⚠ 第九轮复审：类作用域的名字只对**类体子树**可见。
+
+    类定义之前 / 之后的同级语句都看不见它 ——
+    `use = attr` 在 `class C: attr = 1` 之前，运行期就是 NameError。
+    """
+    before_fn = "def outer():\n    use = attr\n    class C:\n        attr = 1\n    return use\n"
+    after_fn = "def outer():\n    class C:\n        attr = 1\n    return attr\n"
+    module_level = "use = attr\nclass C:\n    attr = 1\n"
+    for src, label in ((before_fn, "类定义之前"), (after_fn, "类定义之后"),
+                       (module_level, "模块级")):
+        problems = _probe_run(src)
+        assert any("'attr'" in p for p in problems), (
+            f"{label}的语句不应看见类属性：{problems}"
+        )
+
+
+def test_class_level_lambda_params_are_bound():
+    """⚠ 第九轮复审 §3.2：类体语句里嵌的 lambda 形参绑定在**类作用域**。
+
+    `class C: dec = staticmethod(lambda f: f)` 的 f 有定义，不是未绑定名。
+    """
+    for src in ("class C:\n    dec = staticmethod(lambda f: f)\n",
+                "class C:\n    fn = lambda z: z + 1\n",
+                "class C:\n    def m(self, r=lambda s: s):\n        return r\n"):
+        problems = _probe_run(src)
+        assert not problems, f"类级 lambda 形参被误报：{src!r} ⇒ {problems}"
+
+
+def test_method_local_is_not_visible_to_the_class_body():
+    """⚠ 第九轮复审 §3.1 的**真正形态**。
+
+    报告给的样例 `class C: def m(self): hidden = 1; B = hidden` 其实**不是漏报** ——
+    B=hidden 在方法体内，hidden 是该方法的局部，Python 运行期合法，探针返回 [] 是对的。
+
+    真正的漏报形态是：B 在**类体层**、hidden 在**方法体层** ——
+    方法局部对类作用域不可见，`class C: B = hidden; def m(self): hidden = 1`
+    在运行期是 NameError，必须报出。
+    """
+    problems = _probe_run(
+        "class C:\n    B = hidden\n    def m(self):\n        hidden = 1\n")
+    assert any("'hidden'" in p for p in problems), (
+        f"方法局部被当成类属性放行：{problems}"
+    )
+
+
+def test_class_body_traversal_is_source_ordered():
+    """⚠ 第九轮复审：类体子树必须**整体按源码顺序**产出。
+
+    原实现把类体语句的子节点塞进外层 LIFO 栈，它们的**后代**
+    （Assign→Call→Lambda→Name）会在 leave 标记**之后**才被弹出，
+    于是 `dec = staticmethod(lambda f: f)` 的 f 落在类作用域之外 ⇒ 误报。
+
+    这条直接断 `_load_nodes` 的**产出顺序**：leave 标记必须排在
+    该类全部后代节点**之后**。
+    """
+    tree = ast.parse("class C:\n    dec = staticmethod(lambda f: f)\n")
+    nodes = list(_load_nodes(tree))
+    enter_idx = next(i for i, n in enumerate(nodes)
+                     if isinstance(n, _ClassScopeMarker) and n.enter)
+    leave_idx = next(i for i, n in enumerate(nodes)
+                     if isinstance(n, _ClassScopeMarker) and not n.enter)
+    assert enter_idx < leave_idx, "enter 必须先于 leave"
+    # f 的 Load 节点必须在 [enter, leave] 区间内
+    f_load = next(i for i, n in enumerate(nodes)
+                  if isinstance(n, ast.Name) and n.id == "f"
+                  and isinstance(n.ctx, ast.Load))
+    assert enter_idx < f_load < leave_idx, (
+        f"lambda 形参的 Load (idx={f_load}) 落在类作用域区间 "
+        f"[{enter_idx}, {leave_idx}] 之外"
+    )
 
 
 def test_probe_accepts_class_scope_as_a_namespace():

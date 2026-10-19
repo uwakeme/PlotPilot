@@ -255,6 +255,16 @@ def test_cns_producer_persists_the_source_it_adjudicated(
         assert f"模型给出的预估收尾章 {expect_end}" in sl.estimated_chapter_end_note, (
             f"ai 分支的 note 应自述模型原值 {expect_end}：{sl.estimated_chapter_end_note!r}"
         )
+    if expect_source == "ai_adjusted":
+        # ⚠ 第九轮复审 §3.6：adjusted 分支原先只断言 note 非空 + 章号子集，
+        # 换成任意错误文案照样绿（章号子集对空集恒成立）。
+        note = sl.estimated_chapter_end_note
+        assert "非模型原值" in note, (
+            f"adjusted note 必须声明取值非模型原值：{note!r}"
+        )
+        assert re.search(rf"抬到第\s*{expect_end}\s*章", note), (
+            f"adjusted note 必须点明实际抬到第 {expect_end} 章：{note!r}"
+        )
     if expect_source == "fallback":
         assert "兜底" in sl.estimated_chapter_end_note, (
             f"fallback 分支的 note 必须点明是兜底：{sl.estimated_chapter_end_note!r}"

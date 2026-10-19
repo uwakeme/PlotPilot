@@ -1112,6 +1112,33 @@ def test_state_updater_does_not_treat_zero_as_missing():
 # ── 第四轮复审 §3.4 的守卫盲区 ───────────────────────────────────────────
 
 
+def _tension_condition_is_positive(test_node) -> bool:
+    """判定 `tension_evaluated` 分支的条件是否表达「已评估为真」。
+
+    单一实现，被守卫与其正/负样本共用（第九轮复审 §3.7：原先两条测试各写一份
+    归一化逻辑，生产守卫改了另一份不会跟着动 ⇒ 未来必然漂移）。
+
+    接受的写法（都是「已评估为真」的正向语义）：
+      ``tension_evaluated`` / ``is True`` / ``is 1`` / ``bool(...)`` / ``and True`` / ``or True``
+    拒绝的写法（极性反转或语义不同）：
+      ``not ...`` / ``is False`` / ``== False`` / ``is not None``
+      ⚠ `is not None` 的语义是「不是 None」——`tension_evaluated` 为 None 时
+      `is not None` 为 False，与 `if tension_evaluated:` 的真假**不一致**
+      （None 在真值语义下就是 False，一致；但若字段可能是 0，语义就分叉了）。
+      这里保守拒绝，避免用一条看不出极性的写法。
+    """
+    norm = ast.unparse(test_node).replace(" ", "").replace("(", "").replace(")", "")
+    if norm.split("tension_evaluated")[0].endswith("not"):
+        return False
+    tail = norm.split("tension_evaluated", 1)[1]
+    # `== True` 与 `is True` 语义等价，都要放行
+    if tail in ("isTrue", "==True", "is1", "==1"):
+        return True
+    if tail.startswith("==False") or tail.startswith("isFalse"):
+        return False
+    return tail in ("", "andTrue", "orTrue")
+
+
 def test_audit_branch_condition_polarity_is_positive():
     """⚠ 第四轮复审发现的盲区：只判「值落在哪个分支」时，
     把 `if tension_evaluated:` 改成 `if not tension_evaluated:`（等价破坏）
@@ -1121,9 +1148,8 @@ def test_audit_branch_condition_polarity_is_positive():
 
     ⚠ 第八轮复审：上一版用「精确等于 `tension_evaluated`」判极性，
     会把**合法的**等价写法 `if tension_evaluated is True:` / `bool(...)`
-    判红 —— 而同一文件里另一条守卫恰好允许这些形态，两条自相矛盾：
-    合法重构会让旧用例 RED、新用例 GREEN。
-    本版改为**语义判定**：把条件归一化成「是否等价于 bool(tension_evaluated)」。
+    判红 —— 而同一文件里另一条守卫恰好允许这些形态，两条自相矛盾。
+    现改为共享的语义判定 `_tension_condition_is_positive`。
     """
     tree = _ast("engine/runtime/audit_delegate.py")
     fn = next(
@@ -1131,23 +1157,38 @@ def test_audit_branch_condition_polarity_is_positive():
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         and n.name == "run_chapter_audit"
     )
-    conds = [
+    tests = [
         n.test for n in ast.walk(fn)
         if isinstance(n, ast.If) and "tension_evaluated" in ast.unparse(n.test)
     ]
-    assert conds, "没找到按 tension_evaluated 分支的 if"
-    for test in conds:
-        # 归一化：bool(tension_evaluated) 与 tension_evaluated 视为同义；
-        # `is True` / `is 1` 视为真值侧；任何 `not` 视为极性反转。
-        src = ast.unparse(test)
-        norm = src.replace(" ", "").replace("(", "").replace(")", "")
-        negated = norm.split("tension_evaluated")[0].endswith("not")
-        assert not negated, f"条件带否定（极性反转）：{src!r}"
-        tail = norm.split("tension_evaluated", 1)[1]
-        # 尾部只能是「是 True / 是 1 / 空」——即真值侧；出现 ==False 等即语义反转
-        assert tail in ("", "isTrue", "is1", "andTrue", "orTrue"), (
-            f"条件不是「已评估为真」的语义（{src!r}）—— 未评估分支可能被当成评估过"
+    assert tests, "没找到按 tension_evaluated 分支的 if"
+    for t in tests:
+        assert _tension_condition_is_positive(t), (
+            f"条件不是「已评估为真」的语义：{ast.unparse(t)!r}"
         )
+
+
+def test_audit_polarity_check_allows_is_true_form():
+    """`_tension_condition_is_positive` 的正/负样本矩阵。
+
+    ⚠ 第八轮复审指出本条与 `test_audit_branch_condition_polarity_is_positive`
+    自相矛盾（旧版要求精确等于 `tension_evaluated`，本条却允许 `is True`）。
+    已把两者合并为同一个共享实现，本条直接测那个实现。
+
+    ⚠ 第九轮复审 §3.7：allowlist 原先过窄，`== True` 这种合法等价写法会假红。
+    """
+    positive = ("tension_evaluated", "tension_evaluated is True",
+                "tension_evaluated == True", "bool(tension_evaluated)",
+                "tension_evaluated and True", "tension_evaluated or True")
+    negative = ("not tension_evaluated", "tension_evaluated is False",
+                "tension_evaluated == False", "tension_evaluated is not None",
+                "tension_evaluated == 0")
+    for src in positive:
+        assert _tension_condition_is_positive(
+            ast.parse(src, mode="eval").body), f"合法写法被误判为极性反转：{src!r}"
+    for src in negative:
+        assert not _tension_condition_is_positive(
+            ast.parse(src, mode="eval").body), f"极性反转写法被放过了：{src!r}"
 
 
 def test_state_updater_delegates_the_offset_decision():
