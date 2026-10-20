@@ -1,0 +1,42 @@
+name: 续写策略判定
+category: planning
+source: application/engine/services/continuation_strategy_planner.py::decide
+description: 判断上次中断的正文该不该接着写 —— 接着写完还是整章重写，并给出续写指令
+builtin: true
+tags:
+- 规划
+- 续写
+- 恢复
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: chapter_number
+  desc: 要写的章节号
+  type: integer
+  required: true
+- name: chapter_title
+  desc: 章节标题
+  type: string
+  default: ''
+- name: chapter_outline
+  desc: 本章大纲/执行剧本
+  type: string
+  default: ''
+- name: draft_excerpt
+  desc: 上次中断稿的尾部若干字
+  type: string
+  default: ''
+- name: draft_char_count
+  desc: 上次中断稿的总字数
+  type: integer
+  default: 0
+- name: target_words
+  desc: 本章目标字数
+  type: integer
+  default: 0
+id: planning-continuation-strategy
+sort_order: 43

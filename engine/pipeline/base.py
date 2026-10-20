@@ -955,17 +955,33 @@ class BaseStoryPipeline(ABC):
         try:
             prev_preview = workspace.read_latest_preview(ctx.novel_id, ctx.chapter_number)
             if prev_preview and len(prev_preview.strip()) >= 500:
-                _resumed_draft = prev_preview.strip()
-                logger.info(
-                    "[%s] 检测到上次中断的半章底稿（%d 字），本次生成改为续写",
-                    ctx.novel_id, len(_resumed_draft),
+                # D-08：续不续、从哪续、怎么续 —— 交回 AI 判断（登记表 D-08 的
+                # 判定是 C：创作判断不该由代码定）。旧实现在这里自动切「续写」
+                # 并注入一段**代码写死**的话术（「请从其结尾处自然续写至全章完成，
+                # 不要重复已有内容」）。
+                # 判不出来 / 判定失败 ⇒ **不注入底稿**（按全新生成处理）：
+                # 绝不拿一段代写的续写指令顶替 —— 那正是要消灭的东西。
+                decision = await self._decide_continuation_strategy(
+                    ctx, prev_preview.strip()
                 )
-                ctx.context_text = (
-                    (ctx.context_text or "").rstrip()
-                    + f"\n\n【续写底稿】本章此前生成中断，已有以下前半章正文（约 {len(_resumed_draft)} 字）。"
-                    "请从其结尾处自然续写至全章完成，不要重复已有内容：\n"
-                    + _resumed_draft
-                )
+                if decision.strategy == "continue" and decision.directive:
+                    _resumed_draft = prev_preview.strip()
+                    logger.info(
+                        "[%s] AI 判定续写上次中断的底稿（%d 字）",
+                        ctx.novel_id, len(_resumed_draft),
+                    )
+                    ctx.context_text = (
+                        (ctx.context_text or "").rstrip()
+                        + f"\n\n【续写底稿】本章此前生成中断，已有以下正文（约 {len(_resumed_draft)} 字）。\n"
+                        + decision.directive
+                        + "\n\n"
+                        + _resumed_draft
+                    )
+                elif decision.strategy == "rewrite":
+                    logger.info(
+                        "[%s] AI 判定这份中断稿不值得接，本次整章重写（%s）",
+                        ctx.novel_id, decision.reason,
+                    )
         except Exception as exc:
             logger.debug("[%s] 读取续写底稿失败（按全新生成处理）: %s", ctx.novel_id, exc)
 
@@ -1592,6 +1608,34 @@ class BaseStoryPipeline(ABC):
             streaming_bus.publish(novel_id, content=content)
         except Exception as e:
             logger.debug("[%s] streaming_bus.publish 失败: %s", novel_id, e)
+
+    async def _decide_continuation_strategy(self, ctx: PipelineContext, draft: str):
+        """让 AI 判断这次要不要接着上次中断的正文写（D-08）。
+
+        判不出来 / 调用失败 ⇒ 返回未判定（``strategy=None``）⇒ 调用方
+        **不注入底稿**，按全新生成处理。
+        """
+        from application.engine.services.continuation_strategy_planner import (
+            ContinuationStrategyPlanner,
+        )
+        from application.engine.services.continuation_strategy_schema import (
+            ContinuationStrategy,
+            SOURCE_NONE,
+        )
+
+        if ctx.llm_service is None:
+            return ContinuationStrategy(None, "", "", SOURCE_NONE)
+
+        planner = ContinuationStrategyPlanner(ctx.llm_service)
+        return await planner.decide(
+            novel_id=ctx.novel_id,
+            chapter_number=int(ctx.chapter_number or 0),
+            chapter_title=str(getattr(ctx.chapter_node, "title", "") or ""),
+            chapter_outline=str(ctx.outline or ""),
+            draft=draft,
+            draft_char_count=len(draft),
+            target_words=int(ctx.target_word_count or 0),
+        )
 
     def _discard_generation_workspace(self, ctx: PipelineContext) -> None:
         workspace = getattr(ctx, "chapter_generation_workspace", None)

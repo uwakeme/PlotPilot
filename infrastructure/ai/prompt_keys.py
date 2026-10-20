@@ -81,6 +81,8 @@ PLANNING_CONTEXT_WEIGHTS = "planning-context-weights"
 PLANNING_CHAPTER_MODE = "planning-chapter-mode"
 # B-07/B-13：幕级终局意图判定（本幕是否该收束 + 本幕创作方向）
 PLANNING_FINALE_INTENT = "planning-finale-intent"
+# D-08：续写策略判定（接着上次中断的正文写，还是整章重写）
+PLANNING_CONTINUATION_STRATEGY = "planning-continuation-strategy"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
 BEAT_COT_BRIDGE = "beat-cot-bridge"
@@ -176,6 +178,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_PRECISE_VOLUME, PLANNING_PRECISE_REPAIR, PLANNING_ACT,
     PLANNING_CHAPTER_PREPLAN, PLANNING_CONTEXT_WEIGHTS,
     PLANNING_CHAPTER_MODE, PLANNING_FINALE_INTENT,
+    PLANNING_CONTINUATION_STRATEGY,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
     # Style

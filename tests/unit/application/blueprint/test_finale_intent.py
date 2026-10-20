@@ -381,13 +381,36 @@ def test_cpms_node_and_profile_exist():
     assert generation_config_from_profile("finale_intent") is not None
 
 
-def test_bundle_version_was_bumped():
-    """改了 prompt 包必须 bump bundle 版本，否则已装机的用户行为不变。"""
+def test_bundle_version_matches_the_changelog_head():
+    """bundle 版本号必须与 changelog 首条对得上。
+
+    早先这条守卫把版本号**写死**成某个字面量，结果下一次 bump 就把它顶红
+    —— 它守的是「改了 prompt 包要 bump」，不是「版本号等于某个字面量」。
+    改成「changelog 首条与版本号一致」之后，任何一次 bump 都不会误红，
+    而「版本号改了却没在 changelog 里记」仍会被抓住。
+
+    「改了包却忘了 bump」这件事单测守不住（它需要一个基线版本），
+    那是提交前的检查，记账在 ledger。
+    """
     import pathlib
+    import re
 
     root = pathlib.Path(__file__).resolve().parents[4]
     meta = (
         root / "infrastructure/ai/prompt_packages/bundle_meta.yaml"
     ).read_bytes().decode("utf-8")
     version_line = [ln for ln in meta.split("\n") if ln.startswith("version:")][0]
-    assert "5.14.0" in version_line, f"bundle 版本没升：{version_line}"
+    version = version_line.split(":", 1)[1].strip().strip("'\"")
+
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    assert match, f"bundle 版本号格式不对：{version_line}"
+    parsed = tuple(int(x) for x in match.groups())
+    assert parsed >= (5, 14, 0), f"bundle 版本低于本轮起点：{version_line}"
+
+    changelog_line = [ln for ln in meta.split("\n") if ln.startswith("changelog:")][0]
+    head_text = changelog_line.split("changelog:", 1)[1].lstrip(" '\"")
+    head_version = re.match(r"^v(\d+)\.(\d+)\.(\d+)", head_text)
+    assert head_version, f"changelog 首条没有版本号：{head_text[:60]}"
+    assert tuple(int(x) for x in head_version.groups()) == parsed, (
+        f"changelog 首条版本与 version 不一致：{version_line} vs {head_text[:60]}"
+    )

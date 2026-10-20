@@ -1,8 +1,13 @@
 """Temporary workspace for StoryPipeline chapter generation previews.
 
 The workspace is intentionally outside the formal ``chapters`` table. A
-preview written here is useful for streaming/UI/debugging, but it is never a
-resume source for the next StoryPipeline run.
+preview written here is useful for streaming/UI/debugging, and it is also
+the **resume source** for the next StoryPipeline run when the previous run
+was interrupted (see ``engine/pipeline/base.py``).
+
+Whether to actually resume from it is not decided by the file's presence:
+D-08 把「续不续、从哪续、怎么续」交回 AI 判断（``planning-continuation-strategy``），
+代码不再自动切续写模式，也不再代写续写指令。
 """
 from __future__ import annotations
 
