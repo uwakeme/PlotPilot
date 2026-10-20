@@ -1690,6 +1690,7 @@ class DaemonHostMixin:
         try:
             from infrastructure.persistence.database.connection import get_database
             from infrastructure.persistence.database.sqlite_narrative_event_repository import SqliteNarrativeEventRepository
+            from infrastructure.persistence.database.sqlite_character_state_repository import SqliteCharacterStateRepository
             from application.audit.services.macro_refactor_scanner import MacroRefactorScanner
             from application.audit.services.macro_diagnosis_service import MacroDiagnosisService
             
@@ -1697,10 +1698,18 @@ class DaemonHostMixin:
             
             db = get_database()
             narrative_event_repo = SqliteNarrativeEventRepository(db)
-            scanner = MacroRefactorScanner(narrative_event_repo)
-            diagnosis_service = MacroDiagnosisService(db, scanner)
+            # H-06：人物状态仓储必须传 —— 不传的话 Scar 感知与执念判定
+            # 永不触发，所有断点一律被判成 OOC（Breakout / Scar 两套判定空转）。
+            character_state_repo = SqliteCharacterStateRepository(db)
+            scanner = MacroRefactorScanner(
+                narrative_event_repo,
+                character_state_repository=character_state_repo,
+            )
+            diagnosis_service = MacroDiagnosisService(
+                db, scanner, llm_service=self.llm_service
+            )
             
-            result = diagnosis_service.run_full_diagnosis(
+            result = await diagnosis_service.run_full_diagnosis_with_calibration(
                 novel_id=novel_id,
                 trigger_reason=trigger_reason,
                 traits=None,

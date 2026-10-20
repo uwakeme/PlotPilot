@@ -259,10 +259,11 @@ async def run_manual_diagnosis(
         if traits:
             scan_traits = [t.strip() for t in traits.split(",") if t.strip()]
 
-        result = diagnosis_service.run_full_diagnosis(
+        # H-06：走 async 版 —— 校准指令由 LLM 写（同步版没有校准）。
+        result = await diagnosis_service.run_full_diagnosis_with_calibration(
             novel_id=novel_id,
             trigger_reason="手动触发",
-            traits=scan_traits
+            traits=scan_traits,
         )
 
         return result.to_dict()

@@ -83,6 +83,8 @@ PLANNING_CHAPTER_MODE = "planning-chapter-mode"
 PLANNING_FINALE_INTENT = "planning-finale-intent"
 # D-08：续写策略判定（接着上次中断的正文写，还是整章重写）
 PLANNING_CONTINUATION_STRATEGY = "planning-continuation-strategy"
+# H-06：宏观诊断的叙事校准指令（由 LLM 写，取代代码代写的三套模板句）
+PLANNING_MACRO_CALIBRATION = "planning-macro-calibration"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
 BEAT_COT_BRIDGE = "beat-cot-bridge"
@@ -179,6 +181,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_CHAPTER_PREPLAN, PLANNING_CONTEXT_WEIGHTS,
     PLANNING_CHAPTER_MODE, PLANNING_FINALE_INTENT,
     PLANNING_CONTINUATION_STRATEGY,
+    PLANNING_MACRO_CALIBRATION,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
     # Style

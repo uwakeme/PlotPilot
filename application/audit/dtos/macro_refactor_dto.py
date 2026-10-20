@@ -30,6 +30,11 @@ class LogicBreakpoint:
     # ★ V2: 涉及的角色 ID
     character_id: Optional[str] = None
 
+    # H-06：事件摘要。规则表只看得懂标签（「动机:冲动」），
+    # 而 LLM 判断「这是崩塌还是伤疤应激」需要看到**发生了什么**。
+    # 默认空串 ⇒ 旧库里的 breakpoints JSON 仍可读。
+    event_summary: str = ""
+
     def to_dict(self) -> dict:
         """序列化为字典"""
         return {
@@ -41,6 +46,7 @@ class LogicBreakpoint:
             "related_scar_id": self.related_scar_id,
             "breakout_reason": self.breakout_reason,
             "character_id": self.character_id,
+            "event_summary": self.event_summary,
         }
 
 

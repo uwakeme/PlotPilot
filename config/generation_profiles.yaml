@@ -100,3 +100,8 @@ continuation_strategy:
   extends: base_generation_profile
   max_tokens: 1500
   temperature: 0.3
+
+macro_calibration:
+  extends: base_generation_profile
+  max_tokens: 2000
+  temperature: 0.4

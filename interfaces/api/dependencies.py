@@ -1080,9 +1080,15 @@ def get_macro_refactor_scanner():
     """
     from application.audit.services.macro_refactor_scanner import MacroRefactorScanner
     from infrastructure.persistence.database.sqlite_narrative_event_repository import SqliteNarrativeEventRepository
+    from infrastructure.persistence.database.sqlite_character_state_repository import SqliteCharacterStateRepository
 
-    narrative_event_repo = SqliteNarrativeEventRepository(get_database())
-    return MacroRefactorScanner(narrative_event_repo)
+    db = get_database()
+    narrative_event_repo = SqliteNarrativeEventRepository(db)
+    # H-06：不传人物状态仓储 ⇒ Scar 感知 / 执念判定永不触发（断点一律判 OOC）
+    return MacroRefactorScanner(
+        narrative_event_repo,
+        character_state_repository=SqliteCharacterStateRepository(db),
+    )
 
 
 def get_macro_refactor_proposal_service():
@@ -1124,11 +1130,15 @@ def get_macro_diagnosis_service():
     from application.audit.services.macro_diagnosis_service import MacroDiagnosisService
     from application.audit.services.macro_refactor_scanner import MacroRefactorScanner
     from infrastructure.persistence.database.sqlite_narrative_event_repository import SqliteNarrativeEventRepository
+    from infrastructure.persistence.database.sqlite_character_state_repository import SqliteCharacterStateRepository
 
     db = get_database()
     narrative_event_repo = SqliteNarrativeEventRepository(db)
-    scanner = MacroRefactorScanner(narrative_event_repo)
-    return MacroDiagnosisService(db, scanner)
+    scanner = MacroRefactorScanner(
+        narrative_event_repo,
+        character_state_repository=SqliteCharacterStateRepository(db),
+    )
+    return MacroDiagnosisService(db, scanner, llm_service=get_llm_service())
 
 
 def get_tension_analyzer():

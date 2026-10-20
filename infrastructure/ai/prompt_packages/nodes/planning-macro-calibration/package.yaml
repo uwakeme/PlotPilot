@@ -1,0 +1,22 @@
+name: 宏观叙事校准
+category: audit
+source: application/audit/services/macro_calibration.py::build_macro_calibration
+description: 根据宏观诊断发现的断点，写出给后续生成的叙事校准指令
+builtin: true
+tags:
+- 审核
+- 宏观
+- 人设
+- JSON输出
+output_format: json
+variables:
+- name: trait
+  desc: 被诊断的人设标签
+  type: string
+  default: ''
+- name: breakpoints_json
+  desc: 候选断点清单（JSON 文本）
+  type: string
+  default: ''
+id: planning-macro-calibration
+sort_order: 44

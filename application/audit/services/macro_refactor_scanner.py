@@ -102,6 +102,10 @@ class MacroRefactorScanner:
                     related_scar_id=scar_id,
                     breakout_reason=breakout_reason,
                     character_id=character_id,
+                    # H-06：把事件摘要带进断点，供 LLM 做语义判断
+                    event_summary=str(
+                        event.get("event_summary") or event.get("summary") or ""
+                    ),
                 )
                 breakpoints.append(breakpoint)
 

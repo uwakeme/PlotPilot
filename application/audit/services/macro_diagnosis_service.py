@@ -15,67 +15,13 @@ logger = logging.getLogger(__name__)
 MACRO_DIAGNOSIS_WORD_INTERVAL = 60_000
 
 
-def build_silent_context_patch(
-    breakpoints: List[LogicBreakpoint],
-    trait: str,
-) -> str:
-    """由断点生成「系统叙事校准」短指令，注入生成 Context 头部；对用户透明、非交互。
-
-    ★ V2 升级：区分 OOC / Breakout / Scar Triggered
-
-    - OOC 断点：注入"强化人设"指令（与原逻辑相同）
-    - Breakout 断点：不注入校准，反而注入"保持张力"指令
-    - Scar Triggered 断点：注入"延续情绪"指令
-    """
-    if not breakpoints:
-        return ""
-
-    from domain.novel.value_objects.character_state import BreakpointType
-
-    # 分类断点
-    ooc_breakpoints = [bp for bp in breakpoints if bp.breakpoint_type == BreakpointType.OOC]
-    breakout_breakpoints = [bp for bp in breakpoints if bp.breakpoint_type == BreakpointType.CHARACTER_BREAKOUT]
-    scar_breakpoints = [bp for bp in breakpoints if bp.breakpoint_type == BreakpointType.SCAR_TRIGGERED]
-
-    patches = []
-
-    # 1. OOC 断点：强化人设
-    if ooc_breakpoints:
-        reasons: List[str] = []
-        tags_set: set = set()
-        for bp in ooc_breakpoints[:8]:
-            r = (bp.reason or "").strip()
-            if r:
-                reasons.append(r)
-            for t in bp.tags or []:
-                if t:
-                    tags_set.add(str(t))
-        if reasons:
-            tags_str = "、".join(sorted(tags_set)[:8]) if tags_set else (trait or "预设人设")
-            reason_part = "；".join(reasons[:3])
-            patches.append(
-                "【系统叙事校准】注意：" + reason_part
-                + "。后续生成须强化「" + tags_str
-                + "」所要求的行为倾向，避免继续偏离预设标签。"
-            )
-
-    # 2. Breakout 断点：保持张力，不拉回
-    for bp in breakout_breakpoints[:3]:
-        if bp.breakout_reason:
-            patches.append(
-                f"【人物突破时刻】{bp.breakout_reason}——这是高光时刻，"
-                f"保持情绪张力，不要强行拉回原人设。角色的改变是成长的证明。"
-            )
-
-    # 3. Scar Triggered 断点：延续情绪
-    for bp in scar_breakpoints[:3]:
-        if bp.breakout_reason:
-            patches.append(
-                f"【伤疤触发】{bp.breakout_reason}——"
-                f"此行为是角色伤疤的应激反应，应延续情绪强度，不要立即恢复冷静。"
-            )
-
-    return "\n".join(patches)
+# H-06：这里曾有一个 ``build_silent_context_patch``，用**代码写死的三套模板句**
+# 生成「系统叙事校准」短指令并静默注入生成 Context 头部 ——
+# 「后续生成须强化「X」所要求的行为倾向」「保持情绪张力，不要强行拉回原人设」
+# 「应延续情绪强度，不要立即恢复冷静」。
+# 那三句是**代码替编辑决定接下来怎么写**。现已改为由 LLM 写
+# （``application/audit/services/macro_calibration.py``）：
+# 校准指令只装 LLM 的产出；LLM 没给 / 调用失败 ⇒ 不注入任何东西。
 
 
 class MacroDiagnosisResult:
@@ -141,10 +87,13 @@ class MacroDiagnosisService:
     def __init__(
         self,
         db: DatabaseConnection,
-        scanner: MacroRefactorScanner
+        scanner: MacroRefactorScanner,
+        llm_service: Any = None,
     ):
         self.db = db
         self.scanner = scanner
+        # H-06：叙事校准指令由 LLM 写（None ⇒ 不生成校准 ⇒ 不注入）。
+        self.llm_service = llm_service
     
     def run_full_diagnosis(
         self,
@@ -153,20 +102,55 @@ class MacroDiagnosisService:
         traits: Optional[List[str]] = None,
         total_words_at_run: int = 0,
     ) -> MacroDiagnosisResult:
-        """执行完整诊断（扫描所有内置人设标签）
-        
-        Args:
-            novel_id: 小说 ID
-            trigger_reason: 触发原因
-            traits: 要扫描的人设标签列表（可选，默认扫描全部内置规则）
-        
-        Returns:
-            MacroDiagnosisResult: 诊断结果
+        """扫描 + 落库。**不含 AI 校准** ⇒ context_patch 为空（不注入任何东西）。
+
+        生产路径请用 :meth:`run_full_diagnosis_with_calibration`（async）——
+        那里才有 LLM 写的叙事校准指令。
         """
+        result = self._scan_full(novel_id, trigger_reason, traits)
+        self._save_result(result, total_words_at_run=total_words_at_run)
+        return result
+
+    async def run_full_diagnosis_with_calibration(
+        self,
+        novel_id: str,
+        trigger_reason: str,
+        traits: Optional[List[str]] = None,
+        total_words_at_run: int = 0,
+    ) -> MacroDiagnosisResult:
+        """扫描 → AI 写叙事校准指令 → 落库（生产路径，H-06）。
+
+        校准指令**只**来自 LLM：没给 / 调用失败 / 输出不合契约 ⇒ 落空
+        ⇒ 生成上下文不注入任何东西。**代码不代写校准句。**
+        """
+        result = self._scan_full(novel_id, trigger_reason, traits)
+        calibration = ""
+        if result.breakpoints:
+            from application.audit.services.macro_calibration import (
+                build_macro_calibration,
+            )
+
+            calibration = await build_macro_calibration(
+                self.llm_service,
+                trait=result.trait,
+                breakpoints=result.breakpoints,
+            )
+        self._save_result(
+            result, total_words_at_run=total_words_at_run, calibration=calibration
+        )
+        return result
+
+    def _scan_full(
+        self,
+        novel_id: str,
+        trigger_reason: str,
+        traits: Optional[List[str]] = None,
+    ) -> MacroDiagnosisResult:
+        """扫描（**不落库**）。失败时返回 status="failed" 的结果。"""
         diagnosis_id = str(uuid4())
         scan_traits = traits or self.DEFAULT_SCAN_TRAITS
         all_breakpoints: List[LogicBreakpoint] = []
-        
+
         try:
             # 对每个人设标签执行扫描
             for trait in scan_traits:
@@ -176,7 +160,7 @@ class MacroDiagnosisService:
                     conflict_tags=None  # 使用内置规则
                 )
                 all_breakpoints.extend(breakpoints)
-            
+
             # 创建结果对象
             result = MacroDiagnosisResult(
                 id=diagnosis_id,
@@ -187,23 +171,20 @@ class MacroDiagnosisService:
                 breakpoints=all_breakpoints,
                 status="completed"
             )
-            
-            # 存储到数据库（含静默 context_patch 与字数锚点）
-            self._save_result(result, total_words_at_run=total_words_at_run)
-            
+
             logger.info(
                 f"[MacroDiagnosis] 完成诊断 novel={novel_id} "
                 f"trigger={trigger_reason} traits={scan_traits} "
                 f"breakpoints={len(all_breakpoints)}"
             )
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"[MacroDiagnosis] 诊断失败 novel={novel_id}: {e}", exc_info=True)
-            
-            # 存储失败结果
-            result = MacroDiagnosisResult(
+
+            # 失败结果（不落库，由调用方决定）
+            return MacroDiagnosisResult(
                 id=diagnosis_id,
                 novel_id=novel_id,
                 trigger_reason=trigger_reason,
@@ -213,10 +194,6 @@ class MacroDiagnosisService:
                 status="failed",
                 error_message=str(e)
             )
-            self._save_result(result, total_words_at_run=total_words_at_run)
-            
-            return result
-    
     def run_single_trait_diagnosis(
         self,
         novel_id: str,
@@ -443,17 +420,20 @@ class MacroDiagnosisService:
         self,
         result: MacroDiagnosisResult,
         total_words_at_run: int = 0,
+        calibration: str = "",
     ) -> None:
-        """保存诊断结果到数据库（含静默注入用 context_patch）。"""
+        """保存诊断结果到数据库（含静默注入用 context_patch）。
+
+        context_patch **只装 LLM 写的校准指令**（H-06）。调用方没给
+        （没跑 LLM / LLM 没答 / 调用失败）⇒ 存空 ⇒ 生成上下文不注入任何东西。
+        """
         # ★ V2: 保存完整的断点信息（含 breakpoint_type, scar_id, breakout_reason）
         breakpoints_json = json.dumps(
             [bp.to_dict() for bp in result.breakpoints],
             ensure_ascii=False
         )
         conflict_tags_json = json.dumps(result.conflict_tags, ensure_ascii=False)
-        context_patch = ""
-        if result.status == "completed" and result.breakpoints:
-            context_patch = build_silent_context_patch(result.breakpoints, result.trait)
+        context_patch = str(calibration or "").strip()
         
         sql = """
             INSERT INTO macro_diagnosis_results
