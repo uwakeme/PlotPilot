@@ -907,7 +907,9 @@ class ContextBudgetAllocator:
         
         return ""
     
-    # 爽文引擎: T0 伏笔最大展示数量（防止 T0 膨胀；+2 为用户星标条目留余量）
+    # 爽文引擎: 普通伏笔的展示数量上限（防止 T0 膨胀；+2 为用户星标条目留余量）。
+    # D-03：核心伏笔（emotional_weight > 0.8）不占这个名额 —— 它们先于普通伏笔
+    # 占位，总数可以超过本值；真正的硬上限是下面这个槽位的 max_tokens。
     MAX_T0_FORESHADOWING_ITEMS = 8
 
     def _get_pending_foreshadowings(self, novel_id: str, chapter_number: int) -> str:
@@ -931,10 +933,13 @@ class ContextBudgetAllocator:
             
             lines = []
             
-            # 爽文引擎: get_t0_eligible_foreshadowings 已排序，无需再次排序
+            # 爽文引擎: get_t0_eligible_foreshadowings 已排序，无需再次排序。
+            # D-03: 这里曾经还有一层 [:MAX_T0_FORESHADOWING_ITEMS] 二次截断 ——
+            # 核心伏笔排在最前，二次截断会把它们切掉，等于把刚守住的
+            # 「核心伏笔不得遗忘」又推翻。名单的取舍在领域层做完了。
             if pending_foreshadows:
                 lines.append("【待回收伏笔（爽文GC精选）】")
-                for f in pending_foreshadows[:self.MAX_T0_FORESHADOWING_ITEMS]:
+                for f in pending_foreshadows:
                     importance_mark = "重要" if f.importance.value >= 3 else ""
                     
                     # 构建状态标记

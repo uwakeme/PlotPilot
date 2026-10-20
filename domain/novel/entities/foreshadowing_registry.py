@@ -331,11 +331,21 @@ class ForeshadowingRegistry(BaseEntity):
 
         eligible.sort(key=sort_key)
 
-        # 截断到 max_items
-        if len(eligible) > max_items:
-            overflow = eligible[max_items:]
+        # ── D-03：核心伏笔不得遗忘（登记表承诺由代码守住的不变量）──
+        # 核心伏笔（emotional_weight > 0.8）是「决定全书走向的关键线索」。
+        # 旧实现直接按 max_items 截断，核心伏笔与普通伏笔一起被挤出；
+        # 而被挤出的条目在「冗余伏笔参考」档里也进不去（那一档只收
+        # LOW/MEDIUM 且陈旧的条目）⇒ 核心伏笔被彻底遗忘。
+        # 现在核心伏笔先于普通伏笔占位，且**不占用**普通伏笔的名额：
+        # 若让核心伏笔挤占名额，过期伏笔的强制约束会被一起挤掉，
+        # 那是另一条不变量，不该被牺牲。
+        core = [f for f in eligible if f.is_core()]
+        others = [f for f in eligible if not f.is_core()]
+        eligible = core + others[:max_items]
+        overflow = others[max_items:]
+
+        if overflow:
             deferred.extend(overflow)
-            eligible = eligible[:max_items]
             # 排序保证溢出多为低优先级，但高优先级伏笔也可能因数量被挤出——
             # 这是承诺强度最高的线索，静默丢失会导致回收断链，必须告警
             high_overflow = [

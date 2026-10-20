@@ -761,34 +761,23 @@ class BaseStoryPipeline(ABC):
                 lines.append(notes)
             ctx.context_text = (ctx.context_text or "") + "\n".join(lines)
 
-        # ─── 伏笔主动注入（T0 强制层）：本章应推进/兑现的待回收伏笔 ────
-        if ctx.foreshadowing_repository is not None:
-            try:
-                from domain.novel.value_objects.novel_id import NovelId
-                _registry = ctx.foreshadowing_repository.get_by_novel_id(NovelId(ctx.novel_id))
-                if _registry and hasattr(_registry, "subtext_entries"):
-                    _importance_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-                    _window = ctx.chapter_number + 2
-                    _due = [
-                        e for e in _registry.subtext_entries
-                        if e.status == "pending"
-                        and e.suggested_resolve_chapter is not None
-                        and e.suggested_resolve_chapter <= _window
-                    ]
-                    _due.sort(key=lambda e: _importance_rank.get(e.importance, 2), reverse=True)
-                    if _due[:3]:
-                        _lines = "\n".join(
-                            f"- {e.question}（埋于第{e.chapter}章）"
-                            for e in _due[:3]
-                        )
-                        _fshadow_block = f"\n\n=== 本章应推进的伏笔 ===\n{_lines}"
-                        ctx.context_text = (ctx.context_text or "") + _fshadow_block
-                        logger.info(
-                            "[%s] 注入 %d 条待兑现伏笔到生成上下文",
-                            ctx.novel_id, len(_due[:3]),
-                        )
-            except Exception as _fse:
-                logger.debug("伏笔注入失败（跳过）: %s", _fse)
+        # ─── 伏笔注入：只走上下文预算槽位（`pending_foreshadowings`，T1）───
+        # 此处曾有一段独立的「本章应推进的伏笔」注入，与上面那个槽位读的是
+        # **同一批** `registry.subtext_entries`，同一条伏笔会在同一个提示词里
+        # 出现两次。它另有四个问题：
+        #   · 窗口用 +2，而槽位里的「即将到期」标记用 +3 ⇒ 两处口径不一致
+        #     （领域模型的窗口一律是 3）
+        #   · 整段包在 try/except 里，失败只 `logger.debug` ⇒ 静默消失
+        #   · 在上下文**组装之后**直接追加 ⇒ 绕过 token 预算，且不计入 token 统计
+        #   · 它要求 `suggested_resolve_chapter is not None`，而这个字段在任何
+        #     API 上都设不了（分析师建条目的请求模型里没有它）⇒ 实际永远不触发
+        # 伏笔现在只由上下文预算槽位注入（带状态标记、用户「本章重点」标记、
+        # 预算压缩），窗口口径统一到 +3。
+        #
+        # 未解决（第 2 批 P1）：
+        #   · 「伏笔规划调用按『本章是否需要』选」需新 CPMS 节点（LLM 选）
+        #   · 注入时机：七段执行剧本在 `_step_prepare_chapter_plan` 定稿，
+        #     而那一步在 `_step_build_context` **之前** ⇒ 今天任何伏笔都影响不了剧本
 
         return StepResult.ok()
 

@@ -13,6 +13,8 @@ from enum import Enum
 from typing import Optional, List
 import uuid
 
+from domain.novel.value_objects.foreshadowing import CORE_EMOTIONAL_WEIGHT_THRESHOLD
+
 
 class ForeshadowStatus(str, Enum):
     """伏笔状态 — 4阶段生命周期"""
@@ -49,7 +51,7 @@ class ForeshadowBinding:
 
     @classmethod
     def validate_binding(cls, foreshadow: "Foreshadow") -> bool:
-        if foreshadow.emotional_weight > 0.8:
+        if foreshadow.emotional_weight > CORE_EMOTIONAL_WEIGHT_THRESHOLD:
             return foreshadow.binding_level >= cls.EVENT
         return True
 
@@ -126,7 +128,7 @@ class Foreshadow:
         self.status = ForeshadowStatus.ABANDONED
 
     def is_core(self) -> bool:
-        return self.emotional_weight > 0.8
+        return self.emotional_weight > CORE_EMOTIONAL_WEIGHT_THRESHOLD
 
     def validate_binding(self) -> bool:
         return ForeshadowBinding.validate_binding(self)

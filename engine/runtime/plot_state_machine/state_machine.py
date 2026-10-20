@@ -20,6 +20,8 @@ from typing import Dict, Any, List, Optional
 from engine.core.entities.story import StoryPhase
 from engine.core.entities.foreshadow import ForeshadowStatus
 
+from domain.novel.value_objects.foreshadowing import CORE_EMOTIONAL_WEIGHT_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +148,9 @@ class PlotStateMachine:
         return {
             "status": "convergence_plan",
             "total_foreshadows": len(plan),
-            "must_resolve": [p for p in plan if p["emotional_weight"] > 0.8],
+            "must_resolve": [
+                p for p in plan if p["emotional_weight"] > CORE_EMOTIONAL_WEIGHT_THRESHOLD
+            ],
             "can_abandon": [p for p in plan if p["emotional_weight"] < 0.3],
             "plan": plan,
         }

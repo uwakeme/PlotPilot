@@ -28,6 +28,11 @@ FORESHADOW_BINDING_WORLD = 4
 DEFAULT_EMOTIONAL_WEIGHT = 0.5
 DEFAULT_BINDING_LEVEL = FORESHADOW_BINDING_CHARACTER
 
+#: 核心伏笔（决定全书走向的关键线索）的情感权重阈值。
+#: 全仓三处判据一致：viewpoint_guardrail 的绑定层级校验、plot_state_machine
+#: 的 must_resolve 清单、engine 侧 Foreshadow.is_core()。这里做单一真源。
+CORE_EMOTIONAL_WEIGHT_THRESHOLD = 0.8
+
 
 @dataclass(frozen=True)
 class Foreshadowing:
@@ -83,3 +88,11 @@ class Foreshadowing:
             <= FORESHADOW_BINDING_WORLD
         ):
             raise ValueError("binding_level must be between 1 and 4")
+
+    def is_core(self) -> bool:
+        """是否核心伏笔（决定全书走向的关键线索）。
+
+        与 ``CORE_EMOTIONAL_WEIGHT_THRESHOLD`` 同源；
+        「核心伏笔不得遗忘」这条不变量靠它判定。
+        """
+        return self.emotional_weight > CORE_EMOTIONAL_WEIGHT_THRESHOLD

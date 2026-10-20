@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
 
+from domain.novel.value_objects.foreshadowing import CORE_EMOTIONAL_WEIGHT_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 # 违规严重度累计扣分系数：score = 1.0 - sum(severity) * PENALTY_PER_SEVERITY
@@ -209,7 +211,7 @@ class ViewpointGuardrail:
             description = f.get("description", "未知伏笔")
 
             # 核心伏笔必须绑定event或world
-            if emotional_weight > 0.8 and binding_level < 3:
+            if emotional_weight > CORE_EMOTIONAL_WEIGHT_THRESHOLD and binding_level < 3:
                 binding_name = {1: "角色", 2: "势力", 3: "事件", 4: "世界"}.get(binding_level, "未知")
                 violations.append(ViewpointViolation(
                     violation_type="weak_binding",
