@@ -37,6 +37,8 @@ from infrastructure.ai.prompt_contracts.continuous_planning import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 from infrastructure.ai.generation_profiles import generation_config_from_profile
+from application.blueprint.services.finale_intent_contract import FinaleIntent
+from application.blueprint.services.finale_intent_service import FinaleIntentService
 from application.blueprint.services.chapter_plan_renderer import (
     format_decision,
     format_dialogue,
@@ -1568,8 +1570,18 @@ class ContinuousPlanningService:
             act_id, custom_chapter_count
         )
 
+        # B-07/B-13：本幕方向由 AI 判定（此前是代码写死的两段创作文案）。
+        direction_intent = await self._resolve_act_direction(
+            novel_id=act_node.novel_id,
+            act_number=int(act_node.number or 0),
+            act_title=act_node.title or "",
+            act_description=act_node.description or "",
+            previous_summary=previous_summary or "",
+            store_node=act_node,
+        )
         prompt = self._build_act_planning_prompt(
-            act_node, bible_context, previous_summary, chapter_count
+            act_node, bible_context, previous_summary, chapter_count,
+            direction=direction_intent.act_direction,
         )
 
         _reset_act_chapters_llm_stream(act_id)
@@ -2674,7 +2686,12 @@ class ContinuousPlanningService:
             logger.debug("[ActPlanning] 统计幕节点总数失败 novel=%s: %s", novel_id, exc)
             return 0
 
-    def _act_budget_context(self, novel_id: str, act_number: int) -> Dict[str, object]:
+    def _act_budget_context(
+        self,
+        novel_id: str,
+        act_number: int,
+        direction: str = "",
+    ) -> Dict[str, object]:
         """判断某一幕在全书里的位置，并给出收束指令。
 
         收束幕判定统一按「幕号 vs 结构总幕数」**重算**，不读节点 metadata：
@@ -2701,19 +2718,22 @@ class ContinuousPlanningService:
             int(params["total_acts"]), 1
         )
         is_final = act_number >= total_acts
+        # B-07/B-13：这里只留**结构事实**（这一幕在全书里的位置）。
+        # 此前那两段创作文案（「本幕必须完成结局：核心冲突正面了结……最后一章
+        # 必须落在结局而非新悬念上」与其非终局分支的对应文案）是代码代写的，
+        # 每次幕级规划与每次建幕都会进模型 —— 创作判断被写成了常量。
+        # 现在方向由 AI 写（`direction`），**模型没给就是没给，代码不代写**。
         if is_final:
             brief = (
                 f"【全书收束】第 {act_number} 幕是全书最后一幕（全书 {target} 章）。"
-                "本幕必须完成结局：核心冲突正面了结、主要矛盾给出结果、"
-                "本卷与全书主线留下的悬念必须回收，不要再埋新的大悬念或开启新战线。"
-                "章节推进要向'尘埃落定'倾斜，最后一章必须落在结局而非新悬念上。"
             )
         else:
             brief = (
                 f"【全书进度】本幕为第 {act_number}/{total_acts} 幕，"
                 f"全书目标 {target} 章，每幕约 {params['chapters_per_act']} 章。"
-                "本幕需为后续幕次留出推进空间，不要在本幕内提前解决全书主线。"
             )
+        if direction:
+            brief = f"{brief}\n本幕创作方向（AI 给出）：\n{direction}"
         return {
             "target_chapters": target,
             "total_acts": total_acts,
@@ -2728,6 +2748,7 @@ class ContinuousPlanningService:
         bible_context: Dict,
         previous_summary: Optional[str],
         chapter_count: int,
+        direction: str = "",
     ) -> Prompt:
         """构建幕级章节规划提示词。"""
         context_parts = [f"幕信息：《{act_node.title}》"]
@@ -2740,7 +2761,8 @@ class ContinuousPlanningService:
         # 全书进度/收束指令：告诉模型这一幕在全书里的真实位置，
         # 否则每一幕都被当成"中段推进"，故事自然没有终点。
         budget_ctx = self._act_budget_context(
-            getattr(act_node, "novel_id", None) or "", getattr(act_node, "number", 0)
+            getattr(act_node, "novel_id", None) or "", getattr(act_node, "number", 0),
+            direction=direction,
         )
         context_parts.append(budget_ctx["brief"])
 
@@ -2782,6 +2804,82 @@ class ContinuousPlanningService:
                 **self._build_act_contract_variables(act_node.novel_id),
             },
         )
+
+    async def _resolve_act_direction(
+        self,
+        *,
+        novel_id: str,
+        act_number: int,
+        act_title: str = "",
+        act_description: str = "",
+        previous_summary: str = "",
+        store_node: Optional[StoryNode] = None,
+    ) -> FinaleIntent:
+        """让 AI 判定这一幕的方向（并可选地落库）。
+
+        判不出来 / 调用失败 ⇒ ``FinaleIntent(None, "", SOURCE_NONE)``，
+        **代码不代写任何方向文案**（登记表三态红线：禁止在降级路径返回
+        任何看起来正常的数值/内容）。
+
+        结构口径（幕号 vs 结构总幕数）是代码保留的不变量 —— 它保证
+        「收束幕唯一且必有」。AI 的判定只决定**方向口径**（收束方案 vs
+        推进方向），两者冲突时结构口径优先，但**必须留痕**（warning + 落库）。
+        """
+        budget_ctx = self._act_budget_context(novel_id, act_number)
+        # 防御式取值：这层判定是**可选增强**，不能因为预算上下文缺字段就
+        # 把幕级规划带崩 —— 幕级规划失败必须是它自己的原因（LLM 不可解析等）。
+        if not isinstance(budget_ctx, dict):
+            budget_ctx = {}
+        total_acts = int(budget_ctx.get("total_acts") or 0) or 1
+        target_chapters = int(budget_ctx.get("target_chapters") or 0) or 1
+        is_last_act = bool(budget_ctx.get("is_final_act"))
+        service = FinaleIntentService(self.llm_service)
+        intent = await service.resolve(
+            novel_id=novel_id,
+            act_number=act_number,
+            total_acts=total_acts,
+            target_chapters=target_chapters,
+            act_title=act_title,
+            act_description=act_description,
+            previous_summary=previous_summary,
+            is_last_act=is_last_act,
+        )
+        if intent.is_finale_act is not None and bool(intent.is_finale_act) != is_last_act:
+            logger.warning(
+                "[ActPlanning] 终局判定与结构位置不一致 novel=%s act=%s "
+                "结构收束幕=%s AI判定=%s；结构口径优先，AI 判定只决定方向口径",
+                novel_id, act_number, is_last_act, intent.is_finale_act,
+            )
+        if store_node is not None:
+            await self._store_act_direction(store_node, intent)
+        return intent
+
+    async def _store_act_direction(
+        self, act_node: StoryNode, intent: FinaleIntent
+    ) -> None:
+        """把 AI 的方向落到幕节点 metadata。
+
+        这个字段**有读取方**（章节级终局注入经 ``chapter_node.parent_id``
+        读它），所以不是死字段 —— 与早前删掉的 ``metadata.is_final_act``
+        不是一回事。
+
+        ``ai_is_finale_act`` 用 ``None`` 表示「AI 没判定」，与 ``False``
+        （AI 判定为推进幕）在 JSON 里可分辨。
+        """
+        try:
+            metadata = dict(getattr(act_node, "metadata", {}) or {})
+            metadata["finale_intent"] = intent.act_direction
+            metadata["ai_is_finale_act"] = intent.is_finale_act
+            metadata["finale_intent_source"] = intent.source
+            act_node.metadata = metadata
+            update = getattr(self.story_node_repo, "update", None)
+            if callable(update):
+                await update(act_node)
+        except Exception as exc:
+            logger.debug(
+                "[ActPlanning] 终局方向落库失败 act=%s: %s",
+                getattr(act_node, "id", "?"), exc,
+            )
 
     def _build_act_contract_variables(self, novel_id: str) -> Dict[str, str]:
         """Collect locked narrative contract fields for CPMS rendering."""
@@ -3002,10 +3100,17 @@ class ContinuousPlanningService:
         dual_track_context = await self._collect_dual_track_context(novel_id, current_act, bible_context)
 
         # 构建增强型 Prompt
+        # B-07/B-13：新幕的方向同样由 AI 判定。
+        next_act_number = int(current_act.number or 0) + 1
+        next_direction = await self._resolve_act_direction(
+            novel_id=novel_id,
+            act_number=next_act_number,
+        )
         prompt = self._build_next_act_prompt_with_dual_track(
             current_act,
             dual_track_context,
             target_volume=target_volume,
+            direction=next_direction.act_direction,
         )
         
         try:
@@ -3163,6 +3268,7 @@ class ContinuousPlanningService:
         current_act: StoryNode,
         dual_track_context: Dict[str, str],
         target_volume: Optional[StoryNode] = None,
+        direction: str = "",
     ) -> Prompt:
         """构建双轨融合的下一幕生成 Prompt。"""
         context_parts = [
@@ -3189,7 +3295,8 @@ class ContinuousPlanningService:
         # 新幕自身在全书里的位置（尤其"这是最后一幕"必须写进 prompt，
         # 否则动态补出来的幕永远只是"继续推进"，故事不会收口）
         budget_ctx = self._act_budget_context(
-            getattr(current_act, "novel_id", None) or "", getattr(current_act, "number", 0) + 1
+            getattr(current_act, "novel_id", None) or "", getattr(current_act, "number", 0) + 1,
+            direction=direction,
         )
         context_block = f"{context_block}\n\n{budget_ctx['brief']}"
 

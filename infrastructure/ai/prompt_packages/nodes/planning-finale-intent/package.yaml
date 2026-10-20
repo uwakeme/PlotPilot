@@ -1,0 +1,46 @@
+name: 幕级终局意图判定
+category: planning
+source: application/blueprint/services/finale_intent_service.py::resolve
+description: 判断这一幕是不是全书该收束的地方，并给出这一幕的创作方向（收束方案或推进方向）
+builtin: true
+tags:
+- 规划
+- 幕级
+- 终局
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: act_number
+  desc: 要规划的幕号
+  type: integer
+  required: true
+- name: total_acts
+  desc: 全书结构总幕数
+  type: integer
+  required: true
+- name: target_chapters
+  desc: 全书目标章数
+  type: integer
+  required: true
+- name: act_title
+  desc: 这一幕的标题
+  type: string
+  default: ''
+- name: act_description
+  desc: 这一幕的简介
+  type: string
+  default: ''
+- name: previous_summary
+  desc: 前情提要
+  type: string
+  default: ''
+- name: is_last_act_note
+  desc: 结构位置说明（是否全书最后一幕）
+  type: string
+  default: 否
+id: planning-finale-intent
+sort_order: 42

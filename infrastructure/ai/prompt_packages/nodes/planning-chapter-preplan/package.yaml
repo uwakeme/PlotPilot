@@ -29,5 +29,9 @@ variables:
   desc: AI 判定本章为余韵章时的节奏指令；空串表示不施加任何节奏约束
   type: string
   required: false
+- name: finale_directive
+  desc: 终局阶段的收束方向（进入终局这一事实 + 该幕落库的 AI 方向）；空串表示不施加任何终局约束
+  type: string
+  required: false
 id: planning-chapter-preplan
 sort_order: 25

@@ -68,6 +68,7 @@ class ChapterPreplanningService:
         current_outline: str = "",
         target_words: int | None = None,
         pacing_directive: str = "",
+        finale_directive: str = "",
     ) -> ChapterPreplanResult:
         """Return a seven-section execution plan, generating it when needed."""
         outline = (current_outline or "").strip()
@@ -109,6 +110,9 @@ class ChapterPreplanningService:
                 # D-01：余韵章节奏指令走独立变量。空串时模板整段不渲染，
                 # 因此「没判定为余韵章」与「判定了但未施加」在产物里仍可分辨。
                 "pacing_directive": pacing_directive or "",
+                # B-13：终局阶段的收束方向。空串时模板整段不渲染，
+                # 因此「没进入终局」与「进入了但没方向」在产物里仍可分辨。
+                "finale_directive": finale_directive or "",
             },
         ).prompt
         config = generation_config_from_profile("planning_chapter_preplan")

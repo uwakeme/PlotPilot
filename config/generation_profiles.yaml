@@ -90,3 +90,8 @@ chapter_mode:
   extends: base_generation_profile
   max_tokens: 2000
   temperature: 0.3
+
+finale_intent:
+  extends: base_generation_profile
+  max_tokens: 2000
+  temperature: 0.4

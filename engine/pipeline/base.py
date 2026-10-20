@@ -34,6 +34,61 @@ from application.blueprint.services.structure_budget import resolve_chapter_ceil
 logger = logging.getLogger(__name__)
 
 
+async def _read_act_direction(ctx) -> str:
+    """取本章所属幕落库的 AI 收束方向（没有就是没有，不编造）。
+
+    章节节点的 ``parent_id`` 指向所属幕（生产库 592/592 章如此），
+    幕节点的 ``metadata["finale_intent"]`` 存着幕级规划时 AI 写下的方向。
+    """
+    chapter_node = getattr(ctx, "chapter_node", None)
+    parent_id = getattr(chapter_node, "parent_id", None)
+    if not parent_id or ctx.story_node_repo is None:
+        return ""
+    try:
+        act_node = await ctx.story_node_repo.get_by_id(parent_id)
+    except Exception as exc:
+        logger.debug("[%s] 读取所属幕的收束方向失败: %s", ctx.novel_id, exc)
+        return ""
+    if act_node is None:
+        return ""
+    metadata = getattr(act_node, "metadata", None) or {}
+    if not isinstance(metadata, dict):
+        return ""
+    direction = metadata.get("finale_intent")
+    return direction.strip() if isinstance(direction, str) else ""
+
+
+async def _resolve_finale_directive(ctx) -> str:
+    """终局阶段的收束方向（B-13）。
+
+    「进入终局」此前只写进 ``novel.generation_prefs.finale_mode``，
+    **全仓无人读** ⇒ 终局章与普通章走同一条管线，收尾质量在结构上无人负责。
+    现在它进规划层：事实部分（已进入终局）由代码给，方向部分由 AI 给。
+
+    没进入终局 ⇒ 空串 ⇒ 模板整段不渲染，行为与改造前逐位一致。
+    """
+    if ctx.novel_repository is None:
+        return ""
+    try:
+        from domain.novel.value_objects.novel_id import NovelId
+
+        novel = ctx.novel_repository.get_by_id(NovelId(ctx.novel_id))
+    except Exception as exc:
+        logger.debug("[%s] 读取终局标记失败，跳过终局方向: %s", ctx.novel_id, exc)
+        return ""
+    if novel is None:
+        return ""
+    prefs = getattr(novel, "generation_prefs", None)
+    if not bool(getattr(prefs, "finale_mode", False)):
+        return ""
+
+    parts = ["【终局阶段】全书目标章数已达成，当前处于终局阶段。"]
+    direction = await _read_act_direction(ctx)
+    if direction:
+        parts.append(f"本幕创作方向（AI 给出）：\n{direction}")
+    return "\n\n".join(parts)
+
+
 def _load_target_chapters(ctx) -> Optional[int]:
     """读取当前小说的目标章数；读不到返回 None（= 不设章节上限）。"""
     if ctx.novel_repository is None:
@@ -821,6 +876,8 @@ class BaseStoryPipeline(ABC):
                     # D-01：余韵章指令走独立变量，随 prompt 进模型。
                     # 不传的话，preplan 只会照常输出推进型剧本，节奏判定等于没做。
                     pacing_directive=ctx.buffer_directive,
+                    # B-13：终局阶段才非空；平时是空串 ⇒ 模板整段不渲染。
+                    finale_directive=await _resolve_finale_directive(ctx),
                 )
             except Exception as exc:
                 return StepResult.fail(f"章前执行剧本生成失败: {exc}")

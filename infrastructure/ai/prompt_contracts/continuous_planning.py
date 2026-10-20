@@ -93,6 +93,10 @@ class PlanningChapterPreplanVariables(BaseModel):
     # 必须走独立变量而不是拼进 outline —— outline 会被本步骤的返回值覆盖，
     # 且它本身不是 prompt 变量，指令连模型都进不去。
     pacing_directive: str = ""
+    # B-13：终局阶段的收束方向（进入终局这一事实 + 该幕落库的 AI 方向）。
+    # 空串 = 不施加任何终局约束。必须走独立变量：它与 pacing_directive 一样
+    # 是「这一章该怎么写」的指令，拼进 outline 会被本步骤的返回值覆盖。
+    finale_directive: str = ""
 
 
 class ContinuousPlanningNextActVariables(BaseModel):

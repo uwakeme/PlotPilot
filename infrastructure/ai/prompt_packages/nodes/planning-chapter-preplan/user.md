@@ -5,6 +5,10 @@
 
 连续性上下文（近3章承接摘要，只用于承接已发生结果，不是本章剧情骨架）：
 {continuity_context}
+{% if finale_directive %}
+终局阶段与收束方向（**必须**体现在 event_chain 与 protagonist_state_change 里）：
+{finale_directive}
+{% endif %}
 {% if pacing_directive %}
 本章节奏指令（AI 判定本章为余韵章，**优先于**上面所有常规推进倾向，必须体现在 event_chain 与 opening_entry 里）：
 {pacing_directive}
