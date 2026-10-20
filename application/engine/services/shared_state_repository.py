@@ -61,7 +61,8 @@ class NovelState:
     target_chapters: int
     target_words_per_chapter: int
     consecutive_error_count: int
-    last_chapter_tension: float
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0。压成 0 会让两者同形。
+    last_chapter_tension: Optional[float]
     auto_approve_mode: bool
     needs_review: bool
     active_invocation_session_id: str = ""
@@ -115,7 +116,8 @@ class NovelState:
             target_chapters=data.get("target_chapters", 0),
             target_words_per_chapter=data.get("target_words_per_chapter", 2500),
             consecutive_error_count=data.get("consecutive_error_count", 0),
-            last_chapter_tension=data.get("last_chapter_tension", 0),
+            # 张力三态：键不存在 = 未评估（None），不用 0 兜底。
+            last_chapter_tension=data.get("last_chapter_tension"),
             auto_approve_mode=data.get("auto_approve_mode", False),
             needs_review=data.get("needs_review", False),
             active_invocation_session_id=data.get("active_invocation_session_id", ""),

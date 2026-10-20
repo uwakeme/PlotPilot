@@ -212,7 +212,8 @@ class StateBootstrap:
             target_chapters=novel.get("target_chapters", 0),
             target_words_per_chapter=novel.get("target_words_per_chapter", 2500),
             consecutive_error_count=novel.get("consecutive_error_count", 0),
-            last_chapter_tension=novel.get("last_chapter_tension", 0),
+            # 张力三态：键不存在 = 未评估（None），不用 0 兜底。
+            last_chapter_tension=novel.get("last_chapter_tension"),
             auto_approve_mode=novel.get("auto_approve_mode", False),
             needs_review=novel.get("needs_review", False),
         )

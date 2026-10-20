@@ -73,9 +73,9 @@
             <n-text strong class="section-label">张力评估</n-text>
             <div class="tension-bar-wrap">
               <div class="tension-bar">
-                <div class="tension-fill" :style="{ width: `${(autopilotChapterReview.tension || 0) * 10}%` }"></div>
+                <div class="tension-fill" :style="{ width: `${tensionBarWidth}%` }"></div>
               </div>
-              <n-text class="tension-value">{{ autopilotChapterReview.tension || 0 }}/10</n-text>
+              <n-text class="tension-value">{{ tensionDisplayText }}</n-text>
             </div>
           </div>
 
@@ -278,6 +278,19 @@ const message = useMessage()
 
 const metaLoading = ref(false)
 const chapterStructure = ref<ChapterStructureDTO | null>(null)
+
+// 张力三态：null = 未评估（打分没跑/失败），0 = 评估过且张力就是 0。
+// 不能用 `|| 0` —— 那会把 null 变成 0，读者会以为这章评估过且张力为零。
+const reviewTension = computed(() => {
+  const raw = props.autopilotChapterReview?.tension
+  if (raw === null || raw === undefined) return null
+  const n = Number(raw)
+  return Number.isNaN(n) ? null : n
+})
+const tensionBarWidth = computed(() => (reviewTension.value === null ? 0 : reviewTension.value * 10))
+const tensionDisplayText = computed(() =>
+  reviewTension.value === null ? '未评估' : `${reviewTension.value}/10`
+)
 
 const ghostAnnotationLines = computed(() => {
   const raw = props.lastWorkflowResult?.ghost_annotations

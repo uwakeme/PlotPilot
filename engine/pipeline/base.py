@@ -1946,7 +1946,10 @@ class BaseStoryPipeline(ABC):
         step_status: Optional[Dict[str, str]] = None,
     ) -> PipelineResult:
         """从上下文构建管线结果"""
-        tension = 0
+        # 张力三态：没打过分就留 None（= 未评估），不要压成 0。
+        # 0 是「评估过且张力为 0」的合法取值，与未评估在数值上同形，
+        # 压掉之后下游分不出「这章很平」与「这章没打分」。
+        tension = None
         if ctx.tension_composite is not None:
             tension = int(ctx.tension_composite)
 

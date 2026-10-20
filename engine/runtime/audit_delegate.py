@@ -554,7 +554,12 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     tension_composite = drift_result.get("tension_composite") if drift_result else None
     tension = 0
     tension_evaluated = False
-    if tension_composite is not None and tension_composite > 0:
+    # ⚠️ 判据是「有没有拿到分」，**不是**「分是不是大于 0」。
+    # 此前写 `tension_composite > 0`，把「评估过且张力就是 0」的章节判成未评估 ——
+    # 后果是 novel.last_chapter_tension 保留**上一章**的张力值，
+    # 本章的真实 0 被静默替换成别人的数字。
+    # 0 是 0-100 刻度上的合法取值（`_parse` 那条路径 `min(score, 10) * 10` 能产出 0）。
+    if tension_composite is not None:
         tension = int(tension_composite)  # 直接存 0-100，不再 /10 降级
         tension_evaluated = True
         logger.info(f"[{novel.novel_id}] 章节 {chapter_num} 多维张力值：{tension}/100")

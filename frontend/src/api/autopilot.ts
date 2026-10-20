@@ -4,7 +4,8 @@ import { fetchJson, fetchOk, fetchUrl, HttpError, type FetchJsonOptions } from '
 /** 章后审计快照（守护进程 audit 阶段写入，前端面板消费） */
 export interface AutopilotChapterAudit {
   chapter_number: number
-  tension: number
+  /** 张力三态：null = 未评估（打分没跑/失败），0 = 评估过且张力就是 0 */
+  tension: number | null
   drift_alert: boolean
   similarity_score: number | null
   narrative_sync_ok: boolean

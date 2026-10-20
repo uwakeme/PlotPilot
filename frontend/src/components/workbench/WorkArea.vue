@@ -45,7 +45,7 @@
             <div v-if="!proseOnlyWorkbench" class="desk-toolbar">
               <n-space align="center" :size="8" wrap>
                 <template v-if="signalStrip">
-                  <n-tag size="small" round type="info">张力 {{ signalStrip.tension }}/10</n-tag>
+                  <n-tag size="small" round type="info">张力 {{ signalStrip.tension === null ? '未评估' : signalStrip.tension }}/10</n-tag>
                   <n-tag v-if="!signalStrip.sync" size="small" round type="warning">叙事未同步</n-tag>
                 </template>
                 <n-text v-else depth="3" style="font-size: 12px">本章信号在侧栏与生成完成后更新</n-text>
@@ -1584,7 +1584,9 @@ const signalStrip = computed(() => {
   const ch = currentChapter.value
   if (!r || !ch || r.chapter_number !== ch.number) return null
   return {
-    tension: r.tension ?? 0,
+    // 张力三态：null = 未评估，0 = 评估过且张力就是 0。
+    // 不要 `?? 0` —— 那会把「没打过分」显示成「张力 0」。
+    tension: r.tension,
     sync: !!r.narrative_sync_ok,
   }
 })

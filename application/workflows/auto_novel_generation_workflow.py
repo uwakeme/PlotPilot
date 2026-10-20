@@ -108,6 +108,22 @@ CHAPTER_CONTEXT_LAYER2_HEADER = "RECENT CHAPTERS"  # T2 近期章节正文
 CHAPTER_CONTEXT_LAYER3_HEADER = "VECTOR RECALL"  # T3 向量召回
 
 
+def _format_tension_dim(value: Any) -> str:
+    """分维张力的 prompt 格式化：None = 该维度未评估。
+
+    此前一律写成 `float(x or 0)`，于是某一维没打过分时 prompt 里会出现
+    「情节=0 情绪=0 节奏=0」—— 把「没测」说成「测出来是 0」，
+    而这一段文字是**喂给模型的**，模型会据此做创作判断。
+    未评估就写「未评估」，让模型知道这一维没有依据。
+    """
+    if value is None:
+        return "未评估"
+    try:
+        return f"{float(value):.0f}"
+    except (TypeError, ValueError):
+        return "未评估"
+
+
 def _build_dynamic_coherence_rules(anchor) -> str:
     """基于前节拍尾部锚点动态生成连贯性建议（V9: 从约束变为参考）
 
@@ -968,9 +984,9 @@ class AutoNovelGenerationWorkflow:
                     prev_actual_tension = float(row['tension_score'])
                     parts.append(
                         f"前章（第{chapter_number - 1}章）实际张力评分：{prev_actual_tension:.0f}/100"
-                        f"（情节={float(row['plot_tension'] or 0):.0f} "
-                        f"情绪={float(row['emotional_tension'] or 0):.0f} "
-                        f"节奏={float(row['pacing_tension'] or 0):.0f}）"
+                        f"（情节={_format_tension_dim(row['plot_tension'])} "
+                        f"情绪={_format_tension_dim(row['emotional_tension'])} "
+                        f"节奏={_format_tension_dim(row['pacing_tension'])}）"
                     )
         except Exception as e:
             logger.debug(f"Failed to get prev chapter tension: {e}")

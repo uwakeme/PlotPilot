@@ -185,7 +185,8 @@ def _build_novel_from_dict(data: Dict) -> Novel:
         current_chapter_in_act=data.get('current_chapter_in_act', 0),
         max_auto_chapters=data.get('max_auto_chapters', 9999),
         current_auto_chapters=data.get('current_auto_chapters', 0),
-        last_chapter_tension=data.get('last_chapter_tension', 0),
+        # 张力三态：键不存在 = 未评估（None），不用 0 兜底。
+        last_chapter_tension=data.get('last_chapter_tension'),
         consecutive_error_count=data.get('consecutive_error_count', 0),
         current_beat_index=data.get('current_beat_index', 0),
         beats_completed=bool(data.get('beats_completed', 0)),

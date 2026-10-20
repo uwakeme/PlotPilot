@@ -240,7 +240,8 @@ class NovelStatusResponse:
     target_chapters: int
     target_words_per_chapter: int
     target_plan_total_words: int
-    last_chapter_tension: float
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0。压成 0 会让两者同形。
+    last_chapter_tension: Optional[float]
     consecutive_error_count: int
     total_words: int
     completed_chapters: int
@@ -424,7 +425,9 @@ class QueryService:
             target_chapters=target_chapters,
             target_words_per_chapter=raw_data.get("target_words_per_chapter", 2500),
             target_plan_total_words=target_chapters * raw_data.get("target_words_per_chapter", 2500),
-            last_chapter_tension=raw_data.get("last_chapter_tension", 0),
+            # 张力三态：键不存在 = 未评估（None）；不要用 0 兜底，那会把
+            # 「没打过分」与「张力为 0」压成同一个值。
+            last_chapter_tension=raw_data.get("last_chapter_tension"),
             consecutive_error_count=raw_data.get("consecutive_error_count", 0),
             total_words=total_words,
             completed_chapters=completed_chapters,
@@ -491,7 +494,13 @@ class QueryService:
                    ORDER BY number DESC LIMIT 1""",
                 (novel_id,),
             )
-            last_tension = float(last_tension_row["tension_score"] or 0) if last_tension_row else 0.0
+            # 张力三态：没这一行、或该行的 tension_score 是 NULL ⇒ 未评估（None）。
+            # 压成 0.0 会让「这章没打分」与「这章张力为 0」在快照里同形。
+            last_tension = (
+                None
+                if not last_tension_row or last_tension_row["tension_score"] is None
+                else float(last_tension_row["tension_score"])
+            )
 
             draft_row = db.fetch_one(
                 """SELECT MAX(number) as max_num FROM chapters

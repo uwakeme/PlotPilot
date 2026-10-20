@@ -222,7 +222,10 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
         novel.current_chapter_in_act = (novel.current_chapter_in_act or 0) + 1
         novel.current_beat_index = 0
         novel.beats_completed = False
-        if result.tension:
+        # 张力三态：`None` = 未评估，`0` = 评估过且张力就是 0。
+        # 判据必须是 `is not None` —— 写成 `if result.tension:` 会把真 0 当成
+        # 「没打分」，于是本章的张力留成**上一章**的值，读者看到的是别人的数字。
+        if result.tension is not None:
             novel.last_chapter_tension = result.tension
         novel.current_stage = NovelStage.AUDITING
 
@@ -236,12 +239,14 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
             audit_aftermath_rebuilt=False,
         )
         daemon._flush_novel(novel)
+        # 张力是章后审计算的，写完这一刻通常还没评分 —— 直接打 `%s` 会输出
+        # 「张力None」。写「未评估」才是事实。
         logger.info(
             "[%s] StoryPipeline 完成：第%s章 %s字 张力%s",
             novel_id,
             chapter_num,
             result.word_count,
-            result.tension,
+            "未评估" if result.tension is None else result.tension,
         )
         return
 

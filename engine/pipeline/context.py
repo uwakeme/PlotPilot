@@ -213,7 +213,10 @@ class PipelineResult(_ValidationStateContract):
     chapter_number: int = 0
     content: str = ""
     word_count: int = 0
-    tension: int = 0                            # 0-100
+    # 张力三态：None = 未评估（打分没跑 / 失败），0 = 评估过且张力就是 0。
+    # 这两者在「0」这一列上同形，任何拿它做创作判断的读者都会读到编造的值。
+    # 单一事实源就是值本身 —— 不另设「已评估」标记，那等于制造第二个可能漂移的事实源。
+    tension: Optional[int] = None                 # 0-100
     drift_alert: bool = False
     similarity_score: Optional[float] = None
     validation_score: Optional[float] = None

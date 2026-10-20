@@ -917,10 +917,21 @@ const substepBadgeClass = computed(() => {
   return ''
 })
 
+// 张力三态：null / undefined = 未评估，0 = 评估过且张力就是 0。
+// 后端已在类型层把「未评估」表达成 null，所以这里**不能**用 `|| 0` ——
+// 那样 null 会变成 0，而下面 `rawT < 0` 的「未评估」分支永远走不到，
+// 读者会看到「平缓 (0/10)」，以为这章评估过且张力为零。
+const rawTension = computed(() => {
+  const raw = status.value?.last_chapter_tension
+  if (raw === null || raw === undefined) return null
+  const n = Number(raw)
+  return Number.isNaN(n) ? null : n
+})
+
 const tensionLabel = computed(() => {
   // 张力值范围是 0-100，转换为 0-10 显示
-  const rawT = status.value?.last_chapter_tension || 0
-  if (rawT < 0) return `未评估`
+  const rawT = rawTension.value
+  if (rawT === null || rawT < 0) return `未评估`
   const t = Math.round(rawT / 10) // 0-100 转 0-10
   if (t >= 8) return `高潮 (${t}/10)`
   if (t >= 6) return `冲突 (${t}/10)`
@@ -930,8 +941,8 @@ const tensionLabel = computed(() => {
 
 const tensionColor = computed(() => {
   // 张力值范围是 0-100，转换为 0-10 判断
-  const rawT = status.value?.last_chapter_tension || 0
-  if (rawT < 0) return '#999'
+  const rawT = rawTension.value
+  if (rawT === null || rawT < 0) return '#999'
   const t = Math.round(rawT / 10)
   return t >= 8 ? '#d03050' : t >= 6 ? '#f0a020' : t >= 4 ? '#18a058' : '#36ad6a'
 })

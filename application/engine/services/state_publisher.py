@@ -77,7 +77,8 @@ class StatePublisher:
                 target_chapters=fields.get("target_chapters", 0),
                 target_words_per_chapter=fields.get("target_words_per_chapter", 2500),
                 consecutive_error_count=fields.get("consecutive_error_count", 0),
-                last_chapter_tension=fields.get("last_chapter_tension", 0),
+                # 张力三态：键不存在 = 未评估（None），不用 0 兜底。
+            last_chapter_tension=fields.get("last_chapter_tension"),
                 auto_approve_mode=fields.get("auto_approve_mode", False),
                 needs_review=fields.get("needs_review", False),
                 active_invocation_session_id=fields.get("active_invocation_session_id", ""),

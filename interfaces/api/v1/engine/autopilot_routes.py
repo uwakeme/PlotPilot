@@ -373,7 +373,11 @@ def _build_fallback_status(novel) -> Dict[str, Any]:
     target = novel.target_chapters or 1
     twpc = getattr(novel, "target_words_per_chapter", None) or 2500
     lacn = getattr(novel, "last_audit_chapter_number", None)
-    last_tension = int(getattr(novel, "last_chapter_tension", 0) or 0)
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0。
+    # 压成 0 会让前端把「没打过分」渲染成「张力 0」，
+    # 而 `AutopilotPanel.vue` 里已经有 `?? 'N/A'` 的正确写法 —— 口径不统一。
+    _raw_tension = getattr(novel, "last_chapter_tension", None)
+    last_tension = None if _raw_tension is None else int(_raw_tension)
     last_chapter_audit = None
     if lacn is not None:
         last_chapter_audit = {
@@ -555,7 +559,13 @@ def _build_autopilot_status_sync(novel_id: str) -> Optional[Dict[str, Any]]:
     twpc = (novel.get("target_words_per_chapter") if isinstance(novel, dict) else getattr(novel, "target_words_per_chapter", None)) or 2500
 
     lacn = novel.get("last_audit_chapter_number") if isinstance(novel, dict) else getattr(novel, "last_audit_chapter_number", None)
-    last_tension = int((novel.get("last_chapter_tension") if isinstance(novel, dict) else getattr(novel, "last_chapter_tension", 0)) or 0)
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0（见 L376 处的说明）。
+    _raw_tension = (
+        novel.get("last_chapter_tension")
+        if isinstance(novel, dict)
+        else getattr(novel, "last_chapter_tension", None)
+    )
+    last_tension = None if _raw_tension is None else int(_raw_tension)
     last_chapter_audit = None
     if lacn is not None:
         last_chapter_audit = {
@@ -696,7 +706,9 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
 
     # 构建 last_chapter_audit
     lacn = shared.get("last_audit_chapter_number")
-    last_tension = int(shared.get("last_chapter_tension", 0) or 0)
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0（见 L376 处的说明）。
+    _raw_tension = shared.get("last_chapter_tension")
+    last_tension = None if _raw_tension is None else int(_raw_tension)
     last_chapter_audit = None
     if lacn is not None:
         last_chapter_audit = {
@@ -896,7 +908,9 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
 
     # 构建 last_chapter_audit
     lacn = shared.get("last_audit_chapter_number")
-    last_tension = int(shared.get("last_chapter_tension", 0) or 0)
+    # 张力三态：None = 未评估，0 = 评估过且张力为 0（见 L376 处的说明）。
+    _raw_tension = shared.get("last_chapter_tension")
+    last_tension = None if _raw_tension is None else int(_raw_tension)
     last_chapter_audit = None
     if lacn is not None:
         last_chapter_audit = {
@@ -1127,7 +1141,8 @@ def _autopilot_events_tick_sync(novel_repo, chapter_repo, novel_id: str) -> Tupl
                 "audit_progress": shared.get("audit_progress"),
                 "audit_aftermath_reused": bool(shared.get("audit_aftermath_reused", False)),
                 "audit_aftermath_rebuilt": bool(shared.get("audit_aftermath_rebuilt", False)),
-                "last_chapter_tension": shared.get("last_chapter_tension", 0) or 0,
+                # 张力三态：None = 未评估，0 = 评估过且张力为 0（见 L376 处的说明）。
+                "last_chapter_tension": shared.get("last_chapter_tension"),
             }
             terminal_states = {"stopped", "error", "completed"}
             should_break = data["autopilot_status"] in terminal_states
