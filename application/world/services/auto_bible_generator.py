@@ -120,6 +120,17 @@ class BiblePromptTemplateUnavailable(RuntimeError):
     """Bible 生成所需 CPMS 节点缺失或不可渲染。"""
 
 
+class BibleGenerationIncomplete(RuntimeError):
+    """Bible 生成未完成：模型返回了内容但没有可用数据（**未评估**）。
+
+    A-05：这种情况**不得**用代码代写的兜底 Bible 顶替。
+    代写出来的文风/角色/地点会被当成**用户设定**落库，而
+    ``bible_style_notes`` **没有来源列** ⇒ 库里分不出「代码写的」与「AI 写的」；
+    文风那一路还会经 ``format_style_notes_for_prompt`` 进 ``narrative_contract``
+    槽（T0_CRITICAL / priority=122），即每章 prompt 的最高优先级强制层。
+    """
+
+
 def _with_cpms_variable_defaults(node_key: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     """Merge prompt-node declared defaults before rendering.
 
@@ -704,29 +715,30 @@ class AutoBibleGenerator:
         )
 
         bible_data = await self._call_llm_and_parse_with_retry(prompt.system, prompt.user)
-        if bible_data:
-            return bible_data
-
-        logger.error("Failed to generate Bible data, falling back to default structure")
-        return {
-                "characters": [
-                    {
-                        "name": "主角",
-                        "role": "主角",
-                        "description": "待补充"
-                    }
-                ],
-                "locations": [
-                    {
-                        "id": "loc-default-1",
-                        "name": "主要场景",
-                        "type": "城市",
-                        "description": "待补充",
-                        "parent_id": None,
-                    }
-                ],
-                "style": "第三人称有限视角，轻松幽默"
-            }
+        if not bible_data:
+            # A-05：模型给了空内容 ⇒ **未评估**，不是「没有内容」。
+            #
+            # 旧实现在这里代写整本兜底 Bible（「轻松幽默」文风 + 「主角/待补充」
+            # 角色 + 「主要场景/待补充」地点）。那三样会被当成**用户设定**落库：
+            # 文风进 bible_style_notes（category="文风公约"，**该表没有来源列**），
+            # 角色进 unified_characters，地点进 bible_locations。落库之后库里的
+            # 「代码代写的文风」与「AI 写的文风」完全同形，用户无从分辨；而文风
+            # 那一路还会经 format_style_notes_for_prompt 进 narrative_contract 槽
+            # （T0_CRITICAL / priority=122）—— 每章 prompt 的最高优先级强制层。
+            #
+            # 登记表 A-05 的口径是「失败置 UNASSESSED 而非代写创作文本」。
+            # 这里用**显式失败**表达「未评估」：整本 Bible 是一个整体，
+            # 没有「未评估」的单值形态；返回空结构会让调用方把「0 位角色、
+            # 0 个地点」当成一次成功 —— 那是比假内容更坏的**假成功**。
+            #
+            # 注：调用异常 / JSON 解析失败由 _call_llm_and_parse_with_retry
+            # 直接抛错（其 docstring 明说「避免调用方将空结果当作有效数据继续
+            # 处理」），到不了这里；这里只处理「返回了但没有内容」这一种。
+            logger.error("Bible LLM 返回空内容（未评估），不生成兜底 Bible")
+            raise BibleGenerationIncomplete(
+                "Bible LLM 返回空内容（未评估）—— 不用代码代写的兜底 Bible 顶替，请重试生成"
+            )
+        return bible_data
 
     async def _save_to_bible(self, novel_id: str, bible_data: Dict[str, Any]) -> None:
         """保存到 Bible"""
