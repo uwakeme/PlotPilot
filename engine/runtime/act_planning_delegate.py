@@ -511,8 +511,16 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
                         title="第一幕 · 开端",
                         description="故事起始，建立世界观与主角目标",
                         order_index=0,
-                        planning_status=PlanningStatus.CONFIRMED,
-                        planning_source=PlanningSource.AI_MACRO,
+                        # 这条幕的标题/描述是**代码写死的**
+                        # （「第一幕 · 开端」「故事起始，建立世界观与主角目标」），
+                        # 却落库为 `AI_MACRO` 与 `CONFIRMED` ——
+                        # 数据库里声称「这是 AI 规划好的」。
+                        # 那是**落库后的假来源**，比没来源更坏。
+                        # 此处用领域模型自己的基线（未真正规划）。
+                        # 两个字段均无下游消费者（前端不读，
+                        # `StoryNode.is_planned()` 零调用方）⇒ 改它不影响行为。
+                        planning_status=PlanningStatus.DRAFT,
+                        planning_source=PlanningSource.MANUAL,
                         suggested_chapter_count=rec_chapters_per_act,
                     )
                     await host.story_node_repo.save(first_act)

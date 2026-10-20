@@ -69,8 +69,11 @@ class NovelService:
             description="初始规划自动创建，可在结构视图中重命名",
             parent_id=None,
             order_index=0,
-            planning_status=PlanningStatus.CONFIRMED,
-            planning_source=PlanningSource.AI_MACRO,
+            # 同理：这条幕是系统自动建的结构占位（描述里已写明
+            # 「可在结构视图中重命名」），不是 AI 规划的，却落了
+            # `AI_MACRO` + `CONFIRMED` —— 落库后的假来源。
+            planning_status=PlanningStatus.DRAFT,
+            planning_source=PlanningSource.MANUAL,
             created_at=datetime.now(),
             updated_at=datetime.now(),
         )
