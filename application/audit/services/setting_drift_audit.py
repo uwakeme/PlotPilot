@@ -37,7 +37,7 @@ class SettingDriftAuditService:
 
     # ── 基准事实收集 ──────────────────────────────────────────────
 
-    def _collect_setting_facts(self, novel_id: str) -> List[str]:
+    def _collect_setting_facts(self, novel_id: str, chapter_number: int = 0) -> List[str]:
         """收集基准事实清单（Bible 聚合 + FactLock）。"""
         facts: List[str] = []
 
@@ -52,7 +52,7 @@ class SettingDriftAuditService:
                 loc_type = getattr(loc, "location_type", "") or getattr(loc, "type", "")
                 facts.append(f"[地点/{loc_type}] {name}：{desc}"[:_FACT_TEXT_LIMIT])
 
-        fact_locks = self._load_fact_locks(novel_id)
+        fact_locks = self._load_fact_locks(novel_id, chapter_number)
         for lock in fact_locks:
             facts.append(f"[FactLock] {str(lock)}"[:_FACT_TEXT_LIMIT])
 
@@ -77,19 +77,30 @@ class SettingDriftAuditService:
             logger.debug("设定漂移审计加载 Bible 失败 novel=%s: %s", novel_id, e)
             return None
 
-    def _load_fact_locks(self, novel_id: str) -> List[Any]:
-        """从 MemoryEngine 的会话缓存取 FactLock 清单（只读，不初始化引擎）。"""
-        try:
-            from application.engine.services.memory_engine import MemoryEngine
+    def _load_fact_locks(self, novel_id: str, chapter_number: int = 0) -> List[str]:
+        """取 FactLock 基准事实 —— 与生成侧 T0 FACT_LOCK **同源**。
 
-            engine = MemoryEngine.__new__(MemoryEngine)
-            cache = getattr(engine, "_cache", None)
-            if not isinstance(cache, dict):
-                return []
-            state = cache.get(novel_id)
-            locks = getattr(state, "fact_locks", None)
-            return list(locks or [])
-        except Exception:
+        旧实现用 ``MemoryEngine.__new__`` 绕过 ``__init__`` 去翻会话缓存：
+        ``_cache`` 从未初始化（它在 ``__init__`` 里建）⇒ ``getattr(...)`` 得
+        None ⇒ **恒返回 []**；而且 ``MemoryState`` 压根没有 ``fact_locks``
+        属性（全仓只有这段代码写过这个名字）⇒ 两处都落空。
+
+        于是审计侧的 FactLock 基准**恒空**。更要紧的是口径：生成侧锁进 T0 的
+        是 FactLockBuilder 从 Bible 推出的**角色白名单 / 死亡锁 / 关系 /
+        身份锁 / 时间线**，而审计侧拿 world_settings / locations 比对 ——
+        **两侧基准不同源**，「正文是否违反生成时被锁住的事实」这个问题就问错了。
+
+        现在直接用同一个构造器出清单，不读任何会话缓存。
+        """
+        if self._bible_repository is None:
+            return []
+        try:
+            from application.engine.services.memory_engine import FactLockBuilder
+
+            builder = FactLockBuilder(self._bible_repository)
+            return list(builder.build_facts(novel_id, current_chapter=chapter_number))
+        except Exception as e:
+            logger.debug("设定漂移审计加载 FactLock 基准失败 novel=%s: %s", novel_id, e)
             return []
 
     # ── 审计主流程 ────────────────────────────────────────────────
@@ -111,7 +122,7 @@ class SettingDriftAuditService:
         if not content:
             return self._unaudited("正文为空")
 
-        facts = self._collect_setting_facts(novel_id)
+        facts = self._collect_setting_facts(novel_id, chapter_number)
         if not facts:
             return self._unaudited("无基准事实（Bible/FactLock 为空）")
 

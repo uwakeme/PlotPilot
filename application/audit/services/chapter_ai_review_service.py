@@ -89,6 +89,14 @@ class ChapterAIReviewService:
         status = self._normalize_status(data.get("status"))
         score = self._normalize_score(data.get("score"))
         summary = str(data.get("summary") or "").strip()
+        if not summary:
+            # 模型没给总结 ⇒ **契约失败**，不由代码代写。
+            # 旧实现在这里用 ``_summary_from_score`` 编一句
+            # 「本章整体可通过，综合评分 85。」—— 那是**代码替编辑下的判断**，
+            # 而这句会随 memo 一起落进 chapter_reviews，之后分不清它是模型说的。
+            # prompt 的 JSON 契约本来就要求 summary 字段，缺它是模型违约；
+            # 同一方法里「缺 suggestions 就 raise」已是这个范式。
+            raise ChapterAIReviewContractError("AI 审阅结果缺少 summary")
         raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
         issues = [self._normalize_issue(item) for item in raw_issues if isinstance(item, dict)]
         suggestions = self._normalize_suggestions(data.get("suggestions"))
@@ -97,8 +105,6 @@ class ChapterAIReviewService:
             status = "draft"
         elif status == "approved" and score < 80:
             status = "reviewed"
-        if not summary:
-            summary = self._summary_from_score(score, status)
         if not suggestions and issues:
             suggestions = [
                 issue.suggestion or issue.description
@@ -133,10 +139,23 @@ class ChapterAIReviewService:
 
     @staticmethod
     def _normalize_score(value: Any) -> int:
+        """读模型给的评分。**没有分数就是没有分数**，不编。
+
+        旧实现在解析失败时塞 ``70`` —— 一个看起来很正常的中位分。而这个分
+        会进 memo（「综合评分：70」）落进 chapter_reviews，用户与后续流程
+        都读成「模型评了 70 分」。
+
+        prompt 的 JSON 契约要求 score 字段，缺它是模型违约；同一方法里
+        「缺 suggestions 就 raise」「缺 summary 就 raise」已是这个范式。
+        """
+        if value is None or isinstance(value, bool):
+            raise ChapterAIReviewContractError("AI 审阅结果缺少 score")
         try:
             score = int(float(value))
         except (TypeError, ValueError):
-            score = 70
+            raise ChapterAIReviewContractError(
+                f"AI 审阅结果的 score 不是数值：{value!r}"
+            )
         return max(0, min(100, score))
 
     @staticmethod
@@ -164,14 +183,6 @@ class ChapterAIReviewService:
             if text:
                 out.append(text)
         return out[:8]
-
-    @staticmethod
-    def _summary_from_score(score: int, status: ReviewStatus) -> str:
-        if status == "approved":
-            return f"本章整体可通过，综合评分 {score}。"
-        if status == "draft":
-            return f"本章存在阻塞性问题，综合评分 {score}。"
-        return f"本章需要修改后再确认，综合评分 {score}。"
 
     @staticmethod
     def _build_memo(

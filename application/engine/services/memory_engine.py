@@ -147,6 +147,54 @@ class FactLockBuilder:
             logger.warning(f"FactLock 构建失败: {e}")
             return ""
 
+    def build_facts(self, novel_id: str, current_chapter: int = 0) -> List[str]:
+        """结构化事实清单（逐条）—— 与 :meth:`build` 的文本**同源**。
+
+        生成侧把 ``build()`` 的文本锁进 T0（prompt 侧约束）；审计侧要用**同一份**
+        事实去比对正文。两侧不同源的话，审计比的与生成时被锁的不是一回事：
+        生成锁的是 characters / timeline / relationships，审计却拿
+        world_settings / locations 比对 —— 口径对不上，结论也就对不上。
+
+        推导复用 ``build()`` 的同一批 helper（角色白名单 / 死亡锁 / 关系 /
+        身份锁 / 时间线），**不另写一套**，避免两边漂移。
+        """
+        try:
+            bible = self.bible_repository.get_by_novel_id(NovelId(novel_id))
+            if not bible:
+                return []
+            return self._facts_from_bible(bible, current_chapter)
+        except Exception as e:
+            logger.warning(f"FactLock 事实清单构建失败: {e}")
+            return []
+
+    def _facts_from_bible(self, bible, current_chapter: int) -> List[str]:
+        """把 ``_build_from_bible`` 的那五组推导，逐条摊成清单。"""
+        facts: List[str] = []
+        characters = bible.characters
+
+        names = [c.name for c in characters if getattr(c, "name", "")]
+        if names:
+            facts.append(
+                "角色白名单（只可使用以下有名字的角色）：" + "、".join(names)
+            )
+
+        for dc in self._extract_dead_characters(characters):
+            facts.append(
+                f"死亡锁：{dc.get('name', '')}（{dc.get('role', '未知')}）已死"
+                f"（{dc.get('cause', '原因不详')}）—— 不可复活、不可出现在当下时间线"
+            )
+
+        for rel in self._build_relation_lines(characters):
+            facts.append(f"关系锁：{rel}")
+
+        for il in self._build_identity_lines(characters, current_chapter):
+            facts.append(f"身份锁：{il}")
+
+        for tl in self._build_timeline_lines(bible):
+            facts.append(f"时间线锁：{tl}")
+
+        return facts
+
     def _build_from_bible(self, bible, current_chapter: int) -> str:
         """从 Bible 实体构建 FACT_LOCK"""
         lines = ["【绝对事实边界（一旦违背即为废稿）】\n"]
