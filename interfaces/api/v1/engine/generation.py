@@ -344,7 +344,11 @@ class MainPlotOptionItem(BaseModel):
 
 
 class SuggestMainPlotOptionsResponse(BaseModel):
+    # 候选内容在 **invocation 会话**里（向导 Step 4 走审阅流，
+    # 模型输出由用户接受后才落库），所以本响应的 plot_options 恒为空数组。
+    # 显式给出位置，避免消费方把空数组读成「没生成出候选」。
     plot_options: List[MainPlotOptionItem]
+    plot_options_location: str = "invocation_session"
     invocation_session_id: str = ""
     invocation_next_action: str = ""
 
@@ -608,7 +612,16 @@ async def suggest_main_plot_options(
     novel_service=Depends(get_novel_service),
     setup_svc=Depends(get_setup_main_plot_suggestion_service),
 ):
-    """向导 Step 4：根据 Bible 与小说元数据，由 LLM 推演 3 条主线候选。"""
+    """向导 Step 4：由 LLM 推演 3 条主线候选。
+
+    ⚠ **候选不在本响应里**：Step 4 走 invocation 审阅流 —— 本端点建一个
+    会话并返回 `invocation_session_id`，模型输出在会话里由用户审阅、
+    接受后才经 continuation 落库。所以 `plot_options` 恒为 `[]`，
+    候选请从会话读（`plot_options_location` 字段写明了这一点）。
+
+    旧 docstring 描述的是「LLM 直接出候选 + SSE 逐条推送」——
+    那是 invocation 之前的架构，描述已失效。
+    """
     if novel_service.get_novel(novel_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Novel not found")
     try:
@@ -630,6 +643,7 @@ async def suggest_main_plot_options(
         session = payload.get("session") or {}
         return SuggestMainPlotOptionsResponse(
             plot_options=[],
+            plot_options_location="invocation_session",
             invocation_session_id=str(session.get("id") or ""),
             invocation_next_action=str(payload.get("next_action") or ""),
         )
@@ -650,7 +664,17 @@ async def suggest_main_plot_options_stream(
     novel_service=Depends(get_novel_service),
     setup_svc=Depends(get_setup_main_plot_suggestion_service),
 ):
-    """向导 Step 4：流式推演主线候选，解析到一条推送一条。"""
+    """向导 Step 4：推演主线候选（SSE）。
+
+    事件序列：`phase` → `approval_required`（带会话 id）→ `done`。
+
+    ⚠ **不会逐条推送候选**。Step 4 走 invocation 审阅流：模型输出在
+    会话里由用户审阅、接受后才落库。所以 `done` 事件的 `plot_options`
+    恒为 `[]`，候选从会话读（`plot_options_location` 写明了这一点）。
+
+    旧 docstring 描述的是「解析到一条就推送一条」—— 那是 invocation 之前的架构；
+    后端早就不发 `option` / `chunk` 事件了，前端对应的解析分支也已删除。
+    """
     if novel_service.get_novel(novel_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Novel not found")
 
@@ -675,7 +699,7 @@ async def suggest_main_plot_options_stream(
             session = payload.get("session") or {}
             if session.get("id"):
                 yield f"data: {json.dumps({'type': 'approval_required', 'session_id': session.get('id', ''), 'status': session.get('status', ''), 'next_action': payload.get('next_action', '')}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'plot_options': [], 'invocation_session_id': session.get('id', '')}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'plot_options': [], 'plot_options_location': 'invocation_session', 'invocation_session_id': session.get('id', '')}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.exception("suggest_main_plot_options_stream failed")
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"

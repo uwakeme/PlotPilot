@@ -1,21 +1,29 @@
 
-"""向导 Step 4：基于 Bible 与小说元数据，由 LLM 推演三条主线候选。"""
+"""向导 Step 4：主线候选的**规范化**与上下文构建。
+
+本模块原先还提供 `suggest_options`（直接调 LLM 生成三条主线候选）——
+那是 invocation 审阅流之前的旧架构：向导两条路由都迁到 `create_invocation`
+之后，生产路径上**没有任何调用方**，整条「直接调 LLM」的链路（
+`suggest_options` → `parse_suggested_options` → `_build_prompt_and_config`）
+连同只服务于它的 `_build_context` 一并删除。
+
+现在活着的只有两件事：
+  - `build_context`：向导上下文（21 处生产调用方）
+  - `normalize_main_plot_options` / `_data`：把模型输出规范化成可落库的候选
+    （invocation 续写处理器 `setup_main_plot_continuation` 在用）
+"""
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping
 
-from domain.ai.services.llm_service import GenerationConfig, LLMService
-from domain.ai.value_objects.prompt import Prompt
+from domain.ai.services.llm_service import LLMService
 from application.world.services.bible_service import BibleService
 from application.core.services.novel_service import NovelService
 from application.blueprint.services.setup_context_builder import SetupContextBuilder
-from application.ai_invocation.prompt_variables import aliases_with_dotted_variables
 from application.ai.knowledge_llm_contract import parse_json_from_response
 
 from application.blueprint.services.subline_contract import (  # noqa: E402
-    SOURCE_AI as SUBLINE_SOURCE_AI,
-    SOURCE_NONE as SUBLINE_SOURCE_NONE,
     normalize_sublines,
 )
 
@@ -96,9 +104,6 @@ class SetupMainPlotSuggestionService:
 
     def build_context(self, novel_id: str) -> Dict[str, Any]:
         """公开的向导上下文构建入口，供 AI Invocation 路由复用。"""
-        return self._context_builder.build_context(novel_id)
-
-    def _build_context(self, novel_id: str) -> Dict[str, Any]:
         return self._context_builder.build_context(novel_id)
 
     @staticmethod
@@ -217,80 +222,3 @@ class SetupMainPlotSuggestionService:
                     item["forbidden_drift"] = "不得让新谜团、新支线或回忆说明连续抢走主角的现实行动目标。"
             completed.append(item)
         return completed
-
-    def _build_prompt_and_config(self, novel_id: str) -> Tuple[Dict[str, Any], Prompt, GenerationConfig]:
-        ctx = self._build_context(novel_id)
-        from infrastructure.ai.prompt_keys import PLANNING_MAIN_PLOT_OPTION
-        from infrastructure.ai.prompt_registry import get_prompt_registry
-
-        theme_metadata = ctx.get("theme_metadata") if isinstance(ctx.get("theme_metadata"), dict) else {}
-        genre_label = str(theme_metadata.get("genre_label") or "")
-        genre_parts = [part.strip() for part in genre_label.split("/") if part.strip()]
-        alias_map = {
-            "novel.title": str(ctx.get("novel_title") or ""),
-            "novel.premise": str(ctx.get("premise") or ""),
-            "novel.genre_major": genre_parts[0] if genre_parts else "",
-            "novel.genre_theme": " / ".join(genre_parts[1:]) if len(genre_parts) > 1 else "",
-            "novel.genre_label": genre_label,
-            "novel.world_preset": str(theme_metadata.get("world_preset") or ""),
-            "novel.story_structure": str(theme_metadata.get("story_structure") or ""),
-            "novel.pacing_control": str(theme_metadata.get("pacing_control") or ""),
-            "novel.writing_style": str(theme_metadata.get("writing_style") or ""),
-            "novel.special_requirements": str(theme_metadata.get("special_requirements") or ""),
-            "novel.target_chapters": int(ctx.get("target_chapters") or 0),
-            "novel.target_words_per_chapter": int(ctx.get("target_words_per_chapter") or 0),
-            "plot.fusion_contract": str(ctx.get("fusion_contract") or ""),
-            "characters.protagonist": ctx.get("protagonist") or {},
-            "characters.list": ctx.get("characters") or ctx.get("other_characters") or [],
-            "locations.list": ctx.get("locations") or [],
-            "worldbuilding.style": str(ctx.get("style_hint") or ""),
-            "worldbuilding.content": ctx.get("worldbuilding") or {
-                key: ctx.get(key) or {}
-                for key in ("core_rules", "geography", "society", "culture", "daily_life")
-                if ctx.get(key)
-            },
-        }
-        variables = aliases_with_dotted_variables(alias_map)
-
-        registry = get_prompt_registry()
-        prompt = registry.render_to_prompt(PLANNING_MAIN_PLOT_OPTION, variables)
-
-        if not prompt:
-            raise RuntimeError(f"CPMS prompt node unavailable: {PLANNING_MAIN_PLOT_OPTION}")
-
-        config = GenerationConfig(max_tokens=8192, temperature=0.85)
-        return ctx, prompt, config
-
-    def parse_suggested_options(
-        self,
-        raw: str,
-        *,
-        ctx: Optional[Dict[str, Any]] = None,
-        novel_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """把模型输出解析为三条主线候选；不满足合同时抛错阻塞。"""
-        context = ctx or (self._build_context(novel_id) if novel_id else {})
-        return normalize_main_plot_options(raw, context)
-
-    async def suggest_options(self, novel_id: str) -> List[Dict[str, Any]]:
-        ctx, prompt, config = self._build_prompt_and_config(novel_id)
-        try:
-            result = await self._llm.generate(prompt, config)
-        except Exception as e:
-            # ⚠ 归因要按类型分：只有「模型没给出合规输出」才该提示去查模型/CPMS。
-            # 把 LLM 调用本身的异常（超时、鉴权、连接）也说成「请检查模型输出」，
-            # 会把人引到完全错误的方向上 —— 这正是本条之前一直做的。
-            logger.warning("Main plot suggestion LLM call failed: %s", e, exc_info=True)
-            raise MainPlotSuggestionContractError(
-                f"主线候选生成失败：LLM 调用异常（{type(e).__name__}: {e}）"
-            ) from e
-        try:
-            return self.parse_suggested_options(result.content, ctx=ctx)
-        except MainPlotSuggestionContractError:
-            raise
-        except Exception as e:
-            logger.warning("Main plot suggestion parse failed: %s", e, exc_info=True)
-            raise MainPlotSuggestionContractError(
-                f"主线候选生成失败：输出解析异常（{type(e).__name__}: {e}），"
-                "非模型输出本身的问题"
-            ) from e
