@@ -5,6 +5,7 @@ import logging
 import uuid
 from typing import Any, Dict, List
 
+from application.world.services.bible_classification import normalize_location_type
 from domain.bible.bible_location_tree import validate_location_forest
 from domain.bible.triple import SourceType, Triple
 from infrastructure.persistence.database.triple_repository import (
@@ -15,26 +16,11 @@ from infrastructure.persistence.database.triple_repository import (
 logger = logging.getLogger(__name__)
 
 
-def _map_location_kind(raw_type: str) -> str:
-    t = str(raw_type or "")
-    tl = t.lower()
-    if "城" in t or "city" in tl:
-        return "city"
-    if any(k in t for k in ("区域", "域", "境", "荒", "谷", "原", "山脉")):
-        return "region"
-    if "region" in tl or "natural" in tl or "other" == tl.strip():
-        return "region"
-    if any(k in t for k in ("建筑", "楼", "殿", "阁", "府", "宫", "塔")):
-        return "building"
-    if "building" in tl:
-        return "building"
-    if any(k in t for k in ("势力", "宗", "门", "派", "盟", "族")):
-        return "faction"
-    if any(k in t for k in ("特殊", "秘境", "领域", "遗迹", "墟")):
-        return "realm"
-    if "realm" in tl:
-        return "realm"
-    return "region"
+# A-05b：地点类型改由模型直接给（英文枚举），代码不再用关键词映射 ——
+# 这份本地实现与 ``auto_bible_generator`` 的那份**逻辑相同但内容不同**
+# （那边不认英文 "city"，这边多认 region/natural/other）⇒ 同一地点在两条
+# 路径上分类可能不同。现在统一走 ``bible_classification.normalize_location_type``：
+# 只认英文枚举，别的算**未评估**。
 
 
 def stable_containment_triple_id(novel_id: str, bible_location_id: str) -> str:
@@ -109,8 +95,8 @@ class BibleLocationTripleSyncService:
             existed = meta is not None and meta.get("source_type") == "bible_generated"
             parent_row = id_to_row.get(parent_id, {})
             parent_name = str(parent_row.get("name") or "").strip() or parent_id
-            subj_lt = _map_location_kind(loc.get("type", ""))
-            obj_lt = _map_location_kind(parent_row.get("type", ""))
+            subj_lt = normalize_location_type(loc.get("location_type"))
+            obj_lt = normalize_location_type(parent_row.get("location_type"))
             triple = Triple(
                 id=triple_id,
                 novel_id=novel_id,
@@ -144,7 +130,7 @@ class BibleLocationTripleSyncService:
             if not lid:
                 continue
             display = (loc["name"] or lid).strip() or lid
-            lt = _map_location_kind(loc.get("type", ""))
+            lt = normalize_location_type(loc.get("location_type"))
             anchor = Triple(
                 id=stable_anchor_triple_id(novel_id, lid),
                 novel_id=novel_id,

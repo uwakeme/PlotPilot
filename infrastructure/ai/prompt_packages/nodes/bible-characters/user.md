@@ -28,6 +28,7 @@
       "gender": "性别",
       "age": "年龄",
       "role": "主角/对立角色/盟友/次要角色",
+      "importance": "primary/secondary/minor",
       "description": "一句话功能定位与人物矛盾，单行",
       "appearance": "最容易辨认的外貌锚点，单行；没有则空字符串",
       "personality": "性格底色/处事风格，单行；没有则空字符串",

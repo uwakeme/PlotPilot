@@ -33,6 +33,8 @@
       "id": "唯一ID，小写英文+下划线+数字",
       "name": "地点名",
       "type": "城市/建筑/区域/特殊场所/秘境",
+      "location_type": "city/region/building/faction/realm",
+      "importance": "core/important/normal",
       "description": "地点功能与叙事价值，单行",
       "parent_id": null,
       "connections": [

@@ -7,6 +7,11 @@ from typing import Dict, Any, AsyncIterator, List
 from datetime import datetime
 from domain.ai.services.llm_service import LLMService, GenerationConfig
 from domain.ai.value_objects.prompt import Prompt
+from application.world.services.bible_classification import (
+    normalize_character_importance,
+    normalize_location_importance,
+    normalize_location_type,
+)
 from application.world.services.bible_service import BibleService
 from application.world.services.worldbuilding_service import WorldbuildingService
 from domain.bible.triple import Triple, SourceType
@@ -366,33 +371,11 @@ def _parse_llm_json_to_dict(raw: str) -> Dict[str, Any]:
     raise json.JSONDecodeError(errs[0] if errs else "parse failed", raw, 0)
 
 
-def _infer_character_importance(char_data: Dict[str, Any]) -> str:
-    """与前端人物关系图 importance 一致：primary / secondary / minor。"""
-    role = str(char_data.get("role") or "").strip()
-    desc_head = str(char_data.get("description") or "")[:160]
-    blob = f"{role}{desc_head}"
-    if "主角" in blob:
-        return "primary"
-    if any(k in blob for k in ("导师", "师父", "宿敌", "反派", "对手", "核心", "幕后")):
-        return "secondary"
-    return "minor"
-
-
-def _map_location_kind(raw_type: str) -> str:
-    """与 KnowledgeTriple.location_type 枚举对齐。"""
-    t = str(raw_type or "")
-    if "城" in t:
-        return "city"
-    if any(k in t for k in ("区域", "域", "境", "荒", "谷", "原", "山脉")):
-        return "region"
-    if any(k in t for k in ("建筑", "楼", "殿", "阁", "府", "宫", "塔")):
-        return "building"
-    if any(k in t for k in ("势力", "宗", "门", "派", "盟", "族")):
-        return "faction"
-    if any(k in t for k in ("特殊", "秘境", "领域", "遗迹", "墟")):
-        return "realm"
-    return "region"
-
+# A-05b：角色重要度 / 地点类型改由**模型直接给**（见 ``bible_classification``），
+# 代码不再用关键词猜。旧的三张关键词表（``_infer_character_importance`` /
+# ``_map_location_kind`` / 关系谓词归并）已删除：模型已经给了 role 与 type，
+# 代码在重复猜，而且猜错 —— 生产库里 4 个「特殊场所」（周队办公室、陆深工位与
+# 隔断走廊、宋扬画像室、梦境镜厅，全是室内）被判成 realm（秘境）。
 
 def _default_location_importance(_loc_data: Dict[str, Any]) -> str:
     return "normal"
@@ -440,7 +423,12 @@ class AutoBibleGenerator:
                     "location_id": location_id,
                     "name": loc_data["name"],
                     "description": loc_data["description"],
-                    "location_type": loc_data.get("type", "场景"),
+                    # A-05b：模型的英文枚举优先（列名终于与内容对上）；
+                    # 没给英文就落中文原文（前端对中文原样显示，行为不变）。
+                    "location_type": (
+                        normalize_location_type(loc_data.get("location_type"))
+                        or loc_data.get("type", "场景")
+                    ),
                     "connections": loc_data.get("connections", []),
                     "raw_parent_id": loc_data.get("parent_id"),
                 }
@@ -1465,8 +1453,8 @@ class AutoBibleGenerator:
                 # 如果找到了目标人物，创建三元组
                 if target_char_id:
                     target_char = id_to_char.get(target_char_id, {})
-                    subj_imp = _infer_character_importance(char_data)
-                    obj_imp = _infer_character_importance(target_char)
+                    subj_imp = normalize_character_importance(char_data.get("importance"))
+                    obj_imp = normalize_character_importance(target_char.get("importance"))
                     triple = Triple(
                         id=f"triple-{uuid.uuid4().hex[:8]}",
                         novel_id=novel_id,
@@ -1545,10 +1533,10 @@ class AutoBibleGenerator:
                 # 如果找到了目标地点，创建三元组
                 if target_loc_id:
                     target_loc = id_to_loc.get(target_loc_id, {})
-                    subj_lt = _map_location_kind(loc_data.get("type", ""))
-                    obj_lt = _map_location_kind(target_loc.get("type", ""))
-                    subj_imp = _default_location_importance(loc_data)
-                    obj_imp = _default_location_importance(target_loc)
+                    subj_lt = normalize_location_type(loc_data.get("location_type"))
+                    obj_lt = normalize_location_type(target_loc.get("location_type"))
+                    subj_imp = normalize_location_importance(loc_data.get("importance"))
+                    obj_imp = normalize_location_importance(target_loc.get("importance"))
                     triple = Triple(
                         id=f"triple-{uuid.uuid4().hex[:8]}",
                         novel_id=novel_id,
