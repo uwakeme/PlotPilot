@@ -666,7 +666,7 @@ def _ordered_subtree(node):
     """产出 ``node`` 及其全部后代，顺序严格等于源码顺序。
 
     ⚠ 第十轮复审：不能用外层 LIFO ``stack`` 下降 —— 那些节点会在
-    ``_ClassScopeMarker(enter=False)`` **之后**才被弹出，落���类作用域之外。
+    ``_ClassScopeMarker(enter=False)`` **之后**才被弹出，落到类作用域之外。
     这里用**独立** LIFO 做有序 DFS（push 反序、pop 正序）。
     """
     stack = [node]
@@ -1641,7 +1641,7 @@ def test_probe_catches_class_bodies_and_bases():
 
     第五轮复审实证的**漏报**：`class C: attr = missing` 与
     `class C(MissingBase)` 都返回 []。类体不是闭包，它**能**看见外层名字；
-    只有方法体才有自己���作用域。
+    只有方法体才有自己的作用域。
     """
     p1 = _probe_run("class C:\n    attr = missing\n")
     assert any("missing" in x for x in p1), f"类体未绑定名漏报：{p1}"
