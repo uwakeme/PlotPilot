@@ -206,7 +206,12 @@ class BaseStoryPipeline(ABC):
 
             # 1b. 叙事治理准备：生成章节预算与上下文请求，作为后续上下文组装的硬约束输入。
             self._mark_pipeline_step(ctx, "prepare_governance")
-            await self._step_prepare_governance(ctx)
+            r = await self._step_prepare_governance(ctx)
+            # 本步不阻断（见方法 docstring），但状态必须记下来 ——
+            # 之前这一步是唯一个没有 step_status 的步骤。
+            step_status["prepare_governance"] = (
+                "ok" if r.passed else ("skipped" if r.skip else "failed")
+            )
 
             # 2. 章节执行剧本准备：旧数据直接复用七段，新幕级轻量链条在这里补成七段。
             self._mark_pipeline_step(ctx, "prepare_chapter_plan")
@@ -524,7 +529,20 @@ class BaseStoryPipeline(ABC):
     async def _step_prepare_governance(self, ctx: PipelineContext) -> StepResult:
         """步骤1b：从叙事治理层领取本章预算。
 
-        失败不阻断生成；治理报告会在章后提交闸门再次落库。
+        **连续性闸门不阻断生成**，只告警并把报告带在
+        `ctx.evolution_continuity_report` 上。
+
+        为什么不停：闸门的补救建议是「改为回忆/遗物/传闻」或
+        「添加 [TimeSkip]/[HardCut]」—— 那是**改大纲**的动作，而管线在
+        这一步没有改大纲的能力（大纲来自上游幕级规划）；真拦下来只会让
+        章节凭空失败，而匹配规则本身的误报率又高（≥2 字裸串即命中，
+        「大纲里提到某人」被当成「让其以活跃人物出现」）。
+
+        旧 docstring 写「治理报告会在章后提交闸门再次落库」——
+        `_step_run_post_commit` 里**没有任何**闸门相关代码，全仓也只有
+        那一行提到「章后提交闸门」。那个承诺从未实现，报告实际去处是
+        `ctx.metadata`（prose_composer 只读其中的 `continuity_context`，
+        所以报告不会进 prompt）⇒ 此前它既不拦章、也不落库、也没人读。
         """
         try:
             from application.governance.service import NarrativeGovernanceService
@@ -554,17 +572,48 @@ class BaseStoryPipeline(ABC):
                     SqliteEvolutionRepository,
                 )
 
-                continuity = EvolutionGateService(SqliteEvolutionRepository(db)).check(
+                # 门的输入要和 API 路径一致。
+                # API 路径（interfaces/api/dependencies.py:1323）两个都传：
+                #   · character_repository → 别名（角色的其它名字）参与匹配
+                #   · pov_character_id   → POV_LEAK 规则以它为前提，不传就恒不触发
+                # 管线这边两个都漏了 ⇒ 同一部书、同一个大纲，
+                # 两条路径给出的判定却不一样（命中面比 API 路径窄，POV_LEAK 恐永不触发）。
+                character_repository = None
+                try:
+                    from interfaces.api.dependencies import get_unified_character_repository
+
+                    character_repository = get_unified_character_repository()
+                except Exception as repo_error:
+                    # 拿不到角色库只会让匹配变窄，不应该让整个门跳过。
+                    logger.warning(
+                        "[%s] 门的角色库不可用，别名不参与匹配: %s",
+                        ctx.novel_id, repo_error,
+                    )
+                continuity = EvolutionGateService(
+                    SqliteEvolutionRepository(db),
+                    character_repository=character_repository,
+                ).check(
                     novel_id=ctx.novel_id,
                     chapter_number=ctx.chapter_number,
                     branch_id="main",
                     outline_content=ctx.outline or "",
+                    pov_character_id=getattr(ctx.chapter_node, "pov_character_id", None),
                 )
                 ctx.evolution_continuity_report = continuity.to_dict()
                 ctx.metadata["evolution_continuity_report"] = ctx.evolution_continuity_report
                 if not continuity.is_pass:
-                    return StepResult.fail(
-                        "写前连续性检查未通过：" + "；".join(continuity.repair_plan[:3])
+                    # ⚠ 这里**不能** return StepResult.fail：
+                    #   · run_chapter 丢弃本步的返回值（base.py:209），fail 形同虚设
+                    #   · 真拦下来只会让章节成空失败，而门的补救动作是「改大纲」
+                    # ⇒ 改成显式告警 + 报告随结果带走，不静默吞、不假拦。
+                    _blocking = [
+                        v for v in (continuity.violations or []) if v.level == "blocking"
+                    ]
+                    logger.warning(
+                        "[%s] 写前连续性检查有 %d 条 blocking 违规（不阻断生成）：%s",
+                        ctx.novel_id,
+                        len(_blocking),
+                        "；".join(v.message for v in _blocking[:3]),
                     )
             except Exception as gate_error:
                 logger.warning("[%s] 写前连续性检查失败: %s", ctx.novel_id, gate_error)
