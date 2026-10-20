@@ -2241,6 +2241,15 @@ def persist_bundle_extras(
                         "description": matched.description,
                         "estimated_chapter_start": matched.estimated_chapter_start,
                         "estimated_chapter_end": matched.estimated_chapter_end,
+                        # G-03 的 provenance 必须随载荷一起走。此前这里不带，
+                        # 队列重建实体的字段默认空串 ⇒ 落库后 source 永远是
+                        # 「未标注」，模型判的 / 代码兜底的 / 人工改的三者同形。
+                        "estimated_chapter_end_source": getattr(
+                            matched, "estimated_chapter_end_source", ""
+                        ) or "",
+                        "estimated_chapter_end_note": getattr(
+                            matched, "estimated_chapter_end_note", ""
+                        ) or "",
                         "current_milestone_index": matched.current_milestone_index,
                         "last_active_chapter": matched.last_active_chapter,
                         "progress_summary": matched.progress_summary,

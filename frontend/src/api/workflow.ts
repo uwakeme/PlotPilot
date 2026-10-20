@@ -43,6 +43,13 @@ export interface StorylineDTO {
   progress_summary?: string
   parent_id?: string | null
   chapter_weight?: number
+  /**
+   * 预估收尾章的来源（G-03 provenance）。
+   * '' = 旧数据未标注（**不等于** 'ai'）；'ai' 模型原值；
+   * 'ai_adjusted' 模型给了但被代码改写；'fallback' 代码兜底；'manual' 人工设定或改写。
+   */
+  estimated_chapter_end_source?: string
+  estimated_chapter_end_note?: string
 }
 
 export type ConfluenceMergeType = 'intersect' | 'absorb' | 'reveal'

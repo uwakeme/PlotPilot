@@ -63,6 +63,18 @@ class SqliteStorylineRepository(StorylineRepository):
                 conn.execute("ALTER TABLE storylines ADD COLUMN parent_id TEXT")
             if 'chapter_weight' not in columns:
                 conn.execute("ALTER TABLE storylines ADD COLUMN chapter_weight REAL DEFAULT 1.0")
+            # G-03 的 provenance 两列也要自愈：迁移 add_storyline_end_source.sql
+            # 漏跑时（老库 / 迁移未标记已应用），save() 的 INSERT 会因为列不存在
+            # 直接失败 —— 整个故事线保存路径挂掉。补齐后老库也能正常写。
+            # 缺省空串 = 未标注，**不是** 'ai'。
+            if 'estimated_chapter_end_source' not in columns:
+                conn.execute(
+                    "ALTER TABLE storylines ADD COLUMN estimated_chapter_end_source TEXT NOT NULL DEFAULT ''"
+                )
+            if 'estimated_chapter_end_note' not in columns:
+                conn.execute(
+                    "ALTER TABLE storylines ADD COLUMN estimated_chapter_end_note TEXT NOT NULL DEFAULT ''"
+                )
 
             conn.execute(
                 """

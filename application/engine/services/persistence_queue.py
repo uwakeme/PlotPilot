@@ -713,6 +713,12 @@ def register_persistence_handlers() -> None:
                             description=sl_data.get("description", ""),
                             estimated_chapter_start=sl_data.get("estimated_chapter_start"),
                             estimated_chapter_end=sl_data.get("estimated_chapter_end"),
+                            # G-03 的 provenance 必须跟着走队列。此前这里不传，
+                            # 实体默认空串 ⇒ 落库后 source 永远是「未标注」，
+                            # 分不出这条线是模型判的、代码兜底的，还是人工改的。
+                            # 缺省仍用空串（未标注），**不能**默认 'ai'。
+                            estimated_chapter_end_source=sl_data.get("estimated_chapter_end_source", "") or "",
+                            estimated_chapter_end_note=sl_data.get("estimated_chapter_end_note", "") or "",
                         )
                         sl.current_milestone_index = sl_data.get("current_milestone_index", 0)
                         sl.last_active_chapter = sl_data.get("last_active_chapter", 0)

@@ -6,6 +6,7 @@ from domain.novel.value_objects.storyline_type import StorylineType
 from domain.novel.value_objects.storyline_status import StorylineStatus
 from domain.novel.value_objects.storyline_milestone import StorylineMilestone
 from domain.novel.value_objects.storyline_role import StorylineRole
+from domain.novel.value_objects.storyline_end_source import SOURCE_MANUAL
 from domain.novel.repositories.storyline_repository import StorylineRepository
 
 
@@ -51,6 +52,11 @@ class StorylineManager:
             status=StorylineStatus.ACTIVE,
             estimated_chapter_start=estimated_chapter_start,
             estimated_chapter_end=estimated_chapter_end,
+            # G-03：这条线的收尾章是**人给的**（用户自己建的），不是模型判的。
+            # 不标的话，落库后 source 是空串（未标注），读端分不出
+            # 「用户建的」与「旧数据没标」—— 两者都需要被区别对待。
+            estimated_chapter_end_source=SOURCE_MANUAL,
+            estimated_chapter_end_note="用户创建故事线时指定",
             name=name or "",
             description=description or "",
             role=role,

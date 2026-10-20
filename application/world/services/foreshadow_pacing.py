@@ -53,13 +53,16 @@ DEFAULT_STORYLINE_SPAN = 12
 #: 不变量优先于上限。
 MAX_STORYLINE_END = 10_000
 
-SOURCE_AI = "ai"
-SOURCE_FALLBACK = "fallback"
-#: 模型给了值，但**被代码改写**（抬到不变量允许的下界）才算最终值。
-#: ⚠ 不能并进 SOURCE_AI —— 上一轮把 source 落库之后，「ai」会在产物里
-#: 声称「第 11 章是模型判断的」，而模型给的是 8。那是**落库后的假来源**，
-#: 比落日志时的不精确严重得多：它会被下游当成可信 provenance 消费。
-SOURCE_AI_ADJUSTED = "ai_adjusted"
+# source 词表的真源在 domain 层（`domain/novel/value_objects/storyline_end_source.py`）。
+# 这里 re-export 是为了保持既有 import 路径可用 ——
+# `from application.world.services.foreshadow_pacing import SOURCE_AI` 仍在用。
+from domain.novel.value_objects.storyline_end_source import (  # noqa: F401
+    SOURCE_AI,
+    SOURCE_AI_ADJUSTED,
+    SOURCE_FALLBACK,
+    SOURCE_MANUAL,
+    SOURCE_UNMARKED,
+)
 
 #: note 里回显原始值的最大字符数（第九轮复审 §3.4）。
 #: ``10**400`` 的 repr 是 401 位数字，整段塞进 note 会把 registry JSON /

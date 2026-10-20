@@ -303,6 +303,11 @@ class StorylineResponse(BaseModel):
     role: str = "main"
     parent_id: Optional[str] = None
     chapter_weight: float = 1.0
+    # G-03：预估收尾章的来源。空串 = 旧数据未标注（**不等于** 'ai'）。
+    # 'ai' 模型原值 / 'ai_adjusted' 模型给了但被代码改写 /
+    # 'fallback' 代码兜底 / 'manual' 人工设定或改写。
+    estimated_chapter_end_source: str = ""
+    estimated_chapter_end_note: str = ""
 
 
 class StorylineGraphData(BaseModel):
@@ -380,6 +385,28 @@ class SavePlotOutlineRequest(BaseModel):
     plot_outline: PlotOutlineItem
 
 
+def _mark_storyline_end_manual(storyline, new_end: int) -> None:
+    """把故事线的预估收尾章标记为**人工**设定。
+
+    G-03 的 provenance 纪律：取值改了，来源标注必须跟着改 ——
+    否则 note 描述的还是上一个取值（例如「模型给的 8」），
+    而库里存的是新值（第 42 章）。那是**落库后的假来源**，
+    比没有来源更坏：下游会把它当可信 provenance 消费。
+
+    note 里同时记下旧值与旧来源，让「改了什么」可追溯。
+    """
+    from domain.novel.value_objects.storyline_end_source import SOURCE_MANUAL
+
+    old_end = getattr(storyline, "estimated_chapter_end", None)
+    old_source = getattr(storyline, "estimated_chapter_end_source", "") or ""
+    storyline.estimated_chapter_end = new_end
+    storyline.estimated_chapter_end_source = SOURCE_MANUAL
+    storyline.estimated_chapter_end_note = (
+        f"人工改为第 {new_end} 章"
+        + (f"（原为第 {old_end} 章，来源 {old_source}）" if old_source else f"（原为第 {old_end} 章）")
+    )
+
+
 def _storyline_to_response(storyline) -> StorylineResponse:
     milestones = []
     for ms in getattr(storyline, "milestones", []) or []:
@@ -409,6 +436,10 @@ def _storyline_to_response(storyline) -> StorylineResponse:
         role=storyline.role.value if hasattr(storyline, "role") and storyline.role else "main",
         parent_id=getattr(storyline, "parent_id", None),
         chapter_weight=getattr(storyline, "chapter_weight", 1.0),
+        # G-03：把来源透给 API 消费方 —— 此前不暴露，读者只看得到
+        # 「第 42 章收尾」，分不出那是模型判的、代码兜底的、还是人工改的。
+        estimated_chapter_end_source=getattr(storyline, "estimated_chapter_end_source", "") or "",
+        estimated_chapter_end_note=getattr(storyline, "estimated_chapter_end_note", "") or "",
     )
 
 
@@ -1155,7 +1186,19 @@ def update_storyline(
         if request.estimated_chapter_start is not None:
             storyline.estimated_chapter_start = request.estimated_chapter_start
         if request.estimated_chapter_end is not None:
-            storyline.estimated_chapter_end = request.estimated_chapter_end
+            # G-03：改了取值就必须改来源标注。
+            # 此前只改 `estimated_chapter_end`，source/note 原封不动 ——
+            # 于是 note 里写着「模型给的 8」而实际存的是用户改的 42，
+            # **落库后的假 provenance**。下游拿它当可信来源消费。
+            #
+            # 值没变则不动标注：来源仍然成立（用户只是把同一个值又传了一遍）。
+            if request.estimated_chapter_end != storyline.estimated_chapter_end:
+                _mark_storyline_end_manual(
+                    storyline,
+                    request.estimated_chapter_end,
+                )
+            else:
+                storyline.estimated_chapter_end = request.estimated_chapter_end
         if request.status is not None:
             from domain.novel.value_objects.storyline_status import StorylineStatus
             storyline.status = StorylineStatus(request.status)
