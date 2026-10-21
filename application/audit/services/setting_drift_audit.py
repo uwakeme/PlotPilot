@@ -6,7 +6,15 @@
 
 - 基准事实：Bible world_settings/locations 聚合 + MemoryEngine FactLock 清单
 - 比对：CPMS 节点 setting-drift-audit（LLM 逐条比对，输出漂移分 + 分级 issue）
-- 降级：基准为空 → 跳过（drift_score 0）；LLM 失败 → audited=False（不假装通过）
+- 降级：基准为空 → 跳过（audited=False，drift_score=None）；LLM 失败 → 同上（不假装通过）
+
+F-13（长章漂移漏审 / 假通过）：旧实现只送前 12000 字（``_CONTENT_LIMIT``），
+长章后半段的漂移永远审不到，却照样返回 ``audited=True`` —— **假通过**。
+
+现在改为**分段送审**：正文按段落边界切成若干段逐段送审，合并各段结论
+（漂移分取各段最大，issues 合并）。段数超过 token 护栏时只审前 N 段，并
+**显式报告覆盖不全**（``coverage="partial"`` / ``audited=False`` /
+``drift_score=None``），不把「没审完」粉饰成「审过了」。
 """
 from __future__ import annotations
 
@@ -20,8 +28,50 @@ logger = logging.getLogger(__name__)
 _MAX_FACTS = 120
 # 单条事实文本截断（字符）
 _FACT_TEXT_LIMIT = 200
-# 送审正文截断（字符）——漂移高发区在正文细节，取前 12K 足够覆盖单章
-_CONTENT_LIMIT = 12_000
+# 单段送审的正文长度上限（字符）——长章按此切段，不再截断丢弃后半段
+_SEGMENT_CHARS = 6000
+# 单章最多送审段数（token 上限护栏）——超出部分不审，并显式报告「未审完」
+_MAX_SEGMENTS = 4
+
+
+def _split_into_segments(text: str, limit: int) -> List[str]:
+    """把正文切成不超过 ``limit`` 字的连续片段。
+
+    不变量（守卫测试钉住，缺一不可）：
+
+    - ``"".join(segments) == text`` —— 无缝无丢字；否则「整章都审过了」
+      这句话就是假的。
+    - 每段长度 ≤ ``limit`` —— 否则单次请求会撑爆 token 预算。
+    - 优先在段落空行处切；找不到空行退到单换行；仍不行才按字符硬切。
+
+    切点只落在换行上，避免把一个词劈成两半送审。
+    """
+    if not text:
+        return []
+    if limit <= 0 or len(text) <= limit:
+        return [text]
+
+    segments: List[str] = []
+    start = 0
+    total = len(text)
+    while start < total:
+        if total - start <= limit:
+            segments.append(text[start:])
+            break
+        hard_end = start + limit
+        # 先找段落空行，再退到单换行；都找不到就按字符硬切
+        cut = text.rfind("\n\n", start, hard_end)
+        width = 2
+        if cut == -1:
+            cut = text.rfind("\n", start, hard_end)
+            width = 1
+        if cut <= start:
+            cut = hard_end
+        else:
+            cut += width
+        segments.append(text[start:cut])
+        start = cut
+    return segments
 
 
 class SettingDriftAuditService:
@@ -114,33 +164,127 @@ class SettingDriftAuditService:
     ) -> Dict[str, Any]:
         """审计单章设定漂移。
 
+        正文过长时**分段送审**（不再截断丢弃后半段），各段结论合并。
+
         Returns:
-            {audited, drift_score, issues: [...], checked_facts}
-            audited=False 表示未执行（无基准/LLM 失败），调用方不得当作通过。
+            {audited, drift_score, issues: [...], checked_facts,
+             coverage: "full"|"partial"|"none",
+             segments_audited, segments_total}
+
+            audited=False 表示未执行**或未审完**（无基准 / LLM 失败 / 覆盖不全），
+            调用方不得当作通过。覆盖不全时 drift_score 为 None，已审段落
+            查到的问题仍放在 issues 里，供人工复核。
         """
         content = (content or "").strip()
         if not content:
             return self._unaudited("正文为空")
 
+        segments = _split_into_segments(content, _SEGMENT_CHARS)
+        total_segments = len(segments)
+
         facts = self._collect_setting_facts(novel_id, chapter_number)
         if not facts:
-            return self._unaudited("无基准事实（Bible/FactLock 为空）")
+            return self._unaudited(
+                "无基准事实（Bible/FactLock 为空）", total_segments=total_segments
+            )
 
         setting_facts_text = "\n".join(f"- {f}" for f in facts)
-        variables = {
-            "novel_title": novel_title or novel_id,
-            "chapter_number": int(chapter_number),
-            "setting_facts": setting_facts_text,
-            "chapter_content": content[:_CONTENT_LIMIT],
+        targets = segments[:_MAX_SEGMENTS]
+
+        results: List[Dict[str, Any]] = []
+        for index, segment in enumerate(targets, start=1):
+            variables = {
+                "novel_id": novel_id,
+                "novel_title": novel_title or novel_id,
+                "chapter_number": int(chapter_number),
+                "setting_facts": setting_facts_text,
+                "chapter_content": segment,
+                # 让模型知道自己看的是第几段、整章共几段，
+                # 否则它会把节选当成整章，替没看到的后半段下结论
+                "segment_index": index,
+                "segment_total": total_segments,
+            }
+            try:
+                raw = await self._invoke(variables)
+            except Exception as e:
+                logger.warning(
+                    "设定漂移审计调用失败 novel=%s ch=%s seg=%s/%s: %s",
+                    novel_id, chapter_number, index, total_segments, e,
+                )
+                results.append(self._unaudited(f"LLM 调用失败（{type(e).__name__}）"))
+                continue
+            results.append(self._parse_response(raw, total_facts=len(facts)))
+
+        return self._merge_segments(results, total_segments=total_segments)
+
+    def _merge_segments(
+        self,
+        results: List[Dict[str, Any]],
+        *,
+        total_segments: int,
+    ) -> Dict[str, Any]:
+        """合并各段审计结论。
+
+        - drift_score：取各段**最大**（任一段漂移即本章漂移）
+        - issues：各段合并
+        - coverage：全部段落都审完才是 "full"；
+          段数超上限被跳过、或某段失败 ⇒ "partial"
+        - 覆盖不全 ⇒ audited=False + drift_score=None（**不报假通过**），
+          但已审段落查到的问题仍然返回，供人工复核
+        """
+        audited = [r for r in results if r.get("audited")]
+        failed = [r for r in results if not r.get("audited")]
+
+        issues: List[Dict[str, Any]] = []
+        for r in audited:
+            issues.extend(r.get("issues") or [])
+
+        score = 0
+        checked = 0
+        for r in audited:
+            try:
+                score = max(score, int(r.get("drift_score") or 0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                checked = max(checked, int(r.get("checked_facts") or 0))
+            except (TypeError, ValueError):
+                pass
+
+        skipped = max(0, total_segments - len(results))
+        segments_audited = len(audited)
+        full = (not failed) and skipped == 0 and segments_audited == total_segments
+        if full:
+            coverage = "full"
+        elif segments_audited:
+            coverage = "partial"
+        else:
+            # 一段都没审成：不是「审了一部分」，是「没审」
+            coverage = "none"
+
+        payload: Dict[str, Any] = {
+            "issues": issues,
+            "checked_facts": checked,
+            "coverage": coverage,
+            "segments_audited": segments_audited,
+            "segments_total": total_segments,
         }
+        if full:
+            payload["audited"] = True
+            payload["drift_score"] = score
+            return payload
 
-        try:
-            raw = await self._invoke(variables)
-        except Exception as e:
-            logger.warning("设定漂移审计调用失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
-            return self._unaudited(f"LLM 调用失败（{type(e).__name__}）")
-
-        return self._parse_response(raw, total_facts=len(facts))
+        reasons: List[str] = []
+        if skipped:
+            reasons.append(f"章节过长，仅送审前 {len(results)}/{total_segments} 段")
+        for r in failed:
+            reasons.append(str(r.get("reason") or "段落审计失败"))
+        return {
+            "audited": False,
+            "reason": "；".join(reasons) or "审计覆盖不全",
+            "drift_score": None,
+            **payload,
+        }
 
     async def _invoke(self, variables: Dict[str, Any]) -> str:
         from application.ai_invocation.autopilot.factory import get_or_create_autopilot_helper_invoker
@@ -150,7 +294,7 @@ class SettingDriftAuditService:
         owner = type("SettingDriftAuditOwner", (), {"llm_service": self._llm_service})()
         return await get_or_create_autopilot_helper_invoker(owner).invoke_text(
             AutopilotHelperRequest(
-                novel_id=str(variables.get("novel_title") or "global"),
+                novel_id=str(variables.get("novel_id") or variables.get("novel_title") or "global"),
                 stage="audit",
                 operation="audit.setting.drift",
                 node_key=SETTING_DRIFT_AUDIT,
@@ -204,11 +348,14 @@ class SettingDriftAuditService:
         }
 
     @staticmethod
-    def _unaudited(reason: str) -> Dict[str, Any]:
+    def _unaudited(reason: str, total_segments: int = 0) -> Dict[str, Any]:
         return {
             "audited": False,
             "reason": reason,
             "drift_score": None,
             "issues": [],
             "checked_facts": 0,
+            "coverage": "none",
+            "segments_audited": 0,
+            "segments_total": total_segments,
         }

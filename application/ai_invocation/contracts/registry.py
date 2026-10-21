@@ -6,7 +6,12 @@ from typing import Any, Mapping
 
 from application.ai_invocation.contracts.autopilot_writing import AUTOPILOT_CHAPTER_PROSE_OPERATION
 from application.ai_invocation.dtos import InvocationPolicy, InvocationSpec, VariableBinding
-from infrastructure.ai.prompt_keys import CHAPTER_GENERATION_MAIN, CHAPTER_PROSE_GENERATION, CHAPTER_REVISE
+from infrastructure.ai.prompt_keys import (
+    CHAPTER_GENERATION_MAIN,
+    CHAPTER_PROSE_GENERATION,
+    CHAPTER_REVISE,
+    SETTING_DRIFT_AUDIT,
+)
 from infrastructure.persistence.database.write_dispatch import sqlite_writes_bypass_queue
 
 
@@ -80,6 +85,10 @@ class InvocationContractRegistry:
             from application.ai_invocation.contracts.autopilot_helpers import ensure_autopilot_tension_score_contract
 
             ensure_autopilot_tension_score_contract(self._db)
+        elif operation == "audit.setting.drift" and node_key == SETTING_DRIFT_AUDIT:
+            from application.ai_invocation.contracts.autopilot_helpers import ensure_setting_drift_audit_contract
+
+            ensure_setting_drift_audit_contract(self._db)
         elif operation == "autopilot.beat.bridge" and node_key == "beat-cot-bridge":
             from application.ai_invocation.contracts.autopilot_helpers import ensure_autopilot_beat_bridge_contract
 

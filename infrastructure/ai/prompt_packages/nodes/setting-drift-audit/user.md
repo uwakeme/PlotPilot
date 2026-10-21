@@ -5,10 +5,11 @@
 
 【章节正文】
 {chapter_content}
+（以上为第 {segment_index} 段，共 {segment_total} 段。若共 1 段则这是完整正文；否则这只是章节节选，请只就本段出现的文字判断，不要替未提供的部分下结论。）
 
 请比对正文与基准事实，输出可被 json.loads 解析的 JSON：
 {
-  "drift_score": 0到100的整数（0=完全一致，100=严重漂移；基准为空时为 0）,
+  "drift_score": 0到100的整数（0=本段完全一致，100=本段严重漂移）,
   "issues": [
     {
       "severity": "critical | warning | info",
@@ -17,6 +18,6 @@
       "suggestion": "最小修正建议（一句话）"
     }
   ],
-  "checked_facts": 本条实际比对过的基准事实数量
+  "checked_facts": 本段实际比对过的基准事实数量
 }
 只输出 JSON。

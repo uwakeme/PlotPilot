@@ -172,13 +172,23 @@ class ChapterReviewService:
 
         # 5. 设定漂移审计（Bible/FactLock vs 正文；漂移作为 issue 计入评分）
         setting_drift = await self._check_setting_drift(novel_id, chapter)
-        if setting_drift.get("audited"):
-            for item in setting_drift.get("issues") or []:
+        # 覆盖不全（长章只审了前几段）时 issues 仍要透出：那是**已经查到的真问题**，
+        # 不能因为「没审完」被一起丢掉。但漂移分这时是 None，不能当漂移分写进位置里。
+        drift_issues = setting_drift.get("issues") or []
+        if drift_issues:
+            if setting_drift.get("audited"):
+                drift_location = f"第 {chapter.number} 章（漂移分 {setting_drift.get('drift_score')}）"
+            else:
+                drift_location = (
+                    f"第 {chapter.number} 章（漂移审计未完成："
+                    f"{setting_drift.get('reason') or setting_drift.get('coverage') or '覆盖不全'}）"
+                )
+            for item in drift_issues:
                 issues.append(ConsistencyIssue(
                     issue_type=f"setting_drift_{item.get('category', 'fact')}",
                     severity=item.get("severity", "info"),
                     description=item.get("description", ""),
-                    location=f"第 {chapter.number} 章（漂移分 {setting_drift.get('drift_score')}）",
+                    location=drift_location,
                     suggestion=item.get("suggestion") or None,
                 ))
 

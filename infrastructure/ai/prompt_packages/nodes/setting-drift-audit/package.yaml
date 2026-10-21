@@ -19,8 +19,16 @@ variables:
   type: string
   required: true
 - name: chapter_content
-  desc: 章节正文
+  desc: 章节正文（长章按段送审，本变量只装本段）
   type: string
+  required: true
+- name: segment_index
+  desc: 本次送审的正文段序号（从 1 开始）
+  type: integer
+  required: true
+- name: segment_total
+  desc: 本章正文总段数（1 表示整章一次性送审）
+  type: integer
   required: true
 id: setting-drift-audit
 sort_order: 107

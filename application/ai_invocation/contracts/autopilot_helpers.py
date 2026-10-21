@@ -10,6 +10,7 @@ from infrastructure.ai.prompt_keys import (
     CHAPTER_BRIDGE_EXTRACT,
     CHAPTER_BRIDGE_FIX,
     CHAPTER_NARRATIVE_SYNC,
+    SETTING_DRIFT_AUDIT,
     TENSION_SCORING,
     VOICE_REWRITE,
 )
@@ -164,6 +165,26 @@ def ensure_autopilot_tension_score_contract(db=None) -> None:
         db=db,
         operation="autopilot.tension.score",
         node_key=TENSION_SCORING,
+        risk_level="low",
+    )
+
+
+def ensure_setting_drift_audit_contract(db=None) -> None:
+    """发布「设定漂移审计」的调用契约。
+
+    没有这条契约，``SettingDriftAuditService._invoke`` 会在
+    ``ensure_invocation_contract`` 处抛 ``PromptTemplateUnavailable``，
+    被 ``audit_chapter`` 兜成 ``audited=False`` —— 整套设定漂移审计
+    一次都跑不起来（且外面看不见原因，只看到「没审」）。
+    """
+    if db is None:
+        from infrastructure.persistence.database.connection import get_database
+
+        db = get_database()
+    _ensure_helper_contract(
+        db=db,
+        operation="audit.setting.drift",
+        node_key=SETTING_DRIFT_AUDIT,
         risk_level="low",
     )
 
