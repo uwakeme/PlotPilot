@@ -216,6 +216,7 @@ class ContextBuilder:
         scene_director: SceneDirectorInput = None,
         slot_weights: Optional[Dict[str, float]] = None,
         character_context_selection: Optional[Dict[str, Any]] = None,
+        foreshadow_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """构建结构化上下文，返回详细信息
         
@@ -241,6 +242,8 @@ class ContextBuilder:
             scene_director=scene_director,
             # D-04：AI 取材结果必须转发到渲染方，否则算完即丢。
             character_context_selection=character_context_selection,
+            # D-03 P1：伏笔文本同理 —— 剧本与正文用同一份。
+            foreshadow_context=foreshadow_context,
         )
         
         # 从 BudgetAllocation 中提取三层内容

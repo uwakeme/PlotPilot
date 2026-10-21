@@ -356,6 +356,7 @@ class AutoNovelGenerationWorkflow:
         allow_evolution_gate_bypass: bool = False,
         slot_weights: Optional[Dict[str, float]] = None,
         character_context_selection: Optional[Dict[str, Any]] = None,
+        foreshadow_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
 
@@ -403,6 +404,8 @@ class AutoNovelGenerationWorkflow:
             slot_weights=slot_weights,
             # D-04：AI 取材结果必须转发到渲染方，否则算完即丢。
             character_context_selection=character_context_selection,
+            # D-03 P1：伏笔文本同理 —— 剧本与正文用同一份。
+            foreshadow_context=foreshadow_context,
         )
         context = assemble_chapter_bundle_context_text(payload)
         if evolution_gate_report:

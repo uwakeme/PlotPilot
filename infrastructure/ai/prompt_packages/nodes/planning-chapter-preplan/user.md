@@ -9,6 +9,10 @@
 终局阶段与收束方向（**必须**体现在 event_chain 与 protagonist_state_change 里）：
 {finale_directive}
 {% endif %}
+{% if foreshadow_context %}
+本章应推进的伏笔（**必须**体现在 event_chain 与 key_plot_points 里；括号里是推进方式）：
+{foreshadow_context}
+{% endif %}
 {% if pacing_directive %}
 本章节奏指令（AI 判定本章为余韵章，**优先于**上面所有常规推进倾向，必须体现在 event_chain 与 opening_entry 里）：
 {pacing_directive}

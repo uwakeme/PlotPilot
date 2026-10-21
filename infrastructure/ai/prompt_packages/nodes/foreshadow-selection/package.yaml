@@ -1,0 +1,28 @@
+name: 伏笔按章取材
+category: planning
+source: application/world/services/foreshadow_selection.py
+description: 决定这一章该推进哪几条伏笔、怎么推进（AI 决定，代码保证核心伏笔不丢、不许造伏笔）
+builtin: true
+tags:
+- 伏笔
+- 规划
+- JSON输出
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+  required: true
+- name: chapter_outline
+  desc: 本章大纲/执行剧本
+  type: string
+  required: true
+- name: candidates
+  desc: 候选伏笔清单（JSON 文本）
+  type: string
+  required: true
+id: foreshadow-selection
+sort_order: 26

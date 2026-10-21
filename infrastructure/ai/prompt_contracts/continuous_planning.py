@@ -97,6 +97,8 @@ class PlanningChapterPreplanVariables(BaseModel):
     # 空串 = 不施加任何终局约束。必须走独立变量：它与 pacing_directive 一样
     # 是「这一章该怎么写」的指令，拼进 outline 会被本步骤的返回值覆盖。
     finale_directive: str = ""
+    # D-03 P1：本章应推进的伏笔（与正文上下文同一份）。空串 = 不施加伏笔约束。
+    foreshadow_context: str = ""
 
 
 class ContinuousPlanningNextActVariables(BaseModel):

@@ -20,6 +20,11 @@ from typing import Any, Dict, List, Optional
 from application.engine.dtos.scene_director_dto import SceneDirectorInput, coerce_scene_director
 
 from domain.novel.value_objects.novel_id import NovelId
+from application.world.services.foreshadow_selection_schema import (
+    build_foreshadow_context,
+    collect_candidates,
+    fallback_selection,
+)
 from domain.novel.value_objects.chapter_id import ChapterId
 from engine.core.entities.story import StoryPhase
 from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepository
@@ -240,6 +245,9 @@ class ContextBudgetAllocator:
         scene_director: SceneDirectorInput = None,
         current_beat_index: int = 0,
         character_context_selection: Optional[Dict[str, Any]] = None,
+        # D-03 P1：管线路径算好的伏笔文本（**同一份**给剧本与正文用）。
+        # None ⇒ 本层兜底算（其它调用方没有管线）。
+        foreshadow_context: Optional[str] = None,
     ) -> BudgetAllocation:
         """执行预算分配
 
@@ -275,6 +283,7 @@ class ContextBudgetAllocator:
         slots = self._collect_all_slots(
             novel_id, chapter_number, outline, scene_director_dict, current_beat_index,
             character_context_selection=character_context_selection,
+            foreshadow_context=foreshadow_context,
         )
         
         # 提取过期伏笔用于终端强制约束
@@ -375,6 +384,7 @@ class ContextBudgetAllocator:
         scene_director: Optional[Dict[str, Any]] = None,
         current_beat_index: int = 0,
         character_context_selection: Optional[Dict[str, Any]] = None,
+        foreshadow_context: Optional[str] = None,
     ) -> Dict[str, ContextSlot]:
         """收集所有上下文槽位"""
         slots = {}
@@ -575,7 +585,15 @@ class ContextBudgetAllocator:
         )
 
         # ── V9 降级: 待回收伏笔 —— 从 T0(p=90) → T1(p=70) ──
-        foreshadowing_content = self._get_pending_foreshadowings(novel_id, chapter_number)
+        # D-03 P1：管线路径把**算好的同一份**伏笔文本传进来
+        # （伏笔必须在七段剧本定稿前就可见 ⇒ 取材提前到剧本之前）。
+        # 用 `is not None` 而不是真值判断：AI 可能一条都不选 ⇒ 那是「明确不选」，
+        # 不能被兜底集合覆盖。
+        foreshadowing_content = (
+            foreshadow_context
+            if foreshadow_context is not None
+            else self._get_pending_foreshadowings(novel_id, chapter_number)
+        )
         slots["pending_foreshadowings"] = ContextSlot(
             name="待回收伏笔",
             tier=PriorityTier.T1_COMPRESSIBLE,
@@ -923,92 +941,31 @@ class ContextBudgetAllocator:
     MAX_T0_FORESHADOWING_ITEMS = 8
 
     def _get_pending_foreshadowings(self, novel_id: str, chapter_number: int) -> str:
-        """获取待回收伏笔（轨道二核心）- 爽文引擎: 使用 T0 精选筛选，剥离冗长 pending。"""
+        """待回收伏笔 —— **兜底**路径（没有 AI 取材时用领域层合格集）。
+
+        渲染逻辑已抽到 ``application/world/services/foreshadow_selection_schema.py``
+        （D-03 P1），这样「七段剧本」与「正文上下文」用的是**同一个实现**。
+
+        管线路径会把它算好的同一份文本传进来（``foreshadow_context``），
+        两处**不各算一次**（各算一次就是两套口径）。
+        """
         if not self.foreshadowing_repo:
             return ""
-        
+
         try:
             nid = NovelId(novel_id)
             registry = self.foreshadowing_repo.get_by_novel_id(nid)
-            
             if not registry:
                 return ""
-            
-            # 爽文引擎: 使用 T0 筛选方法，剥离冗长 pending 伏笔
-            pending_foreshadows = registry.get_t0_eligible_foreshadowings(
-                current_chapter=chapter_number,
-                max_items=self.MAX_T0_FORESHADOWING_ITEMS,
+            candidates = collect_candidates(
+                registry, chapter_number, max_items=self.MAX_T0_FORESHADOWING_ITEMS
             )
-            pending_subtext = registry.get_pending_subtext_entries()
-            
-            lines = []
-            
-            # 爽文引擎: get_t0_eligible_foreshadowings 已排序，无需再次排序。
-            # D-03: 这里曾经还有一层 [:MAX_T0_FORESHADOWING_ITEMS] 二次截断 ——
-            # 核心伏笔排在最前，二次截断会把它们切掉，等于把刚守住的
-            # 「核心伏笔不得遗忘」又推翻。名单的取舍在领域层做完了。
-            if pending_foreshadows:
-                lines.append("【待回收伏笔（爽文GC精选）】")
-                for f in pending_foreshadows:
-                    importance_mark = "重要" if f.importance.value >= 3 else ""
-                    
-                    # 构建状态标记
-                    status_mark = ""
-                    if f.suggested_resolve_chapter:
-                        if f.suggested_resolve_chapter <= chapter_number:
-                            status_mark = "已过期"
-                        elif f.suggested_resolve_chapter <= chapter_number + 3:
-                            status_mark = "即将到期"
-                        else:
-                            status_mark = f"预期Ch{f.suggested_resolve_chapter}"
-                    
-                    lines.append(
-                        f"- Ch{f.planted_in_chapter} {importance_mark} {status_mark}: {f.description}"
-                    )
-            
-            # 对潜台词按星标 > 预期回收章节排序
-            def subtext_sort_key(e):
-                suggested = getattr(e, 'suggested_resolve_chapter', None)
-                importance = getattr(e, 'importance', 'medium')
-                importance_val = {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}.get(importance, 2)
-                # 用户标记「本章重点」→ 最高优先级
-                is_priority = getattr(e, 'is_priority_for_chapter', False)
-                priority_tier = 0 if is_priority else 1
-
-                if suggested:
-                    if suggested <= chapter_number:
-                        return (priority_tier, 0, -importance_val, suggested)
-                    else:
-                        return (priority_tier, 1, -importance_val, suggested)
-                else:
-                    return (priority_tier, 2, -importance_val, 9999)
-            
-            sorted_subtext = sorted(pending_subtext, key=subtext_sort_key)
-            
-            if sorted_subtext:
-                lines.append("\n【伏笔手账本·待兑现疑问】")
-                for entry in sorted_subtext[:5]:  # 最多 5 个
-                    importance = getattr(entry, 'importance', 'medium')
-                    suggested = getattr(entry, 'suggested_resolve_chapter', None)
-                    
-                    status_mark = ""
-                    if suggested:
-                        if suggested <= chapter_number:
-                            status_mark = "已过期"
-                        elif suggested <= chapter_number + 3:
-                            status_mark = "即将到期"
-                        else:
-                            status_mark = f"预期Ch{suggested}"
-                    
-                    lines.append(
-                        f"- Ch{entry.chapter} [{entry.character_id}] {status_mark}: {entry.question}"
-                    )
-            
-            return "\n".join(lines)
-            
+            return build_foreshadow_context(
+                registry, fallback_selection(candidates), chapter_number
+            )
         except Exception as e:
             logger.warning(f"获取待回收伏笔失败: {e}")
-        
+
         return ""
     
     def _get_deferred_foreshadowings(self, novel_id: str, chapter_number: int) -> str:

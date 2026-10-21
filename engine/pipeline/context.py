@@ -72,6 +72,10 @@ class PipelineContext(_ValidationStateContract):
     # 观察期（apply=false）时前者为 True 而后者为空，两种状态必须可分辨。
     buffer_directive: str = ""
 
+    # D-03 P1：本章应推进的伏笔（**在七段剧本定稿之前**算出来）。
+    # 剧本与正文上下文用**同一份** —— 各算一次就是两套口径。
+    foreshadow_context: str = ""
+
     # ═══ 步骤2产出：上下文 ═══
     context_text: str = ""                       # 组装后的上下文
     context_tokens: int = 0                      # 上下文 token 数

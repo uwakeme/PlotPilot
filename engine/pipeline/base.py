@@ -849,6 +849,10 @@ class BaseStoryPipeline(ABC):
         self._log_step("prepare_chapter_plan", "章节执行剧本准备")
         ctx.beats = []
 
+        # D-03 P1：伏笔取材必须在这里之前完成 ——
+        # 七段剧本在本步骤定稿，伏笔晚一步就影响不了剧本。
+        await self._plan_foreshadows(ctx)
+
         outline = (ctx.outline or "").strip()
         if not outline:
             return StepResult.fail("章节执行剧本为空，无法整章生成")
@@ -882,6 +886,8 @@ class BaseStoryPipeline(ABC):
                     pacing_directive=ctx.buffer_directive,
                     # B-13：终局阶段才非空；平时是空串 ⇒ 模板整段不渲染。
                     finale_directive=await _resolve_finale_directive(ctx),
+                    # D-03 P1：本章应推进的伏笔（与正文上下文**同一份**）。
+                    foreshadow_context=ctx.foreshadow_context or "",
                 )
             except Exception as exc:
                 return StepResult.fail(f"章前执行剧本生成失败: {exc}")
@@ -1612,6 +1618,73 @@ class BaseStoryPipeline(ABC):
             streaming_bus.publish(novel_id, content=content)
         except Exception as e:
             logger.debug("[%s] streaming_bus.publish 失败: %s", novel_id, e)
+
+    async def _plan_foreshadows(self, ctx: PipelineContext) -> str:
+        """D-03 P1：算出「本章应推进的伏笔」—— **在七段剧本定稿之前**。
+
+        旧实现里这个取材发生在**上下文组装阶段**，而七段剧本在那之前就定稿了
+        ⇒ 伏笔永远影响不了剧本（`base.py` 旧注释里记着这条未解决）。
+
+        返回伏笔文本（空串 = 本章没有待推进的伏笔）；结果挂
+        ``ctx.foreshadow_context``，**剧本与正文上下文用同一份**
+        （各算一次就是两套口径 —— D-03 主干刚修掉的那个重复注入的翻版）。
+
+        「选哪几条」交给 AI；AI 不可用 ⇒ 回落领域层合格集，
+        且来源可分辨（``ctx.metadata["foreshadow_selection_source"]``）。
+        """
+        ctx.foreshadow_context = ""
+        repo = getattr(ctx, "foreshadowing_repository", None)
+        if repo is None or not ctx.novel_id:
+            return ""
+
+        try:
+            from domain.novel.value_objects.novel_id import NovelId
+
+            registry = repo.get_by_novel_id(NovelId(ctx.novel_id))
+        except Exception as exc:
+            logger.warning(
+                "[%s] 取伏笔登记表失败，按无伏笔处理 ch=%s: %s",
+                ctx.novel_id, ctx.chapter_number, exc,
+            )
+            return ""
+        if not registry:
+            return ""
+
+        from application.world.services.foreshadow_selection_schema import (
+            build_foreshadow_context,
+            collect_candidates,
+            fallback_selection,
+        )
+
+        candidates = collect_candidates(registry, ctx.chapter_number)
+        if not candidates:
+            return ""
+
+        selection = fallback_selection(candidates)
+        if ctx.llm_service is not None:
+            try:
+                from application.world.services.foreshadow_selection import (
+                    ForeshadowSelectionPlanner,
+                )
+
+                selection = await ForeshadowSelectionPlanner(ctx.llm_service).select(
+                    chapter_number=ctx.chapter_number,
+                    candidates=candidates,
+                    chapter_outline=ctx.outline or "",
+                    novel_title=str(getattr(ctx.chapter_node, "title", "") or ""),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] 伏笔取材失败，回落合格集 ch=%s: %s",
+                    ctx.novel_id, ctx.chapter_number, exc,
+                )
+                selection = fallback_selection(candidates)
+
+        ctx.metadata["foreshadow_selection_source"] = selection.source
+        ctx.foreshadow_context = build_foreshadow_context(
+            registry, selection, ctx.chapter_number
+        )
+        return ctx.foreshadow_context
 
     async def _plan_character_context(self, ctx: PipelineContext) -> Optional[Dict[str, Any]]:
         """D-04：让 AI 决定「这一章每个角色带哪些记忆进上下文」。

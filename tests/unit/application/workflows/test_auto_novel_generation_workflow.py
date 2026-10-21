@@ -174,6 +174,8 @@ class TestGenerateChapter:
             slot_weights=None,
             # D-04：AI 取材结果同样必须转发，否则算完即丢。
             character_context_selection=None,
+            # D-03 P1：伏笔文本同理 —— 剧本与正文用同一份。
+            foreshadow_context=None,
         )
         # 验证 LLM 被调用：至少一次用于生成章节，可能还有一次用于状态提取
         assert mock_llm_service.generate.call_count >= 1
@@ -210,6 +212,7 @@ class TestGenerateChapter:
             scene_director=scene_director,
             slot_weights=None,
             character_context_selection=None,
+            foreshadow_context=None,
         )
 
     @pytest.mark.asyncio

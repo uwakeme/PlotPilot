@@ -69,6 +69,7 @@ class ChapterPreplanningService:
         target_words: int | None = None,
         pacing_directive: str = "",
         finale_directive: str = "",
+        foreshadow_context: str = "",
     ) -> ChapterPreplanResult:
         """Return a seven-section execution plan, generating it when needed."""
         outline = (current_outline or "").strip()
@@ -113,6 +114,9 @@ class ChapterPreplanningService:
                 # B-13：终局阶段的收束方向。空串时模板整段不渲染，
                 # 因此「没进入终局」与「进入了但没方向」在产物里仍可分辨。
                 "finale_directive": finale_directive or "",
+                # D-03 P1：本章应推进的伏笔。空串时模板整段不渲染，
+                # 因此「本章没有待推进伏笔」与「有但没进剧本」在产物里可分辨。
+                "foreshadow_context": foreshadow_context or "",
             },
         ).prompt
         config = generation_config_from_profile("planning_chapter_preplan")
