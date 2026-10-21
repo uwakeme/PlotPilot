@@ -180,6 +180,22 @@ from application.blueprint.services.structure_budget import (  # noqa: E402
 )
 
 
+def _chapter_in_act_range(act, chapter_number: int) -> bool:
+    """章节号是否落在幕的章节区间内（C-08 的兜底判定）。
+
+    幕节点的 ``chapter_start`` / ``chapter_end`` 在它的章节落库时回填；
+    没回填的幕不参与判定（**不猜**）。
+    """
+    try:
+        start = int(getattr(act, "chapter_start", 0) or 0)
+        end = int(getattr(act, "chapter_end", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if start <= 0 or end <= 0 or end < start:
+        return False
+    return start <= int(chapter_number) <= end
+
+
 def _as_str_list(value) -> List[str]:
     """把 LLM 可能给出的 str / list / None 统一成字符串列表。
 
@@ -3166,26 +3182,84 @@ class ContinuousPlanningService:
         return "\n".join(reversed(blocks))
 
     async def _find_act_for_chapter(self, novel_id: str, chapter_number: int) -> Optional[StoryNode]:
-        """查找章节所属的幕"""
-        tree = self.story_node_repo.get_tree(novel_id)
-        acts = [n for n in tree.nodes if n.node_type == NodeType.ACT]
-        return max(acts, key=lambda x: x.number) if acts else None
+        """查找章节所属的幕。
+
+        ⚠ C-08：旧实现**完全忽略** `chapter_number`，直接返回幕号最大的那一幕
+        （= 全书最后一幕）—— 与本 docstring 写的「章节所属的幕」正好相反。
+        ⇒ 连带 `continue_planning` 永远拿「最后一幕」当当前幕，
+        而 `_get_next_act` 找的是 `number+1` ⇒ `has_next_act` **恒为 False**
+        （「这一幕完成了、可以开始下一幕」那条分支是死代码）。
+
+        现在的口径（**事实优先**，判不出来就说判不出来）：
+        1. 结构树里找到该章节节点 → 取它的父幕（章节挂在哪一幕下是事实）；
+        2. 章节节点还没落库 → 用幕的章节区间（chapter_start/chapter_end）判定；
+        3. 都没有 → 返回 None（调用方如实回「未找到当前章节所属的幕」），
+           **不**拿「最后一幕」冒充。
+        """
+        tree = self.story_node_repo.get_tree_sync(novel_id)
+        nodes = list(getattr(tree, "nodes", None) or [])
+        acts = [n for n in nodes if n.node_type == NodeType.ACT]
+        if not acts:
+            return None
+        try:
+            chapter_number = int(chapter_number or 0)
+        except (TypeError, ValueError):
+            chapter_number = 0
+        if chapter_number <= 0:
+            return None
+        act_by_id = {str(getattr(a, "id", "") or ""): a for a in acts}
+        for node in nodes:
+            if getattr(node, "node_type", None) != NodeType.CHAPTER:
+                continue
+            try:
+                number = int(getattr(node, "number", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if number != chapter_number:
+                continue
+            parent = act_by_id.get(str(getattr(node, "parent_id", "") or ""))
+            if parent is not None:
+                return parent
+        # 章节节点还没落库 → 用幕的章节区间判定
+        ranged = [act for act in acts if _chapter_in_act_range(act, chapter_number)]
+        if ranged:
+            return min(ranged, key=lambda a: int(getattr(a, "number", 0) or 0))
+        return None
 
     async def _count_written_chapters_in_act(self, act_id: str) -> int:
-        """统计已写章节数"""
-        children = self.story_node_repo.get_children(act_id, None)
+        """统计已写章节数。
+
+        ⚠ C-08：旧实现调的是 `get_children(act_id, None)` **且没有 await** ——
+        而 `StoryNodeRepository.get_children(parent_id)` 只收**一个**参数、是 async。
+        ⇒ 生产里这一步必抛 TypeError（`continue_planning` 整个 500），
+        而 Mock 替身会**收下**错误签名 ⇒ 用 Mock 写的守卫全是假绿。
+        """
+        children = await self.story_node_repo.get_children(act_id)
         return sum(1 for n in children if n.node_type == NodeType.CHAPTER and n.word_count and n.word_count > 0)
 
     async def _count_planned_chapters_in_act(self, act_id: str) -> int:
-        """统计已规划章节数"""
-        children = self.story_node_repo.get_children(act_id, None)
+        """统计已规划章节数（await 与签名同上）。"""
+        children = await self.story_node_repo.get_children(act_id)
         return sum(1 for n in children if n.node_type == NodeType.CHAPTER)
 
     async def _get_next_act(self, current_act: StoryNode) -> Optional[StoryNode]:
-        """获取下一幕"""
-        tree = self.story_node_repo.get_tree(current_act.novel_id)
-        acts = [n for n in tree.nodes if n.node_type == NodeType.ACT and n.number == current_act.number + 1]
-        return acts[0] if acts else None
+        """获取下一幕：幕号**大于**当前幕的最小那一幕。
+
+        ⚠ C-08：旧实现找的是 `number == current_act.number + 1` ——
+        结构里有重号幕时（fallback 造过重号）会挑错，而「下一幕」的真实口径是
+        「幕号比当前幕大的最小那个」。配合修好的 `_find_act_for_chapter`，
+        `has_next_act` 才不再恒为 False。
+        """
+        tree = self.story_node_repo.get_tree_sync(current_act.novel_id)
+        acts = [n for n in tree.nodes if n.node_type == NodeType.ACT]
+        try:
+            current_number = int(getattr(current_act, "number", 0) or 0)
+        except (TypeError, ValueError):
+            current_number = 0
+        later = [a for a in acts if int(getattr(a, "number", 0) or 0) > current_number]
+        if not later:
+            return None
+        return min(later, key=lambda a: int(getattr(a, "number", 0) or 0))
 
     async def _generate_next_act_info(
         self,
