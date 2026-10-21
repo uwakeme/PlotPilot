@@ -120,3 +120,23 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
   - 改完跑 `tests/unit/interfaces/api/test_local_access.py` 验证没有放宽。
 - **已存密钥不得外发**：`/llm-control/models` 复用已存 key 时会校验请求 base_url 与激活 profile 同源；
   错误响应不回显上游响应体（上游可能把 Authorization 回显出来）。改动前先读该文件的注释。
+
+## 已知的有意偏离（**别当成 bug 修**）
+
+这几条是**产品决策**，不是没做完。改动前先看这里，否则会把决策改回缺陷。
+
+- **写前连续性闸门（演化闸门）有意「告警但不阻断」** ——
+  `engine/pipeline/base.py` 的 `_step_prepare_governance` 只发 `logger.warning`，
+  **不**返回 `StepResult.fail`，**不**拦章。
+  - 为什么：闸门的补救建议是「改为回忆/遗物/传闻」或「添加 [TimeSkip]/[HardCut]」——
+    那是**改大纲**的动作，而管线在这一步没有改大纲的能力（大纲来自上游幕级规划）；
+    真拦下来只会让章节凭空失败。
+  - 匹配规则本身误报率也高（≥2 字裸串即命中，「大纲里提到某人」被当成
+    「让其以活跃人物出现」）。
+  - 后果要说清：登记表那条不变量「**死亡角色不得实际登场**」**目前没有代码保证** ——
+    闸门只负责**报出来**（报告在 `ctx.evolution_continuity_report`）。
+    要真正拦章，得先给管线一个「改大纲」的能力。
+  - 记录位置：登记表 `docs/superpowers/specs/2026-10-16-ai-participation-decision-registry.md`
+    的「偏离登记」小节；ledger
+    `.superpowers/sdd/2026-10-16-ai-participation-batch0-plan/progress.md`。
+  - 用户已拍板（2026-10-21）：**接受这个偏离**，但要求落显式记录，别只留在 commit message 里。
