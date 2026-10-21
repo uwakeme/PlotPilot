@@ -280,7 +280,14 @@ def _observed_acts_per_volume(act_nodes, volume_nodes, fallback: int) -> int:
     引擎会在第 4 幕就换卷，把 LLM 规划的卷内冲突弧拦腰截断。
 
     取所有非空卷的幕数最大值作为节奏基准（"至少容纳这么多幕才换卷"），
-    没有任何卷已有幕时退回公式兜底。
+    **没有任何卷已有幕时**才退回公式兜底。
+
+    ⚠ B-08：公式是**兜底**，不是**地板**。
+    旧实现是 ``max(max(relevant), max(fallback, 1))`` —— 公式变成了下限：
+    公式说 5 幕/卷而 LLM 只规划了 2 幕/卷时，引擎仍按 5 幕换卷
+    ⇒ LLM 规划的卷内节奏又被公式改写（与本函数的 docstring 相悖，
+    也与登记表 B-08 写的「观测值优先、公式仅兜底」相悖）。
+    ⇒ 现在有观测值时**以观测值为准**，公式只在没有观测时兜底。
     """
     counts = {}
     for act in act_nodes:
@@ -291,7 +298,8 @@ def _observed_acts_per_volume(act_nodes, volume_nodes, fallback: int) -> int:
         return max(int(fallback or 1), 1)
     known_volume_ids = {getattr(v, "id", None) for v in volume_nodes}
     relevant = [c for vid, c in counts.items() if vid in known_volume_ids] or list(counts.values())
-    return max(max(relevant), max(int(fallback or 1), 1))
+    # 观测值就是节奏基准；公式**不参与**取大（它只是上面的兜底）
+    return max(relevant)
 
 
 def _completed_chapter_count(host, novel) -> int:

@@ -182,8 +182,39 @@ def test_observed_acts_per_volume_follows_llm_plan():
 
     # 还没有任何幕时退回公式兜底
     assert _observed_acts_per_volume([], vols, fallback=3) == 3
-    # 公式更大时也不下调（取两者较大值，避免过早换卷）
-    assert _observed_acts_per_volume(acts, vols, fallback=9) == 9
+    # B-08：公式更大时**也不上调** —— 公式是兜底，不是地板。
+    # 旧断言是 `== 9`，那正是「公式当地板」的写法：它让公式在有观测值时
+    # 仍能改写 LLM 规划的换卷节奏，与本函数 docstring
+    # （「没有任何卷已有幕时退回公式兜底」）和登记表 B-08
+    # （「观测值优先、公式仅兜底」）都相悖。
+    # 新断言：观测到 6 幕就是 6 幕，公式的 9 不参与。
+    assert _observed_acts_per_volume(acts, vols, fallback=9) == 6
+
+
+def test_observed_acts_per_volume_takes_max_across_volumes():
+    """反向守卫：「观测取 max」的语义不许被改（多个卷时取**最满**那一卷）。"""
+    vols = [
+        SimpleNamespace(id="vol-1"),
+        SimpleNamespace(id="vol-2"),
+    ]
+    acts = [SimpleNamespace(parent_id="vol-1") for _ in range(2)]
+    acts += [SimpleNamespace(parent_id="vol-2") for _ in range(5)]
+    assert _observed_acts_per_volume(acts, vols, fallback=1) == 5
+
+
+def test_observed_acts_per_volume_excludes_unknown_parent_when_a_known_volume_matches():
+    """父卷不在卷列表里的幕**不参与**观测（脏数据不许污染换卷节奏）。"""
+    vols = [SimpleNamespace(id="vol-1")]
+    acts = [SimpleNamespace(parent_id="vol-1") for _ in range(2)]
+    acts += [SimpleNamespace(parent_id="vol-ghost") for _ in range(9)]
+    assert _observed_acts_per_volume(acts, vols, fallback=1) == 2
+
+
+def test_observed_acts_per_volume_falls_back_to_all_counts_when_no_volume_matches():
+    """一个已知卷都没匹配上时整批回退（脏数据不许把节奏压成 0）。"""
+    vols = [SimpleNamespace(id="vol-1")]
+    acts = [SimpleNamespace(parent_id="vol-ghost") for _ in range(4)]
+    assert _observed_acts_per_volume(acts, vols, fallback=1) == 4
 
 
 # ======================================================================

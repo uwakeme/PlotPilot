@@ -72,14 +72,22 @@ async def test_run_act_planning_passes_selected_volume_to_create_next_act(monkey
 
 @pytest.mark.asyncio
 async def test_run_act_planning_keeps_anchor_volume_when_below_cap(monkeypatch):
-    """锚点卷未满时留守，不向后跳卷。"""
+    """锚点卷未满时留守，不向后跳卷。
+
+    ⚠ B-08 之后「满」的判据换成了**观测值**（已落库结构里最满那一卷的幕数），
+    公式只兜底 —— 所以「未满」要相对**观测节奏**来判，不能相对公式值。
+    本场景：卷1 已落 5 幕（观测节奏 5），锚点在卷2（3 幕）⇒ 卷2 未满 ⇒ 留守卷2。
+    """
     volumes = [
         _node("vol-1", 1, "volume", "part-1", title="卷一"),
         _node("vol-2", 2, "volume", "part-1", title="卷二"),
     ]
     acts = [
         _node(f"act-{n}", n, "act", "vol-1", suggested_chapter_count=8)
-        for n in range(48, 51)  # 3 幕 < 上限 5
+        for n in range(45, 50)  # 卷1：5 幕（= 观测节奏）
+    ] + [
+        _node(f"act-{n}", n, "act", "vol-2", suggested_chapter_count=8)
+        for n in range(50, 53)  # 锚点卷2：3 幕 < 观测节奏 5
     ]
     nodes = volumes + acts
 
@@ -91,14 +99,14 @@ async def test_run_act_planning_keeps_anchor_volume_when_below_cap(monkeypatch):
         side_effect=lambda **kw: DaemonHostMixin._find_parent_volume_for_new_act(host, **kw)
     )
     create_next_act = AsyncMock(
-        return_value={"success": True, "next_act": {"parent_id": "vol-1", "number": 51}}
+        return_value={"success": True, "next_act": {"parent_id": "vol-2", "number": 53}}
     )
     host.planning_service.create_next_act_auto = create_next_act
     host.planning_service.confirm_act_planning = AsyncMock()
 
     novel = Mock()
     novel.novel_id.value = "n-1"
-    novel.current_act = 50
+    novel.current_act = 52
     novel.target_chapters = 300
     novel.current_stage = NovelStage.ACT_PLANNING
 
@@ -107,4 +115,53 @@ async def test_run_act_planning_keeps_anchor_volume_when_below_cap(monkeypatch):
     await act_planning_delegate.run_act_planning(host, novel)
 
     create_next_act.assert_awaited_once()
-    assert create_next_act.await_args.kwargs["parent_volume_id"] == "vol-1"
+    assert create_next_act.await_args.kwargs["parent_volume_id"] == "vol-2"
+
+
+@pytest.mark.asyncio
+async def test_run_act_planning_uses_observed_pace_not_formula_floor(monkeypatch):
+    """B-08 接线守卫：换卷节奏传下去的必须是**观测值**，不是公式当地板。
+
+    旧实现 `max(max(relevant), max(fallback,1))` 把公式当地板：
+    公式说 5 幕/卷（300 章目标的公式值）时，即使已落库结构只观测到 2 幕，
+    引擎也会按 5 幕换卷 ⇒ LLM 规划的卷内节奏被公式改写。
+    """
+    volumes = [
+        _node("vol-1", 1, "volume", "part-1", title="卷一"),
+        _node("vol-2", 2, "volume", "part-1", title="卷二"),
+    ]
+    # 观测到的节奏 = 2 幕/卷（LLM 只规划了 2 幕）
+    acts = [
+        _node(f"act-{n}", n, "act", "vol-1", suggested_chapter_count=8)
+        for n in range(48, 50)
+    ] + [
+        _node(f"act-{n}", n, "act", "vol-2", suggested_chapter_count=8)
+        for n in range(50, 52)
+    ]
+    nodes = volumes + acts
+
+    host = Mock()
+    host._is_still_running.return_value = True
+    host.story_node_repo.get_by_novel = AsyncMock(return_value=nodes)
+    host.story_node_repo.get_children_sync.return_value = []
+    host._find_parent_volume_for_new_act = Mock(
+        side_effect=lambda **kw: DaemonHostMixin._find_parent_volume_for_new_act(host, **kw)
+    )
+    create_next_act = AsyncMock(
+        return_value={"success": True, "next_act": {"parent_id": "vol-2", "number": 52}}
+    )
+    host.planning_service.create_next_act_auto = create_next_act
+    host.planning_service.confirm_act_planning = AsyncMock()
+
+    novel = Mock()
+    novel.novel_id.value = "n-1"
+    novel.current_act = 51
+    novel.target_chapters = 300  # 公式给出 5 幕/卷
+    novel.current_stage = NovelStage.ACT_PLANNING
+
+    monkeypatch.setattr(act_planning_delegate, "_read_shared_state", lambda _nid: {})
+
+    await act_planning_delegate.run_act_planning(host, novel)
+
+    # 传下去的节奏 = 观测值 2，**不是**公式的 5
+    assert host._find_parent_volume_for_new_act.call_args.kwargs["rec_acts_per_volume"] == 2
