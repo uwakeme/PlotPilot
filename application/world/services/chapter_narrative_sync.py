@@ -1717,20 +1717,94 @@ def update_narrative_debts(
     return new_debts
 
 
+async def _classify_plot_point(
+    *,
+    novel_id: str,
+    chapter_number: int,
+    content: str,
+    bundle: dict,
+    llm_service: Any,
+    chapter_repository: Any = None,
+) -> Any:
+    """F-08：让 AI 判定本章是不是剧情点、是哪一类、怎么描述。
+
+    代码只给**证据**（本章张力、前章张力、章纲、正文节选）；判断与描述由 AI 给。
+    判不出来 ⇒ 未评估（``source=""``）⇒ 调用方**不生成剧情点**。
+    """
+    from application.world.services.plot_point_classifier import PlotPointClassifier
+    from application.world.services.plot_point_classifier_schema import UNASSESSED
+
+    tension_score = bundle.get("tension_score")
+    if tension_score is None:
+        return UNASSESSED
+    try:
+        prev_tension = _fetch_previous_tension(novel_id, chapter_number, chapter_repository)
+    except Exception:
+        prev_tension = None
+    try:
+        return await PlotPointClassifier(llm_service).classify(
+            chapter_number=chapter_number,
+            chapter_summary=str(bundle.get("summary") or ""),
+            content=content,
+            tension_score=float(tension_score),
+            prev_tension_score=prev_tension,
+            novel_title=novel_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "剧情点判定失败，按未评估处理 novel=%s ch=%s: %s", novel_id, chapter_number, exc
+        )
+        return UNASSESSED
+
+
+def _fetch_previous_tension(
+    novel_id: str,
+    chapter_number: int,
+    chapter_repository: Any,
+) -> Optional[float]:
+    """取前章张力（作为 AI 判断的**证据**）；取不到 ⇒ None。"""
+    try:
+        db = chapter_repository.db if hasattr(chapter_repository, "db") else None
+        if db is None:
+            return None
+        row = db.fetch_one(
+            "SELECT tension_score FROM chapters WHERE novel_id = ? AND number = ?",
+            (novel_id, chapter_number - 1),
+        )
+        if not row:
+            return None
+        raw = row["tension_score"]
+        if raw is None:
+            return None
+        from domain.novel.value_objects.tension_dimensions import UNEVALUATED
+
+        value = float(raw)
+        if value == UNEVALUATED:
+            return None
+        return value
+    except Exception:
+        return None
+
+
 def _auto_generate_plot_point(
     novel_id: str,
     chapter_number: int,
     tension_score: float,
-    chapter_repository: Any,
     plot_arc_repository: Any,
+    verdict: Optional[Any] = None,
 ) -> None:
-    """自动生成剧情点：当张力值显著变化时添加到情节弧。
+    """写入本章剧情点。
 
-    优化后的触发阈值（原20分太苛刻，导致 PlotArc 几乎从不积累）：
-    - 张力跃升 ≥10 分：标记为上升/转折/高潮
-    - 张力骤降 ≥10 分：标记为回落/缓和
-    - 绝对阈值：≥65 即标记为高潮（原85几乎不可达）
+    旧实现用阈值表自动贴标签并代写描述（「高潮：张力从 40 跃升至 85」）——
+    那是**创作判断被写成了常量**。现在标签与描述都由 AI 给（``verdict``）。
+
+    降级纪律：**没有判定 ⇒ 不生成剧情点**。不用阈值表兜底 —— 兜底等于
+    「代码又替 AI 贴了一次标签」，而且 plot_arc 里会混进两种来源的锚点。
     """
+    if verdict is None or not getattr(verdict, "is_usable", False):
+        return
+    if not getattr(verdict, "is_plot_point", False):
+        return
     try:
         from domain.novel.value_objects.novel_id import NovelId
         from domain.novel.value_objects.plot_point import PlotPoint, PlotPointType
@@ -1741,69 +1815,8 @@ def _auto_generate_plot_point(
         if tension_score == UNEVALUATED:
             return
 
-        # 🔥 性能优化：用轻量 SQL 查询替代 list_by_novel
-        # 获取前一章的张力值
-        prev_tension = None
-        try:
-            db = chapter_repository.db if hasattr(chapter_repository, 'db') else None
-            if db is not None:
-                row = db.fetch_one(
-                    "SELECT tension_score FROM chapters WHERE novel_id = ? AND number = ?",
-                    (novel_id, chapter_number - 1)
-                )
-                if row and row['tension_score'] is not None and row['tension_score'] != UNEVALUATED:
-                    prev_tension = float(row['tension_score'])
-        except Exception:
-            pass
-
-        if prev_tension is None:
-            return  # 第一章不生成剧情点
-
-        tension_diff = abs(tension_score - prev_tension)
-
-        # 判断是否需要生成剧情点
-        should_generate = False
-        point_type = PlotPointType.RISING_ACTION
-        description = ""
-
-        # 1. 张力显著上升（≥10分，原阈值20）
-        if tension_score - prev_tension >= 10:
-            should_generate = True
-            if tension_score >= 75:
-                point_type = PlotPointType.CLIMAX
-                description = f"高潮：张力从 {prev_tension:.0f} 跃升至 {tension_score:.0f}"
-            elif tension_score >= 55:
-                point_type = PlotPointType.TURNING_POINT
-                description = f"转折：张力从 {prev_tension:.0f} 上升至 {tension_score:.0f}"
-            else:
-                point_type = PlotPointType.RISING_ACTION
-                description = f"升温：张力从 {prev_tension:.0f} 提升至 {tension_score:.0f}"
-
-        # 2. 张力显著下降（≥10分，原阈值20）
-        elif prev_tension - tension_score >= 10:
-            should_generate = True
-            if prev_tension >= 65 and tension_score < 45:
-                point_type = PlotPointType.FALLING_ACTION
-                description = f"回落：张力从 {prev_tension:.0f} 降至 {tension_score:.0f}"
-            else:
-                point_type = PlotPointType.RESOLUTION
-                description = f"缓和：张力从 {prev_tension:.0f} 回落至 {tension_score:.0f}"
-
-        # 3. 达到高张力（≥65，原阈值85）
-        elif tension_score >= 65 and prev_tension < 65:
-            should_generate = True
-            point_type = PlotPointType.CLIMAX
-            description = f"高峰：张力达到 {tension_score:.0f}"
-
-        # 4. 连续低张力（连续2章<30）——标记为需要调整的平缓段
-        elif tension_score <= 30 and prev_tension <= 30:
-            should_generate = True
-            point_type = PlotPointType.OPENING
-            description = f"持续低张：{prev_tension:.0f}→{tension_score:.0f}（需注入冲突）"
-
-        if not should_generate:
-            return
-
+        point_type = PlotPointType(verdict.point_type)
+        description = verdict.description
         # 使用 TensionLevel.from_score 将 0-100 分映射到 1-10 档
         tension_level = TensionLevel.from_score(tension_score)
 
@@ -1833,11 +1846,11 @@ def _auto_generate_plot_point(
         plot_arc.add_plot_point(plot_point)
         plot_arc_repository.save(plot_arc)
 
-        logger.info("自动生成剧情点 novel=%s ch=%s type=%s tension=%.0f level=%s",
+        logger.info("生成剧情点 novel=%s ch=%s type=%s tension=%.0f level=%s",
                    novel_id, chapter_number, point_type.value, tension_score, tension_level.display_name)
 
     except Exception as e:
-        logger.warning("自动生成剧情点失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
+        logger.warning("生成剧情点失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
 
 
 def _auto_advance_milestone(
@@ -2165,6 +2178,7 @@ def persist_bundle_extras(
     chapter_repository: Any = None,
     plot_arc_repository: Any = None,
     narrative_event_repository: Any = None,
+    plot_point_verdict: Optional[Any] = None,
 ) -> None:
     """将 bundle 中的故事线进展、张力值、对话写入表，并自动生成剧情点、推进里程碑、调整故事线范围。
 
@@ -2178,11 +2192,12 @@ def persist_bundle_extras(
     if tension_score is not None or tension_dims:
         _write_tension_ephemeral(novel_id, chapter_number, tension_score, tension_dims)
 
-    # 2. 自动生成剧情点（基于张力变化）
-    if chapter_repository and plot_arc_repository and tension_score is not None:
+    # 2. 剧情点（判定由 AI 给出，F-08；未评估 ⇒ 不生成）
+    if plot_arc_repository is not None and tension_score is not None:
         _auto_generate_plot_point(
             novel_id, chapter_number, tension_score,
-            chapter_repository, plot_arc_repository
+            plot_arc_repository,
+            verdict=plot_point_verdict,
         )
 
     # 3. 故事线进展更新
@@ -2637,6 +2652,18 @@ async def sync_chapter_narrative_after_save(
                 "bundle 三元组/伏笔落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e
             )
 
+    # 剧情点判定（F-08）：标签与描述由 AI 给；未评估 ⇒ 不生成剧情点
+    plot_point_verdict = None
+    if plot_arc_repository is not None and llm_service is not None:
+        plot_point_verdict = await _classify_plot_point(
+            novel_id=novel_id,
+            chapter_number=chapter_number,
+            content=content,
+            bundle=bundle,
+            llm_service=llm_service,
+            chapter_repository=chapter_repository,
+        )
+
     if storyline_repository is not None or chapter_repository is not None or narrative_event_repository is not None:
         try:
             persist_bundle_extras(
@@ -2647,6 +2674,7 @@ async def sync_chapter_narrative_after_save(
                 chapter_repository,
                 plot_arc_repository,
                 narrative_event_repository,
+                plot_point_verdict=plot_point_verdict,
             )
         except Exception as e:
             logger.warning(

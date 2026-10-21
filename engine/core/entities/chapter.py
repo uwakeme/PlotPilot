@@ -82,20 +82,6 @@ class Chapter:
     def update_content_from_paragraphs(self) -> None:
         self.content = "\n\n".join(p.content for p in sorted(self.paragraphs, key=lambda p: p.position))
 
-    def update_tension(self, plot: float = None, emotional: float = None, pacing: float = None) -> None:
-        if plot is not None:
-            self.plot_tension = max(0, min(100, plot))
-        if emotional is not None:
-            self.emotional_tension = max(0, min(100, emotional))
-        if pacing is not None:
-            self.pacing_tension = max(0, min(100, pacing))
-        self.tension_score = (
-            self.plot_tension * 0.4 +
-            self.emotional_tension * 0.35 +
-            self.pacing_tension * 0.15 +
-            min(self.plot_tension, self.emotional_tension, self.pacing_tension) * 0.1
-        )
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "chapter_number": self.chapter_number,

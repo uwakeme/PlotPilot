@@ -64,6 +64,7 @@ CLICHE_SCAN = "cliche-scan"
 SETTING_DRIFT_AUDIT = "setting-drift-audit"
 CHARACTER_CONTEXT_SELECTION = "character-context-selection"
 CHARACTER_BELIEF_CHECK = "character-belief-check"
+PLOT_POINT_CLASSIFICATION = "plot-point-classification"
 
 # ── Memory ───────────────────────────────────────────────────────────────
 MEMORY_EXTRACTION = "memory-extraction"
@@ -176,6 +177,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     REVIEW_STORYLINE_CONSISTENCY, REVIEW_FORESHADOWING_USAGE,
     REVIEW_IMPROVEMENT_SUGGESTIONS, CHAPTER_AI_REVIEW, CLICHE_SCAN, SETTING_DRIFT_AUDIT,
     CHARACTER_BELIEF_CHECK,
+    PLOT_POINT_CLASSIFICATION,
     # 角色上下文取材（D-04）
     CHARACTER_CONTEXT_SELECTION,
     # Memory

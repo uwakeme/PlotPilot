@@ -1,0 +1,32 @@
+name: 剧情点分类
+category: planning
+source: application/world/services/plot_point_classifier.py
+description: 判断本章是否构成剧情点、属于哪一类、该怎么描述（AI 决定，代码只校验枚举）
+builtin: true
+tags:
+- 剧情点
+- 张力
+- 分类
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+  required: true
+- name: chapter_summary
+  desc: 本章章纲/摘要
+  type: string
+- name: content_excerpt
+  desc: 本章正文节选
+  type: string
+- name: tension_score
+  desc: 本章张力（0-100，未评估时为空）
+  type: string
+- name: prev_tension_score
+  desc: 前章张力（0-100，没有前章时为空）
+  type: string
+id: plot-point-classification
+sort_order: 110
