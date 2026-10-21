@@ -161,6 +161,21 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     if not host._is_still_running(novel):
         return
 
+    # H-05：上一次宏观结构冲突还没处理 ⇒ 不许再调 LLM。
+    # 冲突时结构**没有落库**，若放任再次规划，每个 tick 都会重跑一次
+    # 宏观规划（一次完整 LLM 调用），冲突还会再次发生 —— 白烧钱。
+    # 用户在驾驶舱点「保留原结构，继续」时 /resume 会清掉暂停原因，这里自动解锁。
+    from application.ai_invocation.autopilot.review_gate import (
+        MACRO_STRUCTURE_CONFLICT_REASON,
+    )
+
+    if _read_shared_state(novel.novel_id.value).get("autopilot_pause_reason") == MACRO_STRUCTURE_CONFLICT_REASON:
+        logger.info(
+            "[%s] 宏观结构冲突未处理，跳过本轮宏观规划（不重复调用 LLM）",
+            novel.novel_id.value,
+        )
+        return
+
     host._update_shared_state(
         novel.novel_id.value,
         writing_substep="macro_planning",
@@ -228,11 +243,39 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
         logger.info("[%s] 宏观规划 LLM 返回后检测到停止，不再落库", novel.novel_id)
         return
 
-    await host.planning_service.apply_macro_plan_from_llm_result(
-        result,
-        novel_id=novel.novel_id.value,
-        target_chapters=target_chapters,
-    )
+    try:
+        await host.planning_service.apply_macro_plan_from_llm_result(
+            result,
+            novel_id=novel.novel_id.value,
+            target_chapters=target_chapters,
+        )
+    except Exception as exc:
+        # H-05：结构性冲突（新结构会孤立已有正文的章节）——
+        # **不落库、不推进阶段**，暂停待人工处理。
+        # 之前这里没有兜：异常一路冒到 daemon 顶层（只打一条 error），
+        # 小说停在 macro_planning ⇒ 下一 tick 又重新规划一次（每次都烧一次 LLM），
+        # 而用户全程看不到「结构没落库」。
+        from application.audit.services.macro_merge_engine import MergeConflictException
+
+        if not isinstance(exc, MergeConflictException):
+            raise
+        logger.error(
+            "[%s] 宏观结构冲突，已中止落库：%s",
+            novel.novel_id.value,
+            exc,
+        )
+        novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+        novel.autopilot_status = AutopilotStatus.RUNNING
+        host._flush_novel(novel)
+        host._update_shared_state(
+            novel.novel_id.value,
+            autopilot_pause_reason=MACRO_STRUCTURE_CONFLICT_REASON,
+            macro_structure_ready=False,
+            writing_substep="macro_planning",
+            writing_substep_label="宏观规划 · 结构冲突待处理",
+        )
+        return
+
     host._update_shared_state(
         novel.novel_id.value,
         macro_structure_ready=True,

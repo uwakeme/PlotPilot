@@ -53,6 +53,12 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
 - **测试镜像分层**：`tests/unit/{application,domain,engine,infrastructure,interfaces}/`；CI 只跑 `pytest tests/unit -q --tb=short`
 - **两种 import 风格并存**：仓库根自身是包（根 `__init__.py` + `__main__.py`），`import application.x` 与 `PlotPilot.application.x` 都能解析；跟随所改文件的既有风格，别混用（同模块双名加载会产生重复模块状态）
 - **弃用 shim 不要续命**：`engine/application/` 与 `application/engine/services/autopilot_daemon.py` 都是转发到 `engine/runtime/` 的弃用层，新代码一律写向 `engine/runtime/`
+- **宏观结构合并的「回退」不是无害兜底**（H-05，2026-10-21 补）：
+  `ContinuousPlanningService.confirm_macro_plan` 的 docstring 自认「不检查已有数据，可能导致僵尸节点或数据丢失」。
+  `persist_macro_structure_with_fallback` **只允许**对非 `MergeConflictException` 的异常回退；
+  结构性冲突（新结构会孤立已有正文的章节）必须上抛 —— 守护进程侧暂停待人工处理，
+  API 侧回 409（与 `POST /macro/confirm` 一致），**不许**退化成 500。
+  守卫：`tests/unit/engine/test_macro_structure_conflict_guard.py`。
 
 ## Testing instructions
 

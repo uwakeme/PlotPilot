@@ -1452,7 +1452,20 @@ class ContinuousPlanningService:
         novel_id: str,
         structure: List[Dict],
     ) -> Dict:
-        """先安全合并，失败则回退为一次性写入（与全托管守护进程行为一致）。"""
+        """先安全合并，**偶发失败**则回退为一次性写入（与全托管守护进程行为一致）。
+
+        ⚠ H-05：**结构性冲突不得回退**。
+        `confirm_macro_plan_safe` 在「新结构会孤立已有正文的章节」时抛
+        `MergeConflictException`（RED 阻断）—— 那是**数据安全**问题，
+        而回退目标 `confirm_macro_plan` 的 docstring 自己写着
+        「⚠️ 警告：此方法不检查已有数据，可能导致僵尸节点或数据丢失」。
+        ⇒ 之前这里一个 `except Exception` 把 RED 阻断一起吞了，
+        于是「唯一阻断条件」在守护进程与 API 生成两条入口上**形同虚设**
+        （只有 `POST /macro/confirm` 那条路真的 409）。
+
+        ⇒ 现在：**冲突上抛**（调用方要么 409、要么暂停待人工处理），
+        其余异常才回退（那些是偶发失败，回退是合理的容忍）。
+        """
         try:
             await self.confirm_macro_plan_safe(novel_id=novel_id, structure=structure)
             count = await self._count_macro_structure_nodes(novel_id)
@@ -1461,6 +1474,13 @@ class ContinuousPlanningService:
                 "created_nodes": count,
                 "message": f"已同步 {count} 个结构节点",
             }
+        except MergeConflictException:
+            # 结构性冲突：绝不回退到「不检查已有数据」的一次性写入。
+            logger.error(
+                "[%s] 宏观结构冲突（会孤立已有正文的章节），已中止落库，等待人工处理",
+                novel_id,
+            )
+            raise
         except Exception as e:
             logger.warning(
                 f"[{novel_id}] confirm_macro_plan_safe 失败，回退 confirm_macro_plan：{e}"

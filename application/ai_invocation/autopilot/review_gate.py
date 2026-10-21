@@ -13,6 +13,13 @@ INVOCATION_WAITING_STATUSES = {
 INVOCATION_FAILED_STATUSES = {"blocked", "failed", "cancelled"}
 PENDING_INVOCATION_STATUSES = INVOCATION_WAITING_STATUSES | INVOCATION_FAILED_STATUSES
 
+# H-05：宏观结构冲突的暂停原因。
+# 三处共用同一个字符串常量（避免各写各的、以后对不上）：
+#   engine/runtime/macro_planning_delegate.py —— 写入（冲突后暂停待人工）
+#   engine/runtime/novel_lifecycle.py          —— 读取（全自动模式也不许跳过）
+#   本模块                                    —— 翻译成给人看的审阅闸门
+MACRO_STRUCTURE_CONFLICT_REASON = "macro_structure_conflict"
+
 
 def stage_needs_human_review(stage: Any) -> bool:
     return str(stage or "").strip().lower() in {"paused_for_review", "reviewing"}
@@ -112,6 +119,24 @@ def review_gate_from_status(status: Mapping[str, Any]) -> dict[str, Any] | None:
             "can_resume": False,
             "primary_action": "wait",
             "message": "宏观结构已提交，正在写入结构树；结构出现后才能确认继续。",
+        }
+
+    # H-05：新结构与已有正文冲突，合并被红色阻断。
+    # 这里**不能说「宏观结构已生成」** —— 新结构一个节点都没落库，
+    # 留在库里的是**旧结构**（原样保留）。文案必须说真话，
+    # 否则用户会以为新结构已经生效、可以放心继续。
+    if needs_review and str(status.get("autopilot_pause_reason") or "") == MACRO_STRUCTURE_CONFLICT_REASON:
+        return {
+            "type": "macro_plan",
+            "status": "ready",
+            "artifact_status": "ready",
+            "can_resume": True,
+            "primary_action": "resume",
+            "action_label": "保留原结构，继续",
+            "message": (
+                "新生成的宏观结构与已有正文冲突，已阻断写入并原样保留旧结构。"
+                "请在结构树核对后继续，或调整结构后重新生成。"
+            ),
         }
 
     if not needs_review:

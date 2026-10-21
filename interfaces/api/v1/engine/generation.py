@@ -30,7 +30,10 @@ from application.blueprint.services.setup_plot_outline_invocation import (
 from application.blueprint.services.setup_plot_outline_continuation import (
     normalize_setup_plot_outline_payload,
 )
-from application.blueprint.services.continuous_planning_service import ContinuousPlanningService
+from application.blueprint.services.continuous_planning_service import (
+    ContinuousPlanningService,
+    MergeConflictException,
+)
 from application.core.services.title_suggestion_service import fallback_title_from_premise
 from application.engine.dtos.scene_director_dto import SceneDirectorAnalysis
 from application.engine.services.hosted_write_service import HostedWriteService
@@ -1473,11 +1476,25 @@ async def plan_novel(
         )
         logger.info(f"[PlanNovel] Macro plan generated, persisting (shared path with autopilot)")
 
-        confirm_result = await continuous_planning_service.apply_macro_plan_from_llm_result(
-            macro_plan,
-            novel_id=novel_id,
-            target_chapters=novel.target_chapters,
-        )
+        try:
+            confirm_result = await continuous_planning_service.apply_macro_plan_from_llm_result(
+                macro_plan,
+                novel_id=novel_id,
+                target_chapters=novel.target_chapters,
+            )
+        except MergeConflictException as e:
+            # H-05：结构性冲突是**红色阻断**，必须回 409（与 POST /macro/confirm 一致）。
+            # 退化成 500 会让前端以为「服务抽风，重试即可」——
+            # 而重试只会再撞一次同样的冲突，还白烧一次 LLM。
+            logger.warning(f"[PlanNovel] Macro structure conflict for {novel_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "MERGE_CONFLICT",
+                    "message": str(e),
+                    "conflicts": e.conflicts,
+                },
+            )
 
         logger.info(
             f"Persisted macro structure: nodes={confirm_result['created_nodes']}"

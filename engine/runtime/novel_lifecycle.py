@@ -22,6 +22,27 @@ def _is_novel_deleted(host: Any, novel: Novel) -> bool:
         return False
 
 
+def _macro_conflict_pending(novel: Novel) -> bool:
+    """H-05：宏观结构冲突（红色阻断）是否仍未处理。
+
+    全自动模式会跳过人工审阅闸门、直接进幕级规划 —— 但结构性冲突
+    意味着**新结构一个节点都没落库**，继续往下走等于在没有宏观结构
+    的情况下写正文。⇒ 冲突未处理时，全自动模式也必须停下来。
+    """
+    try:
+        from application.ai_invocation.autopilot.review_gate import (
+            MACRO_STRUCTURE_CONFLICT_REASON,
+        )
+        from application.ai_invocation.autopilot.shared_state import (
+            read_autopilot_shared_state,
+        )
+
+        shared = read_autopilot_shared_state(novel.novel_id.value)
+    except Exception:
+        return False
+    return str(shared.get("autopilot_pause_reason") or "") == MACRO_STRUCTURE_CONFLICT_REASON
+
+
 async def process_novel(host: Any, novel: Novel) -> None:
     """处理单个小说（全流程状态机路由）"""
     try:
@@ -104,12 +125,19 @@ async def process_novel(host: Any, novel: Novel) -> None:
             logger.info("[%s] 开始审计", novel.novel_id)
             await run_chapter_audit(host, novel)
         elif novel.current_stage == NovelStage.PAUSED_FOR_REVIEW:
-            if getattr(novel, "auto_approve_mode", False):
+            conflict_pending = _macro_conflict_pending(novel)
+            if getattr(novel, "auto_approve_mode", False) and not conflict_pending:
                 logger.info("[%s] 全自动模式：跳过人工审阅", novel.novel_id)
                 novel.current_stage = NovelStage.ACT_PLANNING
                 host._save_novel_state(novel)
                 return
-            logger.debug("[%s] 等待人工审阅", novel.novel_id)
+            if conflict_pending:
+                logger.warning(
+                    "[%s] 宏观结构冲突未处理：全自动模式也不再跳过，等待人工处理",
+                    novel.novel_id,
+                )
+            else:
+                logger.debug("[%s] 等待人工审阅", novel.novel_id)
             return
         elif novel.current_stage == NovelStage.COMPLETED:
             # 目标章数是软目标：完结书被调大目标后允许续写，否则保持完结。
