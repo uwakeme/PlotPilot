@@ -85,7 +85,9 @@ class ChapterReviewResult:
         self,
         chapter_number: int,
         issues: List[ConsistencyIssue],
-        overall_score: float,  # 0-100
+        # None ⇒ **未评估**（AI 判不出来）。旧实现是代码公式算的，
+        # 永远有一个数 —— 读起来像「审稿人打了 88 分」，其实是「没发现问题」。
+        overall_score: Optional[float],  # 0-100
         improvement_suggestions: List[str],
         reviewed_at: datetime
     ):
@@ -119,6 +121,9 @@ class ChapterReviewService:
         llm_service: LLMService,
         model: str = "",
         setting_drift_audit: Optional["SettingDriftAuditService"] = None,
+        # F-14b：总分由 AI 给。复用 ChapterAIReviewService（活的那条审稿
+        # 路径用的就是它）⇒ 两条路径口径一致，不再「同一件事两个实现」。
+        ai_review_service: Optional[Any] = None,
     ):
         self.chapter_repo = chapter_repo
         self.cast_repo = cast_repo
@@ -130,6 +135,8 @@ class ChapterReviewService:
         self.model = model or LLMEnvironmentSettings.from_env().system_model
         # 设定漂移审计（A1）：可选注入——未注入时不执行该项（向后兼容）
         self.setting_drift_audit = setting_drift_audit
+        # AI 审稿服务（可选）：未注入 ⇒ 总分未评估（不回落成公式分）
+        self.ai_review_service = ai_review_service
 
     @staticmethod
     def _render_review_prompt(review_type: str, variables: Dict[str, Any]):
@@ -196,7 +203,7 @@ class ChapterReviewService:
         improvement_suggestions = await self._generate_improvement_suggestions(chapter, issues)
 
         # 7. 计算总体评分
-        overall_score = self._calculate_overall_score(issues)
+        overall_score = await self._judge_overall_score(chapter)
 
         return ChapterReviewResult(
             chapter_number=chapter_number,
@@ -487,19 +494,36 @@ class ChapterReviewService:
 
         return suggestions
 
-    def _calculate_overall_score(self, issues: List[ConsistencyIssue]) -> float:
-        """计算总体评分"""
-        base_score = 100.0
+    async def _judge_overall_score(self, chapter: Chapter) -> Optional[float]:
+        """总分由 **AI** 给（F-14b）。
 
-        for issue in issues:
-            if issue.severity == "critical":
-                base_score -= 15
-            elif issue.severity == "warning":
-                base_score -= 5
-            elif issue.severity == "suggestion":
-                base_score -= 2
+        旧实现是代码公式：``100 − critical×15 − warning×5 − suggestion×2``。
+        那是**把问题条数换算成分数**，不是审稿人对这一章的判断 ——
+        同样三条问题，质量可以差很远；零条问题就等于满分，也与文本无关。
 
-        return max(0.0, base_score)
+        现在复用 ``ChapterAIReviewService``（活的那条审稿路径用的就是它）：
+        同一个 CPMS 节点、同一套契约校验、同一个 0-100 钳制
+        ⇒ 两条路径口径一致，不再是「同一件事两个实现」。
+
+        判不出来（调用失败 / 契约违约 / 未注入服务）⇒ **None（未评估）**。
+        绝不回落成 70 / 100 之类的中位分 —— 那个数会被读成「AI 打了 70 分」。
+        """
+        if self.ai_review_service is None:
+            return None
+        try:
+            result = await self.ai_review_service.review(
+                chapter_number=chapter.number,
+                chapter_title=chapter.title,
+                chapter_content=chapter.content or "",
+                chapter_outline=getattr(chapter, "outline", "") or "",
+                generation_hint=getattr(chapter, "generation_hint", "") or "",
+            )
+        except Exception as e:
+            logger.warning(
+                "审稿总分判定失败，按未评估处理 ch=%s: %s", chapter.number, e
+            )
+            return None
+        return int(result.score)
 
     def _extract_characters_from_content(self, content: str, characters: List[Any]) -> List[str]:
         """从已知角色表中识别本章出现的人物名。

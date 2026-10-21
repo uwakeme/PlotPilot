@@ -1216,6 +1216,8 @@ def get_chapter_review_service():
             llm_service=get_llm_service(),
             bible_repository=get_bible_repository(),
         ),
+        # F-14b：总分由 AI 给 —— 复用活的那条审稿路径的同一个服务
+        ai_review_service=get_chapter_ai_review_service(),
     )
 
 

@@ -351,6 +351,8 @@ async def test_review_chapter_surfaces_partial_drift_issues():
         "segments_total": 6,
     })
     svc.setting_drift_audit = drift
+    # F-14b：总分改由 AI 给；本用例只关心漂移问题透出 ⇒ 不注入 AI 审稿服务
+    svc.ai_review_service = None
 
     result = await svc.review_chapter("n-1", 7)
 

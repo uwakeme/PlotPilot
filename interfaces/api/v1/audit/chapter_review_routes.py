@@ -26,7 +26,8 @@ class ChapterReviewResponse(BaseModel):
     """章节审稿响应"""
     chapter_number: int
     issues: List[ConsistencyIssueResponse]
-    overall_score: float
+    # None ⇒ 未评估（AI 判不出来）；旧实现是代码公式算的，永远有值
+    overall_score: Optional[float] = None
     improvement_suggestions: List[str]
     reviewed_at: str
 
