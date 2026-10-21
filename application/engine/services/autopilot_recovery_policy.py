@@ -57,6 +57,25 @@ class AutopilotRecoveryPolicy:
         return self._decide_from_row(row, for_start=True)
 
     def decide_on_daemon_tick(self, novel: Any) -> AutopilotRecoveryDecision:
+        """常规 tick 的恢复判定。
+
+        ⚠ D-07：**常规 tick 不丢弃生成临时产物**（七段章前规划 / 预览 / 草稿）。
+        「丢弃」只在**真的被打断**时才有意义（`decide_after_interrupted_writing`），
+        或在启停时（`decide_on_start`）。
+        之前这里每 tick 都丢 ⇒ 章节大纲被静默改写（甚至被写成空串），
+        而七段剧本每次都要重新生成（每章多烧一次 LLM）。
+        """
+        return self._decide_for_novel(novel, discard_generation=False)
+
+    def decide_after_interrupted_writing(self, novel: Any) -> AutopilotRecoveryDecision:
+        """写作被中断后的判定：**要**丢弃本次生成的临时产物。
+
+        与常规 tick 的唯一区别是 `discard_generation=True` ——
+        中断留下的七段规划是「半截产物」，不能当稳定输入复用。
+        """
+        return self._decide_for_novel(novel, discard_generation=True)
+
+    def _decide_for_novel(self, novel: Any, *, discard_generation: bool) -> AutopilotRecoveryDecision:
         novel_id = novel.novel_id.value if hasattr(getattr(novel, "novel_id", None), "value") else str(getattr(novel, "novel_id", ""))
         row = self._fetch_novel(novel_id)
         if row is None:
@@ -68,7 +87,7 @@ class AutopilotRecoveryPolicy:
                 clear_stop_signal=False,
                 reason="novel_state_unavailable",
             )
-        return self._decide_from_row(row, for_start=False)
+        return self._decide_from_row(row, for_start=False, discard_generation=discard_generation)
 
     def apply_transient_cleanup(self, decision: AutopilotRecoveryDecision) -> None:
         if decision.discard_transient_generation and decision.chapter_number:
@@ -81,7 +100,13 @@ class AutopilotRecoveryPolicy:
         if decision.clear_pending_invocation:
             self._cancel_retryable_pending_invocations(decision.novel_id)
 
-    def _decide_from_row(self, row: dict[str, Any], *, for_start: bool) -> AutopilotRecoveryDecision:
+    def _decide_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        for_start: bool,
+        discard_generation: bool = False,
+    ) -> AutopilotRecoveryDecision:
         novel_id = str(row["id"])
         stage = str(row.get("current_stage") or NovelStage.MACRO_PLANNING.value)
         autopilot_stopped = str(row.get("autopilot_status") or "").strip().lower() == "stopped"
@@ -149,7 +174,11 @@ class AutopilotRecoveryPolicy:
                 novel_id=novel_id,
                 next_stage=NovelStage.WRITING.value,
                 chapter_number=chapter_number,
-                discard_transient_generation=story_pipeline and chapter_number is not None,
+                # D-07：常规 tick（for_start=False 且 discard_generation=False）
+                # **不丢弃**生成临时产物 —— 只有「启停」或「刚被中断」才丢。
+                discard_transient_generation=(for_start or discard_generation)
+                and story_pipeline
+                and chapter_number is not None,
                 discard_transient_invocations=for_start and autopilot_stopped and story_pipeline and chapter_number is not None,
                 clear_stop_signal=True,
                 clear_pending_invocation=self._is_retryable_pending(pending),
@@ -526,6 +555,14 @@ class AutopilotRecoveryPolicy:
         Chapter preplanning is part of the writing step. If generation is stopped
         before the chapter is completed, the seven-section plan and its
         continuity context must not be reused as stable input on the next run.
+
+        ⚠ D-07：**没有替代大纲时，绝不拿空串覆盖真实大纲**。
+        之前 `lightweight_outline` 的初值是 `""` ⇒ 章节节点上没有
+        `act_chapter_plan` 时，`chapters.outline` 会被写成**空字符串**：
+        真实七段剧本凭空消失，驾驶舱看到的是空大纲，而且**每 tick 发生一次**。
+        ⇒ 现在初值是 `None`（语义是「没有可信替代」，不是「空」），
+        只有真渲染出内容才回写；没有替代时**保留原大纲**，
+        只清掉正文 / 字数 / 草稿状态。
         """
         try:
             db = self._get_db()
@@ -538,7 +575,8 @@ class AutopilotRecoveryPolicy:
                 """,
                 (novel_id, int(chapter_number)),
             )
-            lightweight_outline = ""
+            # None = 没有可信的替代大纲（**不是**空串）
+            lightweight_outline: Optional[str] = None
             metadata: dict[str, Any] = {}
             if row:
                 metadata = self._json_object(row.get("metadata"))
@@ -548,33 +586,63 @@ class AutopilotRecoveryPolicy:
                         render_lightweight_act_chapter_outline,
                     )
 
-                    lightweight_outline = render_lightweight_act_chapter_outline(act_plan)
+                    rendered = render_lightweight_act_chapter_outline(act_plan)
+                    if rendered.strip():
+                        lightweight_outline = rendered
                 if metadata.pop("chapter_preplan", None) is not None:
-                    db.execute(
-                        """
-                        UPDATE story_nodes
-                        SET outline = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (
-                            lightweight_outline,
-                            json.dumps(metadata, ensure_ascii=False, sort_keys=True),
-                            row["id"],
-                        ),
-                    )
+                    if lightweight_outline is None:
+                        # 没有替代大纲 ⇒ 只摘掉 preplan，**保留节点原大纲**
+                        db.execute(
+                            """
+                            UPDATE story_nodes
+                            SET metadata = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (
+                                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                                row["id"],
+                            ),
+                        )
+                    else:
+                        db.execute(
+                            """
+                            UPDATE story_nodes
+                            SET outline = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (
+                                lightweight_outline,
+                                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                                row["id"],
+                            ),
+                        )
 
-            db.execute(
-                """
-                UPDATE chapters
-                SET outline = ?,
-                    content = '',
-                    word_count = 0,
-                    status = 'draft',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE novel_id = ? AND number = ? AND status != 'completed'
-                """,
-                (lightweight_outline, novel_id, int(chapter_number)),
-            )
+            if lightweight_outline is None:
+                # 没有可信替代 ⇒ 不许动 outline（不许拿空串覆盖真实大纲）
+                db.execute(
+                    """
+                    UPDATE chapters
+                    SET content = '',
+                        word_count = 0,
+                        status = 'draft',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE novel_id = ? AND number = ? AND status != 'completed'
+                    """,
+                    (novel_id, int(chapter_number)),
+                )
+            else:
+                db.execute(
+                    """
+                    UPDATE chapters
+                    SET outline = ?,
+                        content = '',
+                        word_count = 0,
+                        status = 'draft',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE novel_id = ? AND number = ? AND status != 'completed'
+                    """,
+                    (lightweight_outline, novel_id, int(chapter_number)),
+                )
             scope_key = f"novel_id:{novel_id}|chapter_number:{int(chapter_number)}"
             db.execute(
                 """
@@ -589,13 +657,15 @@ class AutopilotRecoveryPolicy:
             )
             self._commit()
             logger.info(
-                "丢弃未完成章节的章前规划 novel=%s chapter=%s",
+                "丢弃未完成章节的章前规划 novel=%s chapter=%s 保留原大纲=%s",
                 novel_id,
                 chapter_number,
+                lightweight_outline is None,
             )
         except Exception as exc:
-            logger.debug(
-                "章前规划清理跳过 novel=%s ch=%s: %s",
+            # D-07：清理失败不许再 `logger.debug` 吞掉 —— 降级路径要**看得见**。
+            logger.warning(
+                "章前规划清理失败 novel=%s ch=%s: %s",
                 novel_id,
                 chapter_number,
                 exc,

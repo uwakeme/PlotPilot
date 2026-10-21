@@ -242,3 +242,31 @@ async def test_process_novel_routes_writing_via_run_writing():
     ) as mock_writing:
         await process_novel(host, novel)
         mock_writing.assert_awaited_once_with(host, novel)
+
+
+@pytest.mark.asyncio
+async def test_process_novel_reports_recovery_failure_as_warning(monkeypatch, caplog):
+    """D-07：恢复策略执行失败必须**看得见** —— 不许 `logger.debug` 吞掉。
+
+    降级路径静默失败 ⇒ 用户看到的是「什么都没发生」，而实际上恢复逻辑没跑。
+    """
+    import logging
+
+    from application.engine.services.autopilot_recovery_policy import AutopilotRecoveryPolicy
+
+    def _boom(self, novel):
+        raise RuntimeError("db is locked")
+
+    monkeypatch.setattr(AutopilotRecoveryPolicy, "decide_on_daemon_tick", _boom)
+
+    host = MagicMock()
+    host._is_still_running.return_value = False
+    novel = MagicMock()
+    novel.novel_id.value = "n-1"
+
+    with caplog.at_level(logging.WARNING, logger="engine.runtime.novel_lifecycle"):
+        await process_novel(host, novel)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "恢复策略失败必须记成 warning（不能只 debug）"
+    assert any("恢复策略执行失败" in r.getMessage() for r in warnings)

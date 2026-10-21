@@ -1,5 +1,7 @@
 import sqlite3
 import json
+import logging
+from types import SimpleNamespace
 
 from application.engine.services.autopilot_recovery_policy import AutopilotRecoveryPolicy
 
@@ -315,3 +317,195 @@ def test_recovery_cleanup_cancels_only_retryable_pending_invocations():
     assert statuses["s-retry"] == "cancelled"
     assert statuses["s-review"] == "awaiting_acceptance"
     assert statuses["s-human"] == "awaiting_acceptance"
+
+
+# ══════════════════════ D-07：空大纲覆盖 + 每 tick 都清 + 失败被吞 ══════════════════════
+#
+# D-07 的三段病因（都已用运行时探针实证，不是读代码推断）：
+#
+# 1. **空串覆盖**：`_discard_transient_chapter_preplan` 的 `lightweight_outline`
+#    初值是 `""` ⇒ 章节节点上没有 `act_chapter_plan` 时，
+#    `chapters.outline` 被写成**空字符串**（真实七段剧本凭空消失）。
+# 2. **每 tick 都清**：`decide_on_daemon_tick` 在 WRITING 阶段把
+#    `discard_transient_generation` 置 True ⇒ 常规 tick 也在丢生成临时产物，
+#    而丢弃只该发生在「真被打断」或「启停」时。
+# 3. **失败被吞**：清理异常被 `except Exception` + `logger.debug` 吞掉
+#    ⇒ 降级路径完全不可见。
+
+
+def _novel(novel_id: str = "novel-1"):
+    return SimpleNamespace(novel_id=SimpleNamespace(value=novel_id))
+
+
+def _seed_writing_novel(db, *, with_act_plan: bool, chapter_outline: str, node_outline: str):
+    db.execute(
+        "INSERT INTO novels (id, current_stage, autopilot_status)"
+        " VALUES ('novel-1', 'writing', 'running')"
+    )
+    db.execute(
+        "INSERT INTO chapters (id, novel_id, number, status, content, outline, word_count)"
+        " VALUES ('c1', 'novel-1', 1, 'draft', '半章草稿', ?, 1234)",
+        (chapter_outline,),
+    )
+    metadata = {}
+    if with_act_plan:
+        metadata["act_chapter_plan"] = {
+            "number": 1,
+            "title": "第1章",
+            "main_event": "轻量主事件",
+            "handoff_from_previous": "本幕入口",
+            "handoff_to_next": "下一章钩子",
+            "required_threads": ["主线"],
+        }
+    metadata["chapter_preplan"] = {"detail_outline": "一、开篇切入点：临时七段细纲"}
+    db.execute(
+        "INSERT INTO story_nodes (id, novel_id, number, node_type, outline, metadata)"
+        " VALUES ('sn-1', 'novel-1', 1, 'chapter', ?, ?)",
+        (node_outline, json.dumps(metadata, ensure_ascii=False)),
+    )
+
+
+def test_daemon_tick_does_not_discard_transient_generation():
+    """常规 tick **不许**丢弃生成临时产物。
+
+    丢弃只该发生在「真被打断」（`decide_after_interrupted_writing`）
+    或「启停」（`decide_on_start`）时。
+    """
+    db = _Db()
+    db.execute("INSERT INTO novels (id, current_stage, autopilot_status) VALUES ('novel-1', 'writing', 'running')")
+    db.execute(
+        "INSERT INTO chapters (id, novel_id, number, status, content, outline)"
+        " VALUES ('c1', 'novel-1', 1, 'draft', '半章', '真实七段细纲')"
+    )
+
+    decision = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True).decide_on_daemon_tick(
+        _novel()
+    )
+
+    assert decision.discard_transient_generation is False
+
+
+def test_interrupted_writing_still_discards_transient_generation():
+    """反向守卫：真被中断时**必须**丢 —— 否则半截七段规划被当稳定输入复用。"""
+    db = _Db()
+    db.execute("INSERT INTO novels (id, current_stage, autopilot_status) VALUES ('novel-1', 'writing', 'running')")
+    db.execute(
+        "INSERT INTO chapters (id, novel_id, number, status, content, outline)"
+        " VALUES ('c1', 'novel-1', 1, 'draft', '半章', '真实七段细纲')"
+    )
+
+    policy = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True)
+    decision = policy.decide_after_interrupted_writing(_novel())
+
+    assert decision.discard_transient_generation is True
+    assert decision.chapter_number == 1
+
+
+def test_start_path_still_discards_transient_generation():
+    """反向守卫：启停路径照旧丢弃（既有语义不许被改坏）。"""
+    db = _Db()
+    db.execute("INSERT INTO novels (id, current_stage, autopilot_status) VALUES ('novel-1', 'writing', 'stopped')")
+    db.execute(
+        "INSERT INTO chapters (id, novel_id, number, status, content, outline)"
+        " VALUES ('c1', 'novel-1', 1, 'draft', '半章', '真实七段细纲')"
+    )
+
+    decision = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True).decide_on_start("novel-1")
+
+    assert decision.discard_transient_generation is True
+
+
+def test_cleanup_never_overwrites_real_outline_with_empty_string():
+    """D-07 核心：没有 act_chapter_plan 时，**不许**把真实大纲写成空串。"""
+    db = _Db()
+    _seed_writing_novel(
+        db,
+        with_act_plan=False,
+        chapter_outline="真实七段细纲（幕级规划产出的正文骨架）",
+        node_outline="章节节点上的真实大纲",
+    )
+
+    policy = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True)
+    decision = policy.decide_after_interrupted_writing(_novel())
+    policy.apply_transient_cleanup(decision)
+
+    chapter = db.fetch_one("SELECT outline, content, word_count, status FROM chapters WHERE id = 'c1'")
+    node = db.fetch_one("SELECT outline, metadata FROM story_nodes WHERE id = 'sn-1'")
+
+    # 大纲必须原样保留（不是 ""、也不是被降级）
+    assert chapter["outline"] == "真实七段细纲（幕级规划产出的正文骨架）"
+    assert node["outline"] == "章节节点上的真实大纲"
+    # 但「半截产物」仍然要清掉：正文 / 字数 / 草稿状态
+    assert chapter["content"] == ""
+    assert chapter["word_count"] == 0
+    assert chapter["status"] == "draft"
+    # preplan 元数据照样摘掉
+    assert "chapter_preplan" not in json.loads(node["metadata"])
+
+
+def test_cleanup_still_downgrades_to_lightweight_chain_when_available():
+    """反向守卫：有 act_chapter_plan 时**仍然**换成轻量链条（既有语义不许被改坏）。"""
+    db = _Db()
+    _seed_writing_novel(
+        db,
+        with_act_plan=True,
+        chapter_outline="真实七段细纲（幕级规划产出的正文骨架）",
+        node_outline="章节节点上的真实大纲",
+    )
+
+    policy = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True)
+    decision = policy.decide_after_interrupted_writing(_novel())
+    policy.apply_transient_cleanup(decision)
+
+    chapter = db.fetch_one("SELECT outline FROM chapters WHERE id = 'c1'")
+    node = db.fetch_one("SELECT outline FROM story_nodes WHERE id = 'sn-1'")
+
+    assert "主事件：轻量主事件" in chapter["outline"]
+    assert "主事件：轻量主事件" in node["outline"]
+
+
+class _BrokenDb(_Db):
+    """`UPDATE chapters` 一执行就失败（模拟 database is locked）。"""
+
+    def execute(self, sql, params=()):
+        if "UPDATE chapters" in sql:
+            raise RuntimeError("db is locked")
+        return super().execute(sql, params)
+
+
+def test_cleanup_failure_is_logged_as_warning_not_debug(caplog):
+    """D-07 ③：清理失败必须**看得见** —— 降级路径不许 `logger.debug` 吞掉。"""
+    db = _BrokenDb()
+    _seed_writing_novel(
+        db,
+        with_act_plan=False,
+        chapter_outline="真实七段细纲",
+        node_outline="章节节点上的真实大纲",
+    )
+
+    policy = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True)
+    decision = policy.decide_after_interrupted_writing(_novel())
+
+    with caplog.at_level(logging.WARNING, logger="application.engine.services.autopilot_recovery_policy"):
+        policy.apply_transient_cleanup(decision)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "清理失败必须记成 warning（不能只 debug）"
+    assert any("章前规划清理失败" in r.getMessage() for r in warnings)
+
+
+def test_cleanup_failure_does_not_raise():
+    """反向守卫：清理失败仍然不许把异常抛到调用方（守护进程不能因此崩）。"""
+    db = _BrokenDb()
+    _seed_writing_novel(
+        db,
+        with_act_plan=False,
+        chapter_outline="真实七段细纲",
+        node_outline="章节节点上的真实大纲",
+    )
+
+    policy = AutopilotRecoveryPolicy(db, story_pipeline_writing_enabled=True)
+    decision = policy.decide_after_interrupted_writing(_novel())
+
+    policy.apply_transient_cleanup(decision)  # 不抛异常即通过
+

@@ -1671,7 +1671,12 @@ async def stop_autopilot(novel_id: str):
             decision = policy.decide_on_start(novel_id)
             policy.apply_transient_cleanup(decision)
         except Exception as cleanup_err:
-            logger.debug("autopilot stop: interrupted artifact cleanup skipped novel=%s: %s", novel_id, cleanup_err)
+            # D-07：清理失败不许 `logger.debug` 吞掉 —— 用户要看得见「停止后没清干净」
+            logger.warning(
+                "autopilot stop: interrupted artifact cleanup failed novel=%s: %s",
+                novel_id,
+                cleanup_err,
+            )
 
     try:
         await asyncio.get_running_loop().run_in_executor(_SSE_THREAD_POOL, _stop_sync)

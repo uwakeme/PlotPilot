@@ -286,6 +286,54 @@ async def test_writing_success_clears_failure_summary(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_interrupted_writing_uses_interrupted_recovery_decision(monkeypatch):
+    """D-07：写作中断后必须走「中断」判定（**要**丢弃临时产物），不是常规 tick 判定。
+
+    常规 tick 判定已经不再丢弃生成临时产物（否则每 tick 都清大纲），
+    中断路径若还在用 tick 判定 ⇒ 中断留下的半截七段规划会被当稳定输入复用。
+    """
+    from types import SimpleNamespace
+
+    from application.engine.services.autopilot_recovery_policy import AutopilotRecoveryPolicy
+
+    daemon, novel, _ = _make_failure_env(monkeypatch, prior_failures=0)
+
+    mock_runner = MagicMock()
+    mock_runner.DEFAULT_TARGET_WORDS = 2500
+    mock_runner._make_context.return_value = MagicMock(chapter_number=9)
+    mock_runner._get_novel_phase.return_value = "development"
+    mock_pipeline = MagicMock()
+    mock_pipeline.run_chapter = AsyncMock(
+        return_value=PipelineResult(success=False, chapter_number=9, error="interrupted")
+    )
+
+    calls: list[str] = []
+    dummy = SimpleNamespace(chapter_number=9, discard_transient_generation=True)
+
+    monkeypatch.setattr(
+        AutopilotRecoveryPolicy,
+        "decide_after_interrupted_writing",
+        lambda self, novel: calls.append("interrupted") or dummy,
+    )
+    monkeypatch.setattr(
+        AutopilotRecoveryPolicy,
+        "decide_on_daemon_tick",
+        lambda self, novel: calls.append("tick") or dummy,
+    )
+    monkeypatch.setattr(
+        AutopilotRecoveryPolicy, "apply_transient_cleanup", lambda self, decision: None
+    )
+
+    with patch("engine.runtime.writing_delegate._build_runner", return_value=mock_runner), patch(
+        "engine.pipelines.registry.get_pipeline_registry"
+    ) as mock_registry:
+        mock_registry.return_value.create_pipeline.return_value = mock_pipeline
+        await run_story_pipeline_writing(daemon, novel)
+
+    assert calls == ["interrupted"]
+
+
+@pytest.mark.asyncio
 async def test_process_novel_does_not_record_success_when_llm_failed(monkeypatch):
     """本轮已有模型失败（共享内存计数>0）时：熔断器不记成功、失败计数不清零。"""
     from domain.novel.entities.novel import AutopilotStatus, NovelStage

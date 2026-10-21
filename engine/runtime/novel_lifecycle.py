@@ -83,7 +83,10 @@ async def process_novel(host: Any, novel: Novel) -> None:
                     autopilot_pause_reason="",
                 )
         except Exception as recovery_error:
-            logger.debug("[%s] 恢复策略执行失败（继续原流程）: %s", novel.novel_id, recovery_error)
+            # D-07：恢复策略执行失败不许 `logger.debug` 吞掉 —— 降级要看得见。
+            logger.warning(
+                "[%s] 恢复策略执行失败（继续原流程）: %s", novel.novel_id, recovery_error
+            )
 
         try:
             from application.engine.services.novel_stop_signal import is_novel_stopped, clear_local_novel_stop

@@ -186,10 +186,12 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
             from application.engine.services.chapter_generation_workspace import ChapterGenerationWorkspace
 
             policy = AutopilotRecoveryPolicy(workspace=ChapterGenerationWorkspace())
-            decision = policy.decide_on_daemon_tick(novel)
+            # D-07：**中断**才丢弃生成临时产物（常规 tick 不丢 —— 见恢复策略的说明）
+            decision = policy.decide_after_interrupted_writing(novel)
             policy.apply_transient_cleanup(decision)
-        except Exception:
-            pass
+        except Exception as exc:
+            # D-07：清理失败不许静默吞掉
+            logger.warning("[%s] 中断后清理临时产物失败: %s", novel_id, exc)
         daemon._update_shared_state(
             novel_id,
             writing_substep="interrupted",
