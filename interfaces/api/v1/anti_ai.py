@@ -107,8 +107,19 @@ def _get_audit_repo():
 async def scan_chapter(request: ScanRequest):
     """扫描章节 AI 味。
 
-    ``novel_id`` 给了 ⇒ 一起加载该小说**已批准的已学规则**（F-06 的回灌），
-    否则仪表盘显示的命中数会**低于实际**（复审 §3.6b）。
+    ``novel_id`` 的语义（复审 §3.6b 的闭环）：
+
+    - **给了** ⇒ 加载该小说**已批准的已学规则**（F-06 的回灌：AI 归纳 → 落库
+      → 版本化 → 扫描时加载）⇒ 命中数与该书的实际写作习惯一致。
+    - **不给** ⇒ 只用通用规则库（35+ 模式）。
+
+    前端现状：提示词广场里的反 AI 面板是**全局抽屉**
+    （``components/global/PromptPlazaFAB.vue``），用户贴的是一段通用文本、
+    不属于任何一本书 ⇒ **故意不传** ``novel_id``（把某本书的专属规则套到
+    与本书无关的文本上是误导）。
+    按小说的数据本来就带上了已学规则：守护进程审计路径
+    ``AntiAIAuditor.scan_chapter(..., novel_id=novel_id)`` ⇒ 落库 ⇒
+    ``GET /anti-ai/audits/{novel_id}`` 读出来的就是含专属规则的报告。
     """
     auditor = get_anti_ai_auditor()
     report = auditor.scan_chapter(

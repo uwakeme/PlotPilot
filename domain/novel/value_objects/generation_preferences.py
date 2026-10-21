@@ -59,7 +59,8 @@ class GenerationPreferences:
     # ask=暂停询问（默认）；finale=自动加写终局预算后收束；continue=自动上调目标续写；complete=直接完结（旧行为）
     target_reached_policy: str = "ask"
     # 「写终局」在当前完成数基础上加写的收束章数预算
-    finale_chapter_budget: int = 20
+    # ⚠ 默认值只此一份（复审 §3.2d：同一常量曾散落 6 处）
+    finale_chapter_budget: int = FINALE_BUDGET_DEFAULT
     # 写终局进行中标记：置位后再次达标视为终局写完 → 真正完结并复位
     finale_mode: bool = False
 

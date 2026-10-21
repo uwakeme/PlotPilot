@@ -422,6 +422,11 @@ import {
 } from '../../api/autopilot'
 import { novelApi } from '../../api/novel'
 import { buildAutopilotStagePresentation } from '../../constants/autopilotStagePresentation'
+import {
+  FINALE_BUDGET_DEFAULT,
+  FINALE_BUDGET_MAX,
+  FINALE_BUDGET_MIN,
+} from '../../constants/finaleBudget'
 import { useAIInvocationStore } from '../../stores/aiInvocationStore'
 import { featureFlags } from '../../config/features'
 import { runtimePerformance } from '../../config/performance'
@@ -601,11 +606,12 @@ const completedChapters = computed(() => {
   return Math.max(Number(s?.completed_chapters || 0), Number(s?.manuscript_chapters || 0))
 })
 const deciding = ref('') // '' | 'finale' | 'continue' | 'complete'
-const finaleBudget = ref(20)
+const finaleBudget = ref(FINALE_BUDGET_DEFAULT)
 // 终局预算的钳制范围**由后端给**（J-01 的提案响应里带 min/max），
 // 前端不再自己写死一份 [5,200]（复审 §3.3：钳制要在一处）。
-const finaleBudgetMin = ref(5)
-const finaleBudgetMax = ref(200)
+// 下面的 MIN/MAX 只是**取不到提案时**的兜底初值。
+const finaleBudgetMin = ref(FINALE_BUDGET_MIN)
+const finaleBudgetMax = ref(FINALE_BUDGET_MAX)
 const continueTarget = ref(null)
 
 watch(isTargetReachedPause, (active) => {
@@ -620,13 +626,13 @@ async function loadTargetBudgetProposal() {
   try {
     const p = await novelApi.targetBudgetProposal(props.novelId)
     finaleBudget.value = p.finale_budget
-    finaleBudgetMin.value = p.finale_budget_min ?? 5
-    finaleBudgetMax.value = p.finale_budget_max ?? 200
+    finaleBudgetMin.value = p.finale_budget_min ?? FINALE_BUDGET_MIN
+    finaleBudgetMax.value = p.finale_budget_max ?? FINALE_BUDGET_MAX
     continueTarget.value = p.continue_target
   } catch (err) {
     // 拿不到提案 ⇒ 退回最小可用初值，不在前端编公式
     console.warn('[AutopilotPanel] 取加写预算提案失败:', err)
-    finaleBudget.value = 20
+    finaleBudget.value = FINALE_BUDGET_DEFAULT
     continueTarget.value = completedChapters.value
   }
 }

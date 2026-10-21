@@ -48,8 +48,17 @@ CATEGORY_LIMIT: Dict[str, int] = {
     cat: int(spec["limit"]) for cat, spec in CATEGORY_SPEC.items()
 }
 
-#: 单个角色最多取几条（= 各类条数上限之和 ⇒ 硬上限）
-MAX_FACTS_PER_CHARACTER: int = sum(CATEGORY_LIMIT.values())
+#: 单个角色最多取几条 —— **总量硬上限**。
+#:
+#: 为什么它必须**比各类上限之和更严**（否则它没有独立牙齿）：
+#: 各类上限之和 = 15 = 兜底路径的占用；总量上限若也取 15，
+#: 它就被各类上限**蕴含** ⇒ 那个分支在生产中永不触发（复审 §残留 3 实测）。
+#: 取 10：够用（AI 实际通常只挑几条），又让这条**独立生效** ——
+#: 跨类别铺开时（2+2+3+3+3 = 13）它会出手。
+#:
+#: 更严还有一个好处：T0 的截断是**与角色无关**的 ⇒ 一个角色带太多事实，
+#: 后面角色的锚点会被整行切掉（「锚点必进」是逐条成立，不是逐槽位成立）。
+MAX_FACTS_PER_CHARACTER: int = 10
 
 #: 候选 id 前缀 → 类别（id 形如 ``s0`` / ``m1`` ⇒ 前缀决定类别）
 _PREFIX_TO_CATEGORY: Dict[str, str] = {
@@ -151,9 +160,9 @@ def normalize_selection(
 
     - 角色 id 不在 ``valid_fact_ids`` 里 ⇒ 整个角色丢弃（不存在的人）。
     - 事实 id 不在该角色的候选清单里 ⇒ 丢弃（**AI 不得凭空造记忆**）。
-    - **条数有上限**（代码保证的上下文预算，见 ``CATEGORY_LIMIT``）——
-      AI 可以决定「带哪几条」，但不能决定「带多少条」：
-      候选清单里可能有几十条，全带进去会把 T0 撑爆，
+    - **条数有上限**（代码保证的上下文预算，见 ``CATEGORY_LIMIT`` 与
+      ``MAX_FACTS_PER_CHARACTER``）—— AI 可以决定「带哪几条」，但不能决定
+      「带多少条」：候选清单里可能有几十条，全带进去会把 T0 撑爆，
       而 T0 的截断是**与角色无关**的 ⇒ 后面的角色锚点会被整行切掉
       （复审 §3.4a：「锚点必进」是逐条成立，不是逐槽位成立）。
     - 一个角色既没挑事实也没给 T2 ⇒ 该角色不产出选择（走兜底）。
@@ -175,7 +184,8 @@ def normalize_selection(
         if not isinstance(raw_ids, list):
             raw_ids = []
         allowed = valid_fact_ids[cid]
-        # 条数上限：先按**类别**限（= 兜底路径的每类条数），再按总量限。
+        # 条数上限：先按**类别**限（= 兜底路径的每类条数），再按**总量**限
+        # （更严的独立硬上限，跨类别铺开时才会出手）。
         per_category: Dict[str, int] = {}
         kept_ids: List[str] = []
         for fid in (str(x).strip() for x in raw_ids):

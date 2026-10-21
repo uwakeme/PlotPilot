@@ -493,6 +493,12 @@ async function handleScan() {
   if (!scanInput.value.trim()) return
   scanning.value = true
   try {
+    // ⚠ **故意不传 novelId**（复审 §3.6b）：本面板是**全局抽屉**
+    // （components/global/PromptPlazaFAB.vue），用户贴的是一段通用文本、
+    // 不属于任何一本书 ⇒ 把某本书的专属已学规则套上去是误导。
+    // API 给了 novel_id 才会加载该书的已学规则（见后端 ScanRequest.novel_id）。
+    // 按小说的数据本来就带上了已学规则：守护进程审计路径 → 落库 →
+    // GET /anti-ai/audits/{novel_id}。
     scanResult.value = await scanChapter(scanInput.value)
   } catch (e: any) {
     message.error(e?.message || '扫描失败')

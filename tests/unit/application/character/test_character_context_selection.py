@@ -526,8 +526,8 @@ async def test_service_without_candidates_is_unassessed():
 # ── 复审 §3.4a：条数上限（代码保证的上下文预算） ─────────────────────
 
 
-def test_the_ai_cannot_exceed_the_per_category_and_total_limits():
-    """AI 决定「带**哪**几条」，不能决定「带**多少**条」。
+def test_the_ai_cannot_exceed_the_per_category_limit():
+    """**每类上限**独立生效：AI 一次把某类全选了，也只留该类的上限条数。
 
     复审 §3.4a：候选清单里可能有几十条，全带进去会把 T0 撑爆；
     而 T0 的截断是**与角色无关**的 ⇒ 后面的角色锚点会被整行切掉
@@ -536,26 +536,52 @@ def test_the_ai_cannot_exceed_the_per_category_and_total_limits():
     from application.character.services.character_context_selection_schema import (
         CATEGORY_LIMIT,
         CATEGORY_PREFIX,
-        MAX_FACTS_PER_CHARACTER,
         normalize_selection,
     )
 
-    ids = (
-        [f"s{i}" for i in range(20)]
-        + [f"m{i}" for i in range(20)]
-        + [f"c{i}" for i in range(20)]
-    )
+    ids = [f"s{i}" for i in range(20)]
     result = normalize_selection(
         {"characters": [{"character_id": "c1", "selected_fact_ids": ids}]},
         valid_fact_ids={"c1": set(ids)},
     )
 
     kept = result.characters["c1"].fact_ids
-    assert len(kept) <= MAX_FACTS_PER_CHARACTER, f"AI 选了 {len(kept)} 条，超出总量上限"
-    for category, limit in CATEGORY_LIMIT.items():
-        prefix = CATEGORY_PREFIX[category]
-        picked = sum(1 for fid in kept if fid.startswith(prefix))
-        assert picked <= limit, f"{category} 选了 {picked} 条，超出该类上限 {limit}"
+    prefix = CATEGORY_PREFIX["scars"]
+    picked = sum(1 for fid in kept if fid.startswith(prefix))
+    assert picked == CATEGORY_LIMIT["scars"], f"伤痕取了 {picked} 条，上限 {CATEGORY_LIMIT['scars']}"
+
+
+def test_the_ai_cannot_exceed_the_total_limit():
+    """**总量上限**独立生效：跨类别铺开时它会出手。
+
+    复审 §残留 3：若总量上限 = 各类上限之和（15），它就被各类上限**蕴含**
+    ⇒ 那个分支在生产中永不触发（变异存活 ⇒ 没有独立牙齿）。
+    ⇒ 总量上限必须**比各类之和更严**，这里取 10。
+    """
+    from application.character.services.character_context_selection_schema import (
+        CATEGORY_LIMIT,
+        MAX_FACTS_PER_CHARACTER,
+        normalize_selection,
+    )
+
+    # 每类给 5 条 ⇒ 各类上限允许 2+2+3+3+3+2 = 15 条（超过总量上限 10）
+    ids = []
+    for category, prefix in (("scars", "s"), ("motivations", "m"), ("voice", "v"),
+                             ("catchphrases", "c"), ("knowledge", "k"),
+                             ("relationships", "r")):
+        ids.extend(f"{prefix}{i}" for i in range(5))
+    result = normalize_selection(
+        {"characters": [{"character_id": "c1", "selected_fact_ids": ids}]},
+        valid_fact_ids={"c1": set(ids)},
+    )
+
+    kept = result.characters["c1"].fact_ids
+    assert sum(CATEGORY_LIMIT.values()) > MAX_FACTS_PER_CHARACTER, (
+        "前提不成立：总量上限必须比各类上限之和更严，否则它没有独立牙齿"
+    )
+    assert len(kept) == MAX_FACTS_PER_CHARACTER, (
+        f"总量上限没生效：留了 {len(kept)} 条（上限 {MAX_FACTS_PER_CHARACTER}）"
+    )
 
 
 def test_the_category_spec_is_the_single_source():

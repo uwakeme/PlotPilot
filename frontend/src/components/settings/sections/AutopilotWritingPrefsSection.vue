@@ -221,6 +221,10 @@ import { useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { novelApi, type GenerationPrefsDTO } from '@/api/novel'
 import { WORKBENCH_GENERATION_PREFS_UPDATED_EVENT } from '@/workbench/deskEvents'
+import {
+  FINALE_BUDGET_DEFAULT,
+  clampFinaleBudget,
+} from '@/constants/finaleBudget'
 
 const route = useRoute()
 const message = useMessage()
@@ -240,7 +244,7 @@ const auditPauseOnHardFail = ref(false)
 const auditPauseOnAntiAiSevere = ref(false)
 
 const targetReachedPolicy = ref<string>('ask')
-const finaleBudgetInput = ref<number | null>(20)
+const finaleBudgetInput = ref<number | null>(FINALE_BUDGET_DEFAULT)
 const savingBudget = ref(false)
 
 const targetPolicyOptions = [
@@ -269,7 +273,7 @@ function applyPrefs(p?: GenerationPrefsDTO | null) {
   finaleBudgetInput.value =
     typeof p2.finale_chapter_budget === 'number' && Number.isFinite(p2.finale_chapter_budget)
       ? p2.finale_chapter_budget
-      : 20
+      : FINALE_BUDGET_DEFAULT
 
   convergeInput.value =
     typeof p2.conductor_converge_threshold === 'number' && Number.isFinite(p2.conductor_converge_threshold)
@@ -377,7 +381,8 @@ async function onTargetPolicyChange(v: string) {
 async function saveFinaleBudget() {
   const slug = novelSlug.value
   if (!slug) return
-  const budget = Math.max(5, Math.min(200, Number(finaleBudgetInput.value) || 20))
+  // 钳制走共享常量（前端唯一一份）；后端写路径还会 `clamp_finale_budget` 再钳一次
+  const budget = clampFinaleBudget(finaleBudgetInput.value)
   savingBudget.value = true
   try {
     await mergePrefs({ finale_chapter_budget: budget })
