@@ -446,6 +446,10 @@ class AutoNovelGenerationWorkflow:
             "context_tokens": context_tokens,
             "style_summary": style_summary,
             "voice_anchors": voice_anchors,
+            # X1：正文提示词要用的「硬事实」小块（槽位级，带上限）。
+            # 与 `context` 分开：context 是整包（给 legacy 路径的节拍提示词用），
+            # hard_facts 是「不得违反的既成事实」那几块（给正文提示词用）。
+            "hard_facts": str(payload.get("hard_facts") or ""),
             "evolution_gate": evolution_gate_report,
             "evolution_gate_blocked": bool(
                 evolution_gate_report

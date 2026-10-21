@@ -23,6 +23,12 @@ def chapter_prose_input_bindings() -> list[VariableBinding]:
         VariableBinding("target_words", "chapter.target_words", False, 2500, scope="chapter", stage="writing", value_type="integer", display_name="文章目标字数"),
         VariableBinding("chapter_outline", "chapter.outline", False, "", scope="chapter", stage="writing", display_name="正文细纲"),
         VariableBinding("continuity_context", "chapter.continuity_context", False, "", scope="chapter", stage="writing", display_name="连续性上下文"),
+        # X1：T0–T3 上下文包**独立成槽**。
+        # 此前它与 continuity_context 挤在同一个槽里（composer 里
+        # `metadata.get("continuity_context") or request.context_text`），
+        # 而前者恒非空 ⇒ 后者永远进不了正文提示词 ⇒ 模型看不见角色状态锚点、
+        # 叙事契约（死亡锁/白名单/身份锁）、伏笔槽位、幕摘要。
+        VariableBinding("chapter_context", "chapter.context", False, "", scope="chapter", stage="writing", display_name="章节上下文包（T0–T3）"),
     ]
 
 

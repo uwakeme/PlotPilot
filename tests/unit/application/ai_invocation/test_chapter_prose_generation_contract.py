@@ -304,12 +304,28 @@ def test_chapter_prose_inputs_are_materialized_to_variable_hub():
 
 
 def test_chapter_prose_input_bindings_stay_minimal_for_prose_prompt():
+    """正文提示词只吃**核心几项** —— 别把一堆变量塞进来。
+
+    2026-10-21（X1）新增第 4 项 ``chapter_context``（硬事实块）。
+    此前硬事实与「近3章承接摘要」挤在同一个槽位，而后者恒非空
+    （continuity ledger 空时返回「暂无近3章承接摘要。」）⇒ **硬事实永远进不来**
+    ⇒ 模型写正文时看不见死亡锁 / 角色当前状态 / 创作契约。
+
+    ⇒ 硬事实独立成槽；「只吃这几项、不许再多」这条**意图不变**，
+    所以断言从 3 项改成 4 项，并继续钉住每一项的 variable_key。
+    """
     bindings = {binding.alias: binding for binding in _input_bindings()}
 
-    assert set(bindings) == {"target_words", "chapter_outline", "continuity_context"}
+    assert set(bindings) == {
+        "target_words",
+        "chapter_outline",
+        "continuity_context",
+        "chapter_context",
+    }
     assert bindings["target_words"].variable_key == "chapter.target_words"
     assert bindings["chapter_outline"].variable_key == "chapter.outline"
     assert bindings["continuity_context"].variable_key == "chapter.continuity_context"
+    assert bindings["chapter_context"].variable_key == "chapter.context"
 
 
 class _FakeNode:

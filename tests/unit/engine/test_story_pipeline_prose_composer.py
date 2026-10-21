@@ -26,12 +26,21 @@ class _Composer:
 
 
 def test_chapter_prose_composer_builds_only_core_prompt_variables():
+    """正文提示词只由**核心几项**构成，metadata 里的其余东西不许漏进来。
+
+    2026-10-21（X1）新增第 4 项 ``chapter_context``（硬事实块）。
+    此前硬事实与「近3章承接摘要」挤在同一个槽位，而 metadata 那一支恒非空
+    ⇒ 硬事实永远进不了提示词 ⇒ 模型看不见死亡锁 / 角色当前状态 / 创作契约。
+
+    ⇒ 断言从 3 项改成 4 项；**「其余 metadata 不许漏进来」这条意图更强地保留**。
+    """
     composer = ChapterProseInvocationComposer()
     request = ProseCompositionRequest(
         novel_id="novel-1",
         chapter_number=4,
         outline="七段细纲",
         context_text="前3章规划",
+        hard_facts="=== 绝对事实边界(FACT_LOCK) ===\n陈小已死",
         target_words=2000,
         metadata={
             "key_plot_points": ["情节点1", "情节点2"],
@@ -44,11 +53,23 @@ def test_chapter_prose_composer_builds_only_core_prompt_variables():
 
     variables = composer._build_variables(request)
 
-    assert variables == {
-        "target_words": 2000,
-        "chapter_outline": "七段细纲",
-        "continuity_context": "前3章规划",
+    assert set(variables) == {
+        "target_words",
+        "chapter_outline",
+        "continuity_context",
+        "chapter_context",
     }
+    assert variables["target_words"] == 2000
+    assert variables["chapter_outline"] == "七段细纲"
+    # 承接摘要只从 metadata 的 continuity_context 来；不再拿 context_text 顶替
+    # （两者是不同的东西：前者是近3章摘要，后者是整包上下文）
+    assert variables["continuity_context"] == ""
+    # 硬事实走自己的变量
+    assert variables["chapter_context"] == "=== 绝对事实边界(FACT_LOCK) ===\n陈小已死"
+    # metadata 里的其余键一个都不许漏进来
+    assert "前3章规划" not in str(variables)
+    for leaked in ("情节点1", "林渊", "不应进入 prompt", "unused"):
+        assert leaked not in str(variables)
 
 
 @pytest.mark.asyncio

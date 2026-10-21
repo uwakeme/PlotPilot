@@ -279,11 +279,17 @@ class ContextBuilder:
         if bible_layer2:
             layer2_parts.append(bible_layer2)
             layer2_tokens += self.estimate_tokens(bible_layer2)
-        
+
         return {
             "layer1_text": "\n\n".join(layer1_parts),
             "layer2_text": "\n\n".join(layer2_parts),
             "layer3_text": "\n\n".join(layer3_parts),
+            # X1：正文提示词要用的「硬事实」小块（槽位级，带上限）。
+            # 整包不能进提示词：fact_lock 在长篇上能涨到两万字
+            # （实测 529 章本 20365 字），而且正文模板的硬约束写的是
+            # 「以七段结构为唯一剧情骨架」⇒ 送整包会与它打架。
+            # 这里只送「不得违反的既成事实」那几块。
+            "hard_facts": self._build_hard_facts(allocation),
             "token_usage": {
                 "layer1": layer1_tokens,
                 "layer2": layer2_tokens,
@@ -291,6 +297,30 @@ class ContextBuilder:
                 "total": allocation.used_tokens,
             },
         }
+
+    @staticmethod
+    def _build_hard_facts(allocation) -> str:
+        """挑出要送进正文提示词的「硬事实」槽位（每块带上限，截断要说明）。"""
+        from application.engine.services.prose_context_settings import (
+            get_prose_context_runtime_settings,
+        )
+
+        settings = get_prose_context_runtime_settings()
+        if not settings.enabled:
+            return ""
+        parts: List[str] = []
+        for key in settings.slots:
+            slot = (allocation.slots or {}).get(key)
+            if slot is None:
+                continue
+            content = (slot.content or "").strip()
+            if not content:
+                continue
+            cap = settings.max_chars_per_slot
+            if cap > 0 and len(content) > cap:
+                content = content[:cap].rstrip() + "\n（本块已按上限截断）"
+            parts.append(f"=== {slot.name.upper()} ===\n{content}")
+        return "\n\n".join(parts)
 
     def _build_layer2_smart_retrieval(
         self,

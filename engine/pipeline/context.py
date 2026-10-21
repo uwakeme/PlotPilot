@@ -80,6 +80,9 @@ class PipelineContext(_ValidationStateContract):
     context_text: str = ""                       # 组装后的上下文
     context_tokens: int = 0                      # 上下文 token 数
     voice_anchors: str = ""                      # 声线锚点
+    # X1：正文提示词要用的「硬事实」小块（死亡锁 / 角色锚点 / 创作契约），
+    # 槽位级、带上限。与 context_text（整包）分开。
+    hard_facts: str = ""
     bundle: Optional[Dict[str, Any]] = None      # chapter_workflow.prepare_chapter_generation() 的完整 bundle
     governance_budget: Optional[Dict[str, Any]] = None
     governance_context_request: Optional[Dict[str, Any]] = None

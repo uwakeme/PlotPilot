@@ -783,6 +783,8 @@ class BaseStoryPipeline(ABC):
                 ctx.context_text = bundle.get("context", "")
                 ctx.context_tokens = bundle.get("context_tokens", 0)
                 ctx.voice_anchors = bundle.get("voice_anchors", "")
+                # X1：正文提示词要用的「硬事实」小块（槽位级、带上限）。
+                ctx.hard_facts = bundle.get("hard_facts", "")
                 ctx.bundle = bundle
                 logger.info(
                     f"[{ctx.novel_id}] 上下文（workflow）: {len(ctx.context_text)} 字符, "
@@ -1056,6 +1058,9 @@ class BaseStoryPipeline(ABC):
             genre=ctx.genre,
             outline=ctx.outline,
             context_text=ctx.context_text,
+            # X1：硬事实小块（死亡锁 / 角色锚点 / 创作契约）——
+            # 正文提示词原本只有 3 个变量，模型看不见这些「不得违反的既成事实」。
+            hard_facts=ctx.hard_facts,
             style_guide=ctx.voice_anchors,
             target_words=ctx.target_word_count,
             auto_approve_mode=ctx.auto_approve_mode,

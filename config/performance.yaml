@@ -257,3 +257,24 @@ chapter_mode:
 chapter_target:
   enabled: false
   max_deviation_ratio: 0.30
+
+# X1：生产正文提示词要带哪几块「硬事实」。
+#
+# 这不是新功能，是**断链的修复**：此前「近3章承接摘要」与「硬事实」挤在同一个
+# 变量槽（continuity_context），而前者恒非空 ⇒ 后者永远进不了正文提示词
+# ⇒ 模型写正文时看不见死亡锁 / 角色当前状态 / 文风公约。
+#
+# ⚠ 为什么不送整包：正文提示词的三变量设计是 2026-06-08 刻意的
+# （「以【正文细纲】中的七段结构为唯一剧情骨架」）；而且整包很贵 ——
+# 实测上下文包 6.9k~19.4k token/章，其中 fact_lock 在 529 章那本书里
+# 就有 20365 字（它自己在无上限地长，是另一条独立缺陷）。
+#
+# 所以只送「不得违反的既成事实」那几块，每块带上限（超出要说明，不静默截断）。
+# slots 的键名见 application/engine/services/context_budget_allocator.py 的 slots 字典。
+prose_context:
+  enabled: true
+  slots:
+    - fact_lock            # 绝对事实边界（死亡锁 / 白名单 / 关系 / 身份 / 时间线）
+    - character_anchors    # 角色锚点（当前状态 / 伤势 / 位置 / 情绪 + T2 措辞）
+    - narrative_contract   # 创作契约（向导五维 / 文风公约 / Bible 规则）
+  max_chars_per_slot: 2000

@@ -9,6 +9,9 @@ from application.ai_invocation.contracts.autopilot_writing import (
     AUTOPILOT_CHAPTER_PROSE_OPERATION,
 )
 from application.ai_invocation.dtos import InvocationSessionStatus
+from application.engine.services.prose_context_settings import (
+    get_prose_context_runtime_settings,
+)
 from infrastructure.ai.prompt_keys import CHAPTER_PROSE_GENERATION
 from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
 
@@ -26,6 +29,9 @@ class ProseCompositionRequest:
     genre: str = ""
     outline: str = ""
     context_text: str = ""
+    # X1：正文提示词要用的「硬事实」小块（槽位级、带上限）：
+    # 死亡锁 / 角色锚点 / 创作契约。模型写正文时必须看见这些**不得违反的既成事实**。
+    hard_facts: str = ""
     style_guide: str = ""
     target_words: int = 2500
     auto_approve_mode: bool = False
@@ -60,14 +66,31 @@ class ChapterProseInvocationComposer:
 
     def _build_variables(self, request: ProseCompositionRequest) -> dict[str, Any]:
         metadata = request.metadata or {}
-        continuity_context = (
-            str(metadata.get("continuity_context") or "").strip()
-            or str(request.context_text or "").strip()
-        )
+        # X1：「近3章承接摘要」与「硬事实」是**两个不同的东西**，
+        # 此前挤在同一个变量槽里（`or request.context_text` 的后半支），
+        # 而 metadata 那一支恒非空（continuity ledger 空时返回「暂无近3章承接摘要。」）
+        # ⇒ 硬事实永远进不了正文提示词 ⇒ 模型看不见死亡锁、角色当前状态、文风公约。
+        # 现在硬事实走**独立变量** `chapter_context`（槽位级、带上限）。
+        continuity_context = str(metadata.get("continuity_context") or "").strip()
+
+        settings = get_prose_context_runtime_settings()
+        chapter_context = ""
+        if settings.enabled:
+            chapter_context = str(request.hard_facts or "").strip()
+            if settings.max_chars_per_slot > 0 and len(chapter_context) > 0:
+                # 单块上限已在 builder 里切过；这里再兜一道总长上限（防槽位多时叠加）。
+                total_cap = settings.max_chars_per_slot * max(len(settings.slots), 1)
+                if len(chapter_context) > total_cap:
+                    chapter_context = (
+                        chapter_context[:total_cap].rstrip()
+                        + "\n（硬事实块已按总长上限截断）"
+                    )
+
         return {
             "target_words": int(request.target_words or 2500),
             "chapter_outline": request.outline,
             "continuity_context": continuity_context,
+            "chapter_context": chapter_context,
         }
 
     @staticmethod

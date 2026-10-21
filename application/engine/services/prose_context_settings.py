@@ -1,0 +1,102 @@
+"""X1：生产正文提示词要带哪几块「硬事实」（槽位级），以及每块的上限。
+
+## 背景
+
+`engine/pipeline/prose_composer.py` 的 `_build_variables` 曾经这样写：
+
+```python
+continuity_context = (str(metadata.get("continuity_context") or "").strip()
+                      or str(request.context_text or "").strip())
+```
+
+两个**不同的东西**挤在同一个变量槽里：
+
+- `metadata["continuity_context"]` = 「近3章承接摘要」（来自 continuity ledger，
+  空时返回「暂无近3章承接摘要。」⇒ **恒非空**）；
+- `request.context_text` = T0–T3 上下文包。
+
+⇒ `or` 的后半支**永不触发** ⇒ 生产正文提示词里**没有上下文包**。
+
+## 但「整包倾倒」是错的
+
+正文提示词的**三变量设计是刻意的**（2026-06-08 `444f5e0d`「优化生文流程 & 提示词」：
+同一次提交里改了 composer、加了 `test_..._stay_minimal_for_prose_prompt` 与
+`test_..._builds_only_core_prompt_variables` 两个守卫、改了 prompt 模板的
+「以【正文细纲】中的七段结构为唯一剧情骨架」硬约束）。
+⇒ 上下文包是那套设计里的**兜底**（没有承接摘要时顶着），不是主料。
+
+而且整包**很贵**（生产库实测）：
+- 上下文包本身 6.9k~19.4k token/章；
+- 其中 `fact_lock`（绝对事实边界）在 529 章那本书里就有 **20365 字 ≈ 12.7k token**
+  —— 它自己就在无上限地长（独立缺陷，见遗留）。
+
+## 本模块的取舍
+
+只送**「硬事实」小块**（默认：死亡锁/白名单 + 角色当前状态 + 创作契约），
+每块带上限 ⇒ ~3-4k token/章，且不与「七段结构是唯一剧情骨架」打架：
+**硬事实是「不得违反的既成事实」，不是剧情指令。**
+
+- `enabled`：要不要送（默认开 —— 这是断链的修复）；
+- `slots`：送哪几个槽位（键名见 `context_budget_allocator` 的 slots 字典）；
+- `max_chars_per_slot`：每块上限（超出要**说明**，不静默截断）。
+
+配置位置：`config/performance.yaml` 的 `prose_context:` 段。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Tuple
+
+from application.core.config.config_loader import get_config
+from application.core.config.runtime_settings_utils import (
+    non_negative_int,
+    section_value,
+)
+
+
+#: 默认送进正文提示词的「硬事实」槽位
+#: - fact_lock          绝对事实边界（死亡锁 / 白名单 / 关系 / 身份 / 时间线）= 不可违反
+#: - character_anchors  角色锚点（当前状态 / 伤势 / 位置 / 情绪 + T2 措辞）= D-04 的载体
+#: - narrative_contract 创作契约（向导五维 / 文风公约 / Bible 规则）= 风格与价值观
+DEFAULT_SLOTS: Tuple[str, ...] = (
+    "fact_lock",
+    "character_anchors",
+    "narrative_contract",
+)
+
+#: 每块默认上限（字符）—— fact_lock 在长篇上会涨到两万字，必须切
+DEFAULT_MAX_CHARS_PER_SLOT = 2000
+
+
+@dataclass(frozen=True)
+class ProseContextRuntimeSettings:
+    #: 是否把「硬事实」送进正文提示词
+    enabled: bool = True
+    #: 送哪几个槽位
+    slots: Tuple[str, ...] = DEFAULT_SLOTS
+    #: 每块上限（0 = 不切）
+    max_chars_per_slot: int = DEFAULT_MAX_CHARS_PER_SLOT
+
+
+def _slots_of(section) -> Tuple[str, ...]:
+    raw = section_value(section, "slots", None)
+    if raw is None:
+        return DEFAULT_SLOTS
+    try:
+        items = tuple(str(x).strip() for x in raw if str(x).strip())
+    except TypeError:
+        return DEFAULT_SLOTS
+    return items or DEFAULT_SLOTS
+
+
+def get_prose_context_runtime_settings() -> ProseContextRuntimeSettings:
+    section = getattr(get_config(), "prose_context", None)
+    defaults = ProseContextRuntimeSettings()
+    return ProseContextRuntimeSettings(
+        enabled=bool(section_value(section, "enabled", defaults.enabled)),
+        slots=_slots_of(section),
+        max_chars_per_slot=non_negative_int(
+            section_value(section, "max_chars_per_slot", defaults.max_chars_per_slot),
+            defaults.max_chars_per_slot,
+        ),
+    )
