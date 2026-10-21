@@ -549,11 +549,10 @@ class ComprehensiveEvaluator:
                      mask is not None and mask.name == "林羽",
                      f"mask.name={mask.name if mask else None}")
 
-        # 测试5: 验证面具行为验证 — 返回Dict，不是bool
-        result = mask.validate_behavior("林羽毫不犹豫地相信了陌生人")
-        self._record("R9_4D模型", "CharacterMask_行为验证_检测到OOC",
-                     not result.get("valid", True),  # valid=False 表示行为不一致
-                     f"validate_result={result}")
+        # 测试5: 面具事实提取 —— 行为一致性判断已交给 AI（H-03），离线脚本不判 OOC
+        self._record("R9_4D模型", "CharacterMask_事实提取",
+                     mask.core_belief == "只有力量能保护自己",
+                     f"core_belief={mask.core_belief!r}")
 
         # 测试6: T0 Fact Lock格式验证
         t0_text = char.to_t0_fact_lock(chapter_number=50)

@@ -174,7 +174,11 @@ class ValidateBehaviorRequest(BaseModel):
 
 
 class ValidateBehaviorResponse(BaseModel):
-    valid: bool = True
+    # valid=None ⇒ **未评估**（AI 不可用 / 取不到角色设定）。
+    # 旧实现失败时返回 valid=True —— 那是假通过（「没查过」被说成「没问题」）。
+    valid: Optional[bool] = None
+    evaluated: bool = False
+    source: str = ""
     warnings: List[str] = Field(default_factory=list)
     suggestions: List[str] = Field(default_factory=list)
 
@@ -1159,66 +1163,91 @@ async def get_character_psyche(novel_id: str, character_name: str):
 async def validate_character_behavior(novel_id: str, character_name: str, body: ValidateBehaviorRequest):
     """验证角色行为是否符合心理画像设定
 
-    数据源优先级：
-    1. CharacterPsycheEngine 面具验证（精确四维匹配）
-    2. Bible 角色设定构建的基础面具（从设定推断）
+    判定由 **AI** 做出（H-03）：代码不再用关键词表 + 正则猜「行为是否违背信念」——
+    那些是语义判断被写成了字符串匹配（换个说法就漏报，「不再不信任」就误报）。
+
+    AI 不可用 / 输出不合契约 ⇒ 返回**未评估**（``valid`` 为 null，``evaluated=false``），
+    绝不报「符合设定」——「没查过」与「查过没问题」不是一回事。
     """
     if not _novel_exists(novel_id):
         raise HTTPException(status_code=404, detail="Novel not found")
 
     try:
-        # 优先使用 CharacterPsycheEngine 的面具验证
-        psyche_engine = _get_character_psyche_engine()
-        if psyche_engine:
-            # 通过 Bible 查找角色 ID
-            bible_chars = _get_bible_characters(novel_id)
-            for bc in bible_chars:
-                if bc["name"] == character_name:
-                    char_id = bc.get("id", "") or character_name
-                    try:
-                        mask = await psyche_engine.compute_mask(str(char_id), 0)
-                        if mask:
-                            result = mask.validate_behavior(body.action)
-                            if isinstance(result, dict):
-                                return ValidateBehaviorResponse(
-                                    valid=result.get("valid", True),
-                                    warnings=result.get("warnings", []),
-                                    suggestions=result.get("suggestions", []),
-                                )
-                    except Exception as e:
-                        logger.debug("PsycheEngine 验证失败，回退到 Bible 面具: %s", e)
-                    break
-
-        # 回退：从 Bible 构建基础面具验证
-        from engine.core.value_objects.character_mask import CharacterMask
-        bible_chars = _get_bible_characters(novel_id)
-        target = None
-        for bc in bible_chars:
-            if bc["name"] == character_name:
-                target = bc
-                break
-
-        desc = (target.get("description", "") or "") if target else ""
-        mental = (target.get("mental_state", "") or "") if target else ""
-        taboo_str = _extract_taboo(desc)
-
-        mask = CharacterMask(
-            character_id=(target.get("id", "") or "") if target else "",
-            name=character_name,
-            core_belief=_extract_core_belief(desc, []),
-            moral_taboos=[t.strip() for t in taboo_str.split("、") if t.strip()] if taboo_str else [],
-        )
-        result = mask.validate_behavior(body.action)
-        if isinstance(result, dict):
+        mask = await _resolve_character_mask(novel_id, character_name)
+        if mask is None:
             return ValidateBehaviorResponse(
-                valid=result.get("valid", True),
-                warnings=result.get("warnings", []),
-                suggestions=result.get("suggestions", []),
+                valid=None,
+                evaluated=False,
+                source="",
+                warnings=["取不到该角色的当前设定，未做判定"],
             )
-        return ValidateBehaviorResponse(valid=bool(result))
+
+        from application.character.services.character_belief_check import CharacterBeliefChecker
+        from interfaces.api.dependencies import get_llm_service
+
+        verdict = await CharacterBeliefChecker(get_llm_service()).check(
+            character_name=character_name,
+            action=body.action,
+            context="",
+            core_belief=mask.core_belief,
+            moral_taboos=list(mask.moral_taboos or []),
+            active_wounds=list(mask.active_wounds or []),
+            voice_style=mask.voice_style,
+        )
+        return ValidateBehaviorResponse(
+            valid=verdict.valid,
+            evaluated=verdict.evaluated,
+            source=verdict.source,
+            warnings=verdict.warnings,
+            suggestions=verdict.suggestions,
+        )
     except Exception as e:
         logger.warning("行为验证失败: %s", e)
-        return ValidateBehaviorResponse(valid=True, warnings=[f"验证服务不可用: {e}"])
+        return ValidateBehaviorResponse(
+            valid=None,
+            evaluated=False,
+            source="",
+            warnings=[f"验证服务不可用: {e}"],
+        )
+
+
+async def _resolve_character_mask(novel_id: str, character_name: str):
+    """取该角色当前的「面具」快照（信念 / 禁忌 / 旧伤 / 语体）。
+
+    数据源优先级：
+    1. CharacterPsycheEngine 面具（精确四维匹配）
+    2. Bible 角色设定构建的基础面具（从设定推断）
+    """
+    from engine.core.value_objects.character_mask import CharacterMask
+
+    psyche_engine = _get_character_psyche_engine()
+    if psyche_engine:
+        for bc in _get_bible_characters(novel_id):
+            if bc["name"] != character_name:
+                continue
+            char_id = bc.get("id", "") or character_name
+            try:
+                mask = await psyche_engine.compute_mask(str(char_id), 0)
+                if mask:
+                    return mask
+            except Exception as e:
+                logger.debug("PsycheEngine 取面具失败，回退到 Bible 面具: %s", e)
+            break
+
+    target = None
+    for bc in _get_bible_characters(novel_id):
+        if bc["name"] == character_name:
+            target = bc
+            break
+
+    desc = (target.get("description", "") or "") if target else ""
+    taboo_str = _extract_taboo(desc)
+    return CharacterMask(
+        character_id=(target.get("id", "") or "") if target else "",
+        name=character_name,
+        core_belief=_extract_core_belief(desc, []),
+        moral_taboos=[t.strip() for t in taboo_str.split("、") if t.strip()] if taboo_str else [],
+    )
 
 
 @router.post(

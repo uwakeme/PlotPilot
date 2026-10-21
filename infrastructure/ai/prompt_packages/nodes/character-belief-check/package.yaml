@@ -1,0 +1,39 @@
+name: 角色行为一致性判定
+category: review
+source: application/character/services/character_belief_check.py
+description: 判断一段行为描写是否与角色的核心信念 / 禁忌 / 旧伤 / 语体一致（语义判断，代码不做）
+builtin: true
+tags:
+- 角色
+- 一致性
+- 审核
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: character_name
+  desc: 角色名
+  type: string
+  required: true
+- name: core_belief
+  desc: 核心信念
+  type: string
+- name: moral_taboos
+  desc: 绝对禁忌（顿号分隔）
+  type: string
+- name: active_wounds
+  desc: 旧伤列表（JSON 文本）
+  type: string
+- name: voice_style
+  desc: 语言风格
+  type: string
+- name: action
+  desc: 待判定的行为描写
+  type: string
+  required: true
+- name: context
+  desc: 场景上下文
+  type: string
+id: character-belief-check
+sort_order: 109

@@ -200,7 +200,10 @@ export interface ValidateBehaviorRequest {
 }
 
 export interface ValidateBehaviorResponse {
-  valid: boolean
+  /** null ⇒ 未评估（AI 不可用 / 取不到角色设定），不等于「符合设定」 */
+  valid: boolean | null
+  evaluated: boolean
+  source: string
   warnings: string[]
   suggestions: string[]
 }

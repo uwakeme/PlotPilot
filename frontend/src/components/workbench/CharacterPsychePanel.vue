@@ -84,12 +84,14 @@
               </n-button>
               <div v-if="validateResult">
                 <n-alert
-                  :type="validateResult.valid ? 'success' : 'warning'"
+                  :type="validateResult.valid === null ? 'info' : (validateResult.valid ? 'success' : 'warning')"
                   :show-icon="true"
                   size="small"
                   style="margin-bottom: 6px"
                 >
-                  {{ validateResult.valid ? '行为符合设定' : '行为可能不符合设定' }}
+                  {{ validateResult.valid === null
+                    ? '未评估（验证服务不可用，不是「符合设定」）'
+                    : (validateResult.valid ? '行为符合设定' : '行为可能不符合设定') }}
                 </n-alert>
                 <div v-if="validateResult.warnings.length > 0">
                   <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 4px">警告：</n-text>

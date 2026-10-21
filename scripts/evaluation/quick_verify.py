@@ -110,8 +110,10 @@ def test_character_mask():
     )
     t0 = mask.to_t0_fact_lock()
     assert "林羽" in t0
-    result = mask.validate_behavior("林羽信任了陌生人")
-    assert isinstance(result, dict)
+    # H-03：行为一致性判断已交给 AI（application/character/services/character_belief_check.py），
+    # 这里只核对「面具事实」被正确折叠出来 —— 判断本身需要 LLM，不在离线脚本里做。
+    assert mask.core_belief == "只有力量能保护自己"
+    assert mask.voice_style == "惜字如金"
     print("✅ CharacterMask OK")
 
 def test_quality_guardrail():
