@@ -94,6 +94,20 @@ class ActPlanningGenerationError(RuntimeError):
     """
 
 
+class ActPlanningChapterBudgetUnavailable(ValueError):
+    """每幕章数**算不出来**（C-02）。
+
+    既没有结构里的观测值，目标章数也读不到 ⇒ 每幕章数是「未评估」。
+    此时的正确行为是**跳过本幕规划**（等下一次 AI 调用），
+    而不是拿一个虚构的数字（例如按 100 章书算出来的每幕章数）去规划 ——
+    那个数字看起来完全正常，却会把预算撑破（登记表 C-02 记的病灶）。
+
+    继承 ``ValueError``：调用方（路由层）已经在用 ``except ValueError``
+    接住「幕级规划算不出章数」这类问题，继承它可以保证异常**不会**
+    变成一条未捕获的 500。
+    """
+
+
 def _macro_plan_progress_shared_key(novel_id: str) -> str:
     """与 novel:xxx 隔离，避免与共享内存里小说载荷键冲突。"""
     return f"macro_plan_progress:{novel_id}"
@@ -158,8 +172,11 @@ def _append_act_chapters_llm_stream(act_id: str, delta: str) -> None:
 #  此处保留再导出以保持历史 import 路径可用。
 # ======================================================================
 from application.blueprint.services.structure_budget import (  # noqa: E402
+    DEFAULT_TARGET_CHAPTERS,
     calculate_structure_params,
+    observe_chapters_per_act,
     resolve_chapter_ceiling,
+    resolve_chapters_per_act,
 )
 
 
@@ -1558,19 +1575,36 @@ class ContinuousPlanningService:
     async def resolve_act_planning_chapter_count(
         self, act_id: str, custom_chapter_count: Optional[int] = None
     ) -> int:
-        """与 plan_act_chapters 相同的章数解析逻辑，供 SSE 骨架行数等使用。"""
+        """与 plan_act_chapters 相同的章数解析逻辑，供 SSE 骨架行数等使用。
+
+        ⚠ C-02：兜底链 `custom → suggested → 每幕章数` 的最后一段
+        **可能算不出来**（没有观测、目标章数也读不到）⇒ 显式抛错，
+        不许拿一个虚构的数字凑（登记表 C-02 的处方：缺失时置空并跳过该幕规划）。
+        """
         act_node = await self.story_node_repo.get_by_id(act_id)
         if not act_node:
             raise ValueError(f"幕节点不存在: {act_id}")
         # 与动态建幕同一口径：按本书真实目标算每幕章数，不再用 100 章硬编码基准
-        _default_cpa = self._act_budget_context(
+        budget_ctx = self._act_budget_context(
             act_node.novel_id, int(act_node.number or 0)
-        )["chapters_per_act"]
+        )
+        _default_cpa = budget_ctx["chapters_per_act"]
         chapter_count = custom_chapter_count or act_node.suggested_chapter_count or _default_cpa
         if not custom_chapter_count and not act_node.suggested_chapter_count:
+            if chapter_count is None:
+                logger.warning(
+                    "[ActPlanning] act=%s 无自定义章数且无 suggested_chapter_count，"
+                    "每幕章数未评估（来源=%s）⇒ 跳过本幕规划",
+                    act_id,
+                    budget_ctx.get("chapters_per_act_source"),
+                )
+                raise ActPlanningChapterBudgetUnavailable(
+                    f"幕 {act_id} 的每幕章数未评估（目标章数不可用且结构里没有观测值），"
+                    "跳过本幕规划"
+                )
             logger.info(
                 f"[ActPlanning] act={act_id} 无自定义章数且无 suggested_chapter_count，"
-                f"使用引擎推荐值 {_default_cpa}"
+                f"使用引擎推荐值 {_default_cpa}（来源={budget_ctx.get('chapters_per_act_source')}）"
             )
         return chapter_count
 
@@ -2669,21 +2703,42 @@ class ContinuousPlanningService:
                 skeleton,
             )
 
-    def _novel_target_chapters(self, novel_id: str, default: int = 100) -> int:
-        """读取小说目标章数（读不到时用 default，绝不返回 0/None 参与运算）。"""
+    def _novel_target_chapters(
+        self, novel_id: str, default: Optional[int] = None
+    ) -> Optional[int]:
+        """读取小说目标章数。
+
+        ⚠ C-02：读不到时**不再**静默拿默认基准去算预算 ——
+        返回 ``default``（默认 None = 「目标未知」）并记 warning。
+        「目标未知」与「目标是 100」必须可分辨：前者算不出每幕章数
+        （显式「未评估」），后者是一个真实的目标值。
+        """
         if self.novel_repository is None:
+            logger.warning(
+                "[ActPlanning] 小说仓储不可用，目标章数未评估 novel=%s", novel_id
+            )
             return default
         try:
             novel = self.novel_repository.get_by_id(NovelId(novel_id))
         except Exception as exc:
-            logger.debug("[ActPlanning] 读取目标章数失败 novel=%s: %s", novel_id, exc)
+            logger.warning(
+                "[ActPlanning] 读取目标章数失败，目标章数未评估 novel=%s: %s", novel_id, exc
+            )
             return default
         value = getattr(novel, "target_chapters", None) if novel is not None else None
         try:
             value = int(value or 0)
         except (TypeError, ValueError):
+            logger.warning(
+                "[ActPlanning] 目标章数非法（%r），目标章数未评估 novel=%s", value, novel_id
+            )
             return default
-        return value if value > 0 else default
+        if value <= 0:
+            logger.warning(
+                "[ActPlanning] 目标章数未设置（%r），目标章数未评估 novel=%s", value, novel_id
+            )
+            return default
+        return value
 
     def _observed_total_acts(self, novel_id: str) -> int:
         """统计已落库的幕节点数（LLM 实际规划出的结构规模）。
@@ -2693,6 +2748,8 @@ class ContinuousPlanningService:
         「LLM 规划了 5 幕但公式说 3 幕」→ 第 3 幕被误标为终局、故事提前收口。
 
         读取失败时返回 0，由调用方退回公式估算（宁可用旧口径，也不要崩）。
+        ⚠ C-02：失败不再只 `logger.debug` —— 「读不到观测值」会让终局判定
+        悄悄退回公式网格，降级必须**看得见**。
         """
         if not novel_id or self.story_node_repo is None:
             return 0
@@ -2703,7 +2760,34 @@ class ContinuousPlanningService:
                 return 0
             return sum(1 for n in nodes if getattr(n.node_type, "value", "") == "act")
         except Exception as exc:
-            logger.debug("[ActPlanning] 统计幕节点总数失败 novel=%s: %s", novel_id, exc)
+            logger.warning(
+                "[ActPlanning] 统计幕节点总数失败（终局判定将退回公式网格）novel=%s: %s",
+                novel_id,
+                exc,
+            )
+            return 0
+
+    def _observed_chapters_per_act(self, novel_id: str) -> int:
+        """观测已落库结构里每幕的章数（LLM 实际规划的规模）。
+
+        与 `_observed_total_acts` 同源（同一棵结构树）。规则在
+        ``structure_budget.observe_chapters_per_act``（规划侧与守护进程侧共用一份），
+        这里只负责取树。读不到时返回 0（= 没观测到，不是「每幕 0 章」）。
+        """
+        if not novel_id or self.story_node_repo is None:
+            return 0
+        try:
+            tree = self.story_node_repo.get_tree_sync(novel_id)
+            nodes = getattr(tree, "nodes", None)
+            if nodes is None:
+                return 0
+            return observe_chapters_per_act(nodes)
+        except Exception as exc:
+            logger.warning(
+                "[ActPlanning] 观测每幕章数失败（每幕章数将退回公式）novel=%s: %s",
+                novel_id,
+                exc,
+            )
             return 0
 
     def _act_budget_context(
@@ -2724,10 +2808,14 @@ class ContinuousPlanningService:
         公式网格预测值不再作为依据）；读不到时才退回公式估算。
 
         Returns:
-            {"target_chapters", "total_acts", "chapters_per_act", "is_final_act", "brief"}
+            {"target_chapters", "total_acts", "chapters_per_act", "chapters_per_act_source",
+             "is_final_act", "brief"}
         """
         target = self._novel_target_chapters(novel_id)
-        params = calculate_structure_params(target)
+        # 目标未知时，**结构总幕数**的兜底仍用统一定义的默认基准
+        # （与 structure_budget.resolve_act_ceiling 同一口径）；
+        # 但**每幕章数**必须是「未评估」而不是一个虚构的数字（见下）。
+        params = calculate_structure_params(target or DEFAULT_TARGET_CHAPTERS)
         try:
             act_number = int(act_number or 0)
         except (TypeError, ValueError):
@@ -2737,7 +2825,19 @@ class ContinuousPlanningService:
         total_acts = max(self._observed_total_acts(novel_id) or 0, 0) or max(
             int(params["total_acts"]), 1
         )
+        # C-02：每幕章数与总幕数**同一套口径** —— 观测优先，公式兜底，
+        # 并把来源一起返回（此前 chapters_per_act 100% 取公式，
+        # 而同一个函数里的 total_acts 却是观测优先 ⇒ 一个函数两套口径）。
+        chapters_per_act, chapters_per_act_source = resolve_chapters_per_act(
+            target,
+            observed_chapters_per_act=self._observed_chapters_per_act(novel_id),
+        )
         is_final = act_number >= total_acts
+        # 目标未知时**不许**把 None 拼进文案（那看起来像模型说了个数）
+        target_text = f"{target} 章" if target is not None else "目标章数未知"
+        cpa_text = (
+            f"{chapters_per_act} 章" if chapters_per_act is not None else "每幕章数未评估"
+        )
         # B-07/B-13：这里只留**结构事实**（这一幕在全书里的位置）。
         # 此前那两段创作文案（「本幕必须完成结局：核心冲突正面了结……最后一章
         # 必须落在结局而非新悬念上」与其非终局分支的对应文案）是代码代写的，
@@ -2745,19 +2845,20 @@ class ContinuousPlanningService:
         # 现在方向由 AI 写（`direction`），**模型没给就是没给，代码不代写**。
         if is_final:
             brief = (
-                f"【全书收束】第 {act_number} 幕是全书最后一幕（全书 {target} 章）。"
+                f"【全书收束】第 {act_number} 幕是全书最后一幕（全书 {target_text}）。"
             )
         else:
             brief = (
                 f"【全书进度】本幕为第 {act_number}/{total_acts} 幕，"
-                f"全书目标 {target} 章，每幕约 {params['chapters_per_act']} 章。"
+                f"全书目标 {target_text}，{cpa_text}。"
             )
         if direction:
             brief = f"{brief}\n本幕创作方向（AI 给出）：\n{direction}"
         return {
             "target_chapters": target,
             "total_acts": total_acts,
-            "chapters_per_act": params["chapters_per_act"],
+            "chapters_per_act": chapters_per_act,
+            "chapters_per_act_source": chapters_per_act_source,
             "is_final_act": is_final,
             "brief": brief,
         }

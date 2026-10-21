@@ -335,18 +335,22 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     target_act_number = novel.current_act + 1
 
     from application.blueprint.services.structure_budget import (
+        DEFAULT_TARGET_CHAPTERS,
         calculate_structure_params,
+        observe_chapters_per_act,
         resolve_act_ceiling,
         resolve_chapter_ceiling,
+        resolve_chapters_per_act,
     )
 
-    target_chapters = novel.target_chapters or 100
-    struct_params = calculate_structure_params(target_chapters)
+    # C-02：目标章数**不再兜底**成 100（那是个静默的虚构基准：按 100 章书算出的
+    # 每幕章数会直接撑破小目标书的预算）。读不到就是「未评估」。
+    target_chapters = novel.target_chapters
+    struct_params = calculate_structure_params(target_chapters or DEFAULT_TARGET_CHAPTERS)
     # 每幕章数只在「LLM 没给 estimated_chapters」时兜底。结构形状（部/卷/幕的层数）
     # 由 LLM 自己定，这里不再拿公式网格去限制它。
-    rec_chapters_per_act = struct_params["chapters_per_act"]
     rec_acts_per_volume = struct_params["acts_per_volume"]
-    chapter_ceiling = resolve_chapter_ceiling(novel.target_chapters)
+    chapter_ceiling = resolve_chapter_ceiling(target_chapters)
 
     all_nodes = await host.story_node_repo.get_by_novel(novel_id)
     act_nodes = sorted(
@@ -355,6 +359,14 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     )
     chapter_nodes = [n for n in all_nodes if n.node_type.value == "chapter"]
     chapters_planned = len(chapter_nodes)
+    # C-02：每幕章数与规划侧**同一套口径**（观测优先 → 公式兜底 → 显式「未评估」）。
+    # 此前这里是 `struct_params["chapters_per_act"]`（公式），而规划侧
+    # （continuous_planning_service）也是另一条链、基准还不一样 ⇒
+    # 同一本书在两条路径上算出的每幕章数可能不同。
+    rec_chapters_per_act, rec_chapters_per_act_source = resolve_chapters_per_act(
+        target_chapters,
+        observed_chapters_per_act=observe_chapters_per_act(all_nodes),
+    )
 
     # 幕阶梯的硬上限。历史实现用公式网格预测的总幕数封顶，但部/卷/幕的层数现在由
     # LLM 依据剧情容量自行决定，公式预测值与实际落库结构对不上——用它封顶要么误杀
@@ -559,12 +571,24 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
     just_created_chapter_plan = False
     if not confirmed_chapters:
         chapter_budget = target_act.suggested_chapter_count or rec_chapters_per_act
+        if chapter_budget is None:
+            # C-02：每幕章数**未评估**（没有观测、目标章数也不可用）⇒
+            # 不用虚构的数字凑：跳过本幕规划，等下一次 AI 调用。
+            summary = (
+                f"第 {target_act_number} 幕的每幕章数未评估"
+                "（目标章数不可用且结构里没有观测值），已跳过本幕规划"
+            )
+            host._report_llm_failure(novel_id, summary)
+            logger.error("[%s] %s", novel.novel_id, summary)
+            host._flush_novel(novel)
+            return
         if not target_act.suggested_chapter_count:
             logger.info(
-                "[%s] 幕 %s 无 suggested_chapter_count，使用引擎推荐值 %s",
+                "[%s] 幕 %s 无 suggested_chapter_count，使用引擎推荐值 %s（来源=%s）",
                 novel.novel_id,
                 target_act_number,
                 rec_chapters_per_act,
+                rec_chapters_per_act_source,
             )
         plan_result: Dict[str, Any] = _consume_pending_act_plan(
             host,

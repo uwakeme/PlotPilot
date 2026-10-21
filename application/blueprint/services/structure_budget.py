@@ -22,7 +22,19 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
+
+
+# 目标章数读不到时的**最后兜底基准**（此前散落在三处，各写各的字面量 100：
+# ``resolve_act_ceiling`` / ``continuous_planning_service._novel_target_chapters`` /
+# ``act_planning_delegate.run_act_planning``）。这里定义**一处**，
+# 并写明它的含义：**只在完全没有真实信号时**用来给「幕数天花板」一个保守值。
+DEFAULT_TARGET_CHAPTERS = 100
+
+# 每幕章数的来源标记（读端必须能分辨「观测到的」「公式算的」「没算出来」）
+CHAPTERS_PER_ACT_OBSERVED = "observed"
+CHAPTERS_PER_ACT_FORMULA = "formula"
+CHAPTERS_PER_ACT_UNASSESSED = "unassessed"
 
 
 def calculate_structure_params(target_chapters: int) -> Dict:
@@ -115,6 +127,75 @@ def calculate_structure_params(target_chapters: int) -> Dict:
     }
 
 
+def resolve_chapters_per_act(
+    target_chapters: Optional[int],
+    observed_chapters_per_act: Optional[int] = None,
+) -> tuple[Optional[int], str]:
+    """每幕章数的**唯一口径**（C-02 收口）：观测优先 → 公式兜底 → 显式「未评估」。
+
+    规划侧（``continuous_planning_service``）与守护进程侧（``act_planning_delegate``）
+    此前各写一条兜底链，公式基准还不一样（DB 读 vs 内存值 + 硬编码 100）⇒
+    同一本书在两条路径上算出的每幕章数可能不同。
+    ⇒ 现在两边都调这一个函数，**来源也一并返回**，
+    读端才能分辨「模型/结构说的」「公式算的」「没算出来」。
+
+    Args:
+        target_chapters: 本书目标章数（None / 非法 ⇒ 公式算不出来）
+        observed_chapters_per_act: 已落库结构里观测到的每幕章数（0/None ⇒ 没观测到）
+
+    Returns:
+        ``(chapters_per_act, source)``
+
+        - source = ``"observed"``：用的是已落库结构里观测到的值；
+        - source = ``"formula"``：没有观测，用公式阶梯表；
+        - source = ``"unassessed"``：目标不可用且没有观测 ⇒ **不给数字**
+          （value 为 None）。调用方必须显式处理这个「没算出来」，
+          **不许**自己换个数凑（那正是登记表 C-02 记的病灶）。
+    """
+    try:
+        observed = int(observed_chapters_per_act or 0)
+    except (TypeError, ValueError):
+        observed = 0
+    if observed > 0:
+        return observed, CHAPTERS_PER_ACT_OBSERVED
+    try:
+        target = int(target_chapters or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if target > 0:
+        return int(calculate_structure_params(target)["chapters_per_act"]), CHAPTERS_PER_ACT_FORMULA
+    return None, CHAPTERS_PER_ACT_UNASSESSED
+
+
+def observe_chapters_per_act(nodes: Optional[Iterable[object]]) -> int:
+    """从已落库结构里观测「每幕大概多少章」（LLM 实际规划的规模）。
+
+    与 `_observed_total_acts` 同源：数每个幕节点底下有几个章节节点。
+    取**平均并向上取整**（而不是 max）：max 会被某一幕的离群值带偏，
+    而这里要的是「一幕大概多少章」这个典型值。
+    一个章节都没观测到时返回 0（= 没观测到，不是「每幕 0 章」）。
+
+    Args:
+        nodes: 结构节点序列（需要 ``node_type.value`` 与 ``parent_id``）
+    """
+    if not nodes:
+        return 0
+    counts: Dict[str, int] = {}
+    for node in nodes:
+        node_type = getattr(node, "node_type", None)
+        if getattr(node_type, "value", "") != "chapter":
+            continue
+        parent = getattr(node, "parent_id", None)
+        if not parent:
+            continue
+        counts[parent] = counts.get(parent, 0) + 1
+    if not counts:
+        return 0
+    total = sum(counts.values())
+    acts = len(counts)
+    return max(1, -(-total // acts))  # 向上取整
+
+
 def resolve_chapter_ceiling(target_chapters: Optional[int]) -> Optional[int]:
     """把目标章数收敛成一条**硬上限**：第 N 章之后不再产出新章节。
 
@@ -166,5 +247,10 @@ def resolve_act_ceiling(
     if ceiling is None:
         # 目标章数不可用时退回复用网格预测值：此时没有任何真实信号可用，
         # 总比"无上限"安全（无上限会让幕阶梯重新变成无限增长）。
-        return max(int(calculate_structure_params(100)["total_acts"]), planned, 1)
+        # 基准用**唯一一处**定义的 DEFAULT_TARGET_CHAPTERS（此前是字面量 100）。
+        return max(
+            int(calculate_structure_params(DEFAULT_TARGET_CHAPTERS)["total_acts"]),
+            planned,
+            1,
+        )
     return max(ceiling, planned, 1)

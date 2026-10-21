@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
 
 from application.blueprint.services.continuous_planning_service import (
+    ActPlanningChapterBudgetUnavailable,
     ContinuousPlanningService,
     MergeConflictException,
     get_macro_plan_progress,
@@ -697,6 +698,10 @@ async def generate_act_chapters(
             custom_chapter_count=request.chapter_count
         )
         return result
+    except ActPlanningChapterBudgetUnavailable as e:
+        # C-02：每幕章数「未评估」（目标章数不可用且结构里没有观测值）
+        # ⇒ 明确回 503，**不**用 404（那会说「幕不存在」，与实情不符）。
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
