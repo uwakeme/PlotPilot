@@ -376,9 +376,9 @@ def _parse_llm_json_to_dict(raw: str) -> Dict[str, Any]:
 # ``_map_location_kind`` / 关系谓词归并）已删除：模型已经给了 role 与 type，
 # 代码在重复猜，而且猜错 —— 生产库里 4 个「特殊场所」（周队办公室、陆深工位与
 # 隔断走廊、宋扬画像室、梦境镜厅，全是室内）被判成 realm（秘境）。
-
-def _default_location_importance(_loc_data: Dict[str, Any]) -> str:
-    return "normal"
+#
+# 复审 §3.6g：``_default_location_importance`` 已无调用方（且它硬编码 "normal"
+# —— 正是本条声称不再代写的东西）⇒ 一并删掉，免得日后被当成「兜底」重新接上。
 
 
 class AutoBibleGenerator:

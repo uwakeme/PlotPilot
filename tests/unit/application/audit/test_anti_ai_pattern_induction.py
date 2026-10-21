@@ -36,10 +36,9 @@ from infrastructure.persistence.database.sqlite_anti_ai_pattern_repository impor
 )
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
-MIGRATION = (
-    REPO_ROOT
-    / "infrastructure/persistence/database/migrations/add_anti_ai_learned_patterns.sql"
-)
+MIGRATIONS_DIR = REPO_ROOT / "infrastructure/persistence/database/migrations"
+#: F-06 的迁移（按文件名排序 ⇒ 建表在前、唯一索引在后）
+MIGRATIONS = sorted(MIGRATIONS_DIR.glob("add_anti_ai*.sql"))
 LEARNING_SRC = (
     REPO_ROOT / "application/audit/services/anti_ai_learning.py"
 ).read_bytes().decode("utf-8")
@@ -49,12 +48,15 @@ class _TempDB:
     """最小 DatabaseConnection 替身（只提供 execute / fetch_one / fetch_all）。
 
     **不碰生产库** —— 单元测试用临时 sqlite 文件。
+    迁移按**真实顺序**全部执行（建表 → 唯一索引），
+    否则索引那条不会被测到。
     """
 
     def __init__(self, path):
         self._conn = sqlite3.connect(str(path))
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(MIGRATION.read_bytes().decode("utf-8"))
+        for mig in MIGRATIONS:
+            self._conn.executescript(mig.read_bytes().decode("utf-8"))
 
     def execute(self, sql, params=()):
         cur = self._conn.execute(sql, params)
@@ -80,6 +82,27 @@ def repo(tmp_path):
 def test_the_migration_sql_is_valid(repo):
     """迁移能被真实 sqlite 执行 ⇒ 表与索引都建起来了。"""
     assert repo.current_version("n1") == 0
+
+
+def test_the_rule_library_has_a_unique_key_per_novel_and_keyword(repo):
+    """(novel_id, keyword) 必须唯一。
+
+    坑：建表语句只有 ``id TEXT PRIMARY KEY``（id 每次新 uuid），
+    而仓储代码的注释曾写「表的唯一键在 (novel_id, keyword) 上」——**那是假的**。
+    没有唯一约束 ⇒ 同一关键词可能攒出多行 ⇒ 扫描器把一条规则算成多次命中。
+    """
+    repo.upsert_approved(novel_id="n1", keyword="缓缓的雨", name="a")
+    with pytest.raises(sqlite3.IntegrityError):
+        repo._get_db().execute(
+            """
+            INSERT INTO anti_ai_learned_patterns
+                (id, novel_id, keyword, name, severity, category, reason, hint,
+                 status, source, rule_version, first_seen_chapter, hit_count,
+                 created_at, updated_at)
+            VALUES ('dup', 'n1', '缓缓的雨', '', 'info', '', '', '',
+                    'approved', 'ai', 99, 0, 0, '', '')
+            """
+        )
 
 
 # ── 1. 不越界：纯字面 + 必须在正文里出现 ───────────────────────────
@@ -320,6 +343,103 @@ def test_a_learned_rule_is_matched_literally_not_as_a_regex(repo):
     # 「看着像正则」但字面不在这儿：按正则解释会命中，按字面解释不该命中。
     regex_hits = scanner.scan_cliches("缓缓的大雨落在瓦上。")
     assert not any(h.pattern == "人工规则" for h in regex_hits), "被当成正则了"
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_rule_is_not_resurrected_by_the_next_chapter(repo):
+    """人工驳回必须**永久**：下一章 AI 再提同一条，也不能复活。
+
+    坑（复审 B1）：驳回只把 ``status`` 置 ``rejected``，
+    但「别再提」清单只含**已批准**的关键词 ⇒ AI 下一章会重新提 ⇒
+    ``upsert_approved`` 命中旧行并**无条件**改回 ``approved``
+    ⇒ **唯一的人工控制手段失效**。
+    """
+    service = AntiAILearningService(repository=repo)
+    repo.upsert_approved(novel_id="n1", keyword="缓缓的雨", name="本书句式")
+    assert service.reject_pattern("n1", "缓缓的雨")
+    assert repo.list_approved("n1") == []
+
+    class _LLM:
+        async def generate(self, prompt, config=None):
+            return SimpleNamespace(content=json.dumps({"patterns": [
+                {"keyword": "缓缓的雨", "name": "本书句式", "severity": "warning"},
+            ]}))
+
+    stored = await service.induce_and_store_patterns(
+        novel_id="n1", chapter_number=4, content="缓缓的雨落在瓦上。", llm_service=_LLM(),
+    )
+
+    assert stored == [], "被驳回的模式不该再被归纳出来"
+    assert repo.list_approved("n1") == [], "被驳回的模式被复活了"
+    row = repo._get_db().fetch_one(
+        "SELECT status FROM anti_ai_learned_patterns"
+        " WHERE novel_id = 'n1' AND keyword = '缓缓的雨'"
+    )
+    assert row["status"] == "rejected", "状态必须仍是 rejected"
+
+
+def test_a_manual_approval_can_restore_a_rejected_rule(repo):
+    """人工**显式**恢复是允许的（驳回不是删除）。"""
+    service = AntiAILearningService(repository=repo)
+    repo.upsert_approved(novel_id="n1", keyword="缓缓的雨", name="本书句式")
+    service.reject_pattern("n1", "缓缓的雨")
+
+    assert service.approve_pattern(novel_id="n1", keyword="缓缓的雨", name="本书句式")
+    assert [p[0] for p in repo.list_approved("n1")] == ["缓缓的雨"]
+
+
+def test_the_repository_never_revives_a_rejected_rule(repo):
+    """**仓库层**防线：AI 路径写一条被驳回过的规则 ⇒ 不复活、返回 None。
+
+    这条与「别再提」清单（**服务层**防线）互相独立：
+    仓库层被删掉 ⇒ 服务层仍拦得住（用户看不出差别），
+    ⇒ 必须**单独**钉住仓库层，否则它没有牙齿。
+    """
+    repo.upsert_approved(novel_id="n1", keyword="缓缓的雨", name="本书句式")
+    repo.reject("n1", "缓缓的雨")
+
+    assert repo.upsert_approved(
+        novel_id="n1", keyword="缓缓的雨", name="本书句式"
+    ) is None, "被驳回的行被复活了"
+    assert repo.list_approved("n1") == []
+    row = repo._get_db().fetch_one(
+        "SELECT status FROM anti_ai_learned_patterns"
+        " WHERE novel_id = 'n1' AND keyword = '缓缓的雨'"
+    )
+    assert row["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_the_rejected_keywords_are_told_to_the_ai(repo, monkeypatch):
+    """**服务层**防线：被驳回的关键词必须进「别再提」清单。
+
+    这条与仓库层的「不复活」互相独立：
+    服务层被删掉 ⇒ 仓库层仍拦得住 ⇒ 必须**单独**钉住服务层。
+    """
+    from application.audit.services import anti_ai_pattern_induction as induction_mod
+
+    repo.upsert_approved(novel_id="n1", keyword="缓缓的雨", name="本书句式")
+    repo.reject("n1", "缓缓的雨")
+
+    seen = {}
+
+    async def _fake_induce(self, **kwargs):  # noqa: N805
+        seen.update(kwargs)
+        return [], SOURCE_AI
+
+    monkeypatch.setattr(induction_mod.AntiAiPatternInducer, "induce", _fake_induce)
+
+    service = AntiAILearningService(repository=repo)
+    await service.induce_and_store_patterns(
+        novel_id="n1",
+        chapter_number=4,
+        content="缓缓的雨落在瓦上。",
+        llm_service=object(),
+    )
+
+    assert "缓缓的雨" in seen.get("known_keywords", []), (
+        "被驳回的关键词没进『别再提』清单 ⇒ AI 会重新提 ⇒ 规则会被复活"
+    )
 
 
 def test_readding_the_same_keyword_updates_in_place(repo):

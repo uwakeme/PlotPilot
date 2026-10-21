@@ -35,6 +35,13 @@ class ScanRequest(BaseModel):
     """扫描请求。"""
     content: str = Field(..., description="待扫描的章节正文")
     chapter_id: str = Field("", description="章节 ID")
+    novel_id: str = Field(
+        "",
+        description=(
+            "小说 ID。给了 ⇒ 加载该小说**已批准的已学规则**（F-06 的回灌）；"
+            "不给 ⇒ 只用通用规则库"
+        ),
+    )
 
 
 class ScanResponse(BaseModel):
@@ -98,9 +105,15 @@ def _get_audit_repo():
 
 @router.post("/scan", response_model=ScanResponse)
 async def scan_chapter(request: ScanRequest):
-    """扫描章节 AI 味。"""
+    """扫描章节 AI 味。
+
+    ``novel_id`` 给了 ⇒ 一起加载该小说**已批准的已学规则**（F-06 的回灌），
+    否则仪表盘显示的命中数会**低于实际**（复审 §3.6b）。
+    """
     auditor = get_anti_ai_auditor()
-    report = auditor.scan_chapter(request.chapter_id, request.content)
+    report = auditor.scan_chapter(
+        request.chapter_id, request.content, novel_id=request.novel_id
+    )
 
     return ScanResponse(
         total_hits=report.metrics.total_hits,

@@ -602,6 +602,10 @@ const completedChapters = computed(() => {
 })
 const deciding = ref('') // '' | 'finale' | 'continue' | 'complete'
 const finaleBudget = ref(20)
+// 终局预算的钳制范围**由后端给**（J-01 的提案响应里带 min/max），
+// 前端不再自己写死一份 [5,200]（复审 §3.3：钳制要在一处）。
+const finaleBudgetMin = ref(5)
+const finaleBudgetMax = ref(200)
 const continueTarget = ref(null)
 
 watch(isTargetReachedPause, (active) => {
@@ -616,6 +620,8 @@ async function loadTargetBudgetProposal() {
   try {
     const p = await novelApi.targetBudgetProposal(props.novelId)
     finaleBudget.value = p.finale_budget
+    finaleBudgetMin.value = p.finale_budget_min ?? 5
+    finaleBudgetMax.value = p.finale_budget_max ?? 200
     continueTarget.value = p.continue_target
   } catch (err) {
     // 拿不到提案 ⇒ 退回最小可用初值，不在前端编公式
@@ -638,10 +644,16 @@ async function applyTargetDecision(kind) {
   deciding.value = kind
   try {
     if (kind === 'finale') {
-      const budget = Math.max(5, Math.min(200, Number(finaleBudget.value) || 20))
+      const budget = Math.max(
+        finaleBudgetMin.value,
+        Math.min(finaleBudgetMax.value, Number(finaleBudget.value) || finaleBudget.value),
+      )
       await novelApi.updateNovel(props.novelId, {
         target_chapters: completedChapters.value + budget,
-        generation_prefs: { finale_mode: true },
+        // 预算**本身**也要作为预算发出去（复审 §3.3）：
+        // 以前只发 target_chapters = completed + budget，
+        // 后端的 clamp_finale_budget 根本管不到它。
+        generation_prefs: { finale_mode: true, finale_chapter_budget: budget },
       })
       await autopilotApi.resume(props.novelId)
       message.success(`已进入终局写作：加写 ${budget} 章收束后自动完结`)

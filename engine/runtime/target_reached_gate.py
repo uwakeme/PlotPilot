@@ -72,7 +72,10 @@ def resolve_target_reached(
                 completed_count,
             )
             return "complete"
-        budget = clamp_finale_budget(prefs.finale_chapter_budget or 20)
+        # 终局预算的默认值与钳制都在 domain 的共享函数里
+        # （``clamp_finale_budget`` 内部回落 ``FINALE_BUDGET_DEFAULT``）
+        # ⇒ 这里不再自己写一份字面量（复审 §3.2d：同一常量 6 处）。
+        budget = clamp_finale_budget(prefs.finale_chapter_budget)
         novel.generation_prefs = GenerationPreferences.merge_patch(
             prefs, {"finale_mode": True}
         )

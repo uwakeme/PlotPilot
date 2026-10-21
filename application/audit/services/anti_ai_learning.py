@@ -79,9 +79,13 @@ class AntiAILearningService:
 
         repo = self._repo()
         try:
+            # 「别再提」清单 = **已批准 + 已驳回**。
+            # 只喂已批准的 ⇒ 人工驳回过的关键词 AI 下一章会重新提 ⇒
+            # 规则被复活 ⇒ **人工驳回形同虚设**（唯一的人工控制手段失效）。
             known_keywords = [p[0] for p in repo.list_approved(novel_id)]
+            known_keywords += list(repo.list_rejected(novel_id))
         except Exception as exc:
-            logger.warning("读取已批准模式失败 novel=%s: %s", novel_id, exc)
+            logger.warning("读取已批准/已驳回模式失败 novel=%s: %s", novel_id, exc)
             known_keywords = []
 
         patterns, source = await AntiAiPatternInducer(llm_service).induce(
@@ -169,6 +173,9 @@ class AntiAILearningService:
             reason=reason or "人工添加",
             hint=_DEFAULT_HINT,
             source="manual",
+            # 人工显式恢复：允许把**驳回过**的规则重新批准。
+            # （AI 路径不允许 —— 驳回必须永久。）
+            revive_rejected=True,
         )
         return bool(version)
 

@@ -62,6 +62,29 @@ class AntiAiPatternRepository:
             if str(r.get("keyword") or "").strip()
         ]
 
+    def list_rejected(self, novel_id: str) -> List[str]:
+        """该小说**被人工驳回**的规则关键词。
+
+        为什么需要它：驳回必须**永久**。若只把「已批准」的喂给 AI 当「别再提」，
+        AI 下一章会重新提同一条 ⇒ 规则被复活 ⇒ 人工驳回形同虚设。
+        ⇒ 驳回过的关键词也要进 AI 的「别再提」清单。
+        """
+        if not novel_id:
+            return []
+        try:
+            rows = self._get_db().fetch_all(
+                """
+                SELECT keyword FROM anti_ai_learned_patterns
+                WHERE novel_id = ? AND status = 'rejected'
+                ORDER BY rule_version ASC
+                """,
+                (str(novel_id),),
+            )
+        except Exception as exc:
+            logger.warning("读取已驳回模式失败 novel=%s: %s", novel_id, exc)
+            return []
+        return [str(r.get("keyword") or "") for r in rows if str(r.get("keyword") or "").strip()]
+
     def current_version(self, novel_id: str) -> int:
         """规则库当前版本（该小说所有规则里的最大版本号；驳回不回退）。"""
         if not novel_id:
@@ -115,29 +138,43 @@ class AntiAiPatternRepository:
         hint: str = "",
         chapter_number: int = 0,
         source: str = "ai",
+        revive_rejected: bool = False,
     ) -> Optional[int]:
         """写入一条已批准规则；**已存在则原地更新元信息**（不产生重复行）。
 
         返回该规则的版本号；写失败返回 ``None``。
+
+        ``revive_rejected``：
+          - 默认 ``False``（AI 路径）—— 若这行**被人工驳回过**，**不复活**，
+            返回 ``None``。人工驳回必须永久，否则「驳回」这个唯一的
+            人工控制手段形同虚设（AI 下一章重新提一次就回来了）。
+          - ``True``（人工路径 ``approve_pattern``）—— 允许把驳回过的规则
+            恢复为已批准（人工显式操作）。
         """
         keyword = str(keyword or "").strip()
         if not novel_id or not keyword:
             return None
-        version = self.current_version(novel_id) + 1
         now = datetime.now().isoformat()
         try:
             existing = self._get_db().fetch_one(
                 """
-                SELECT id FROM anti_ai_learned_patterns
+                SELECT id, status FROM anti_ai_learned_patterns
                 WHERE novel_id = ? AND keyword = ?
                 LIMIT 1
                 """,
                 (str(novel_id), keyword),
             )
             if existing:
+                if str(existing.get("status") or "") == "rejected" and not revive_rejected:
+                    # 人工驳回过 ⇒ **不复活**（AI 路径）。
+                    logger.info(
+                        "[%s] 已驳回的模式不再自动复活 keyword=%r", novel_id, keyword
+                    )
+                    return None
+                version = self.current_version(novel_id) + 1
                 # 同一个关键词 ⇒ 更新，不新增行。
-                # （不能用 ``ON CONFLICT(id)``：id 每次都是新 uuid，冲突永不触发，
-                #   而表的唯一键在 (novel_id, keyword) 上。）
+                # （不能用 ``ON CONFLICT(id)``：id 每次都是新 uuid，冲突永不触发；
+                #   表上现在有 ``UNIQUE(novel_id, keyword)`` 唯一索引兜底。）
                 self._get_db().execute(
                     """
                     UPDATE anti_ai_learned_patterns
@@ -161,6 +198,7 @@ class AntiAiPatternRepository:
                 )
                 return version
 
+            version = self.current_version(novel_id) + 1
             self._get_db().execute(
                 """
                 INSERT INTO anti_ai_learned_patterns

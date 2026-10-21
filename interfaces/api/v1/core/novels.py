@@ -17,6 +17,7 @@ from application.blueprint.services.target_budget import (
     FINALE_BUDGET_MAX,
     FINALE_BUDGET_MIN,
     TARGET_CHAPTERS_MAX,
+    clamp_finale_budget,
     propose_continue_target,
 )
 from interfaces.api.dependencies import (
@@ -274,7 +275,9 @@ async def get_target_budget_proposal(
     target = int(getattr(novel, "target_chapters", 0) or 0)
     completed = _count_completed_chapters(novel_id)
     prefs = getattr(novel, "generation_prefs", None)
-    finale_budget = int(getattr(prefs, "finale_chapter_budget", 0) or 0) or 20
+    # 终局预算的默认值只此一份（domain 的 ``FINALE_BUDGET_DEFAULT``）——
+    # 不再在这里写第二份字面量（复审 §3.2d）。
+    finale_budget = clamp_finale_budget(getattr(prefs, "finale_chapter_budget", 0))
 
     return {
         "continue_target": propose_continue_target(

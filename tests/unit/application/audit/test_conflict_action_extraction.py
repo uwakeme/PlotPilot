@@ -137,7 +137,13 @@ def test_an_oversized_value_is_dropped():
 
 
 def test_an_evidence_not_in_the_outline_is_dropped():
-    """AI 编出来的动作一律丢弃。"""
+    """AI 编出来的动作一律丢弃。
+
+    ⚠ 这一条现在**有独立牙齿**（复审 B3）：
+    旧实现把它拆成「证据字面性」+「归属校验」两条 ⇒ 后者会**顺带挡掉**前者
+    （证据不在大纲里 ⇒ 就近匹配也找不到）⇒ 删掉前一条，用例照样全绿。
+    现在合成**一条**承重校验 ⇒ 删掉它，本用例立刻转红。
+    """
     result = normalize_extraction(
         {"actions": [_action("李四", "magic", "火系", "李四放火球")]},
         valid_entity_names=["李四"],
@@ -145,6 +151,28 @@ def test_an_evidence_not_in_the_outline_is_dropped():
     )
 
     assert result.actions == {}
+
+
+def test_the_evidence_is_matched_in_the_entities_own_clause():
+    """复审 B2：证据必须在该实体**自己的**小句里**就近**匹配。
+
+    旧实现取 ``text.find(evidence)`` —— 全篇**首次**出现的位置。
+    大纲「李四拔出长剑。陈小握着长剑。」时，AI 报「陈小 / 长剑 / evidence='长剑'」，
+    ``find`` 命中的是**李四**那句里的位置 ⇒ 落不进陈小的小句
+    ⇒ **陈小的动作被静默丢掉** ⇒ 多角色同章时真冲突重新变成漏报
+    —— 正是 H-02a 专门修好的东西，在新路径上被请回来。
+    """
+    outline = "李四拔出长剑。陈小握着长剑。"
+    result = normalize_extraction(
+        {"actions": [_action("陈小", "weapon", "长剑", "长剑")]},
+        valid_entity_names=["李四", "陈小"],
+        outline=outline,
+    )
+
+    assert result.source == SOURCE_AI
+    assert "陈小" in result.actions, "陈小的动作被丢了"
+    assert result.actions["陈小"][0].value == "长剑"
+    assert "李四" not in result.actions
 
 
 def test_the_evidence_must_belong_to_that_entity():

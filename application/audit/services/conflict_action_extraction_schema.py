@@ -17,7 +17,13 @@
    ``character_state_extractor`` 取的就是 ``tag.endswith("系")`` 的那一个，
    所以设定库里根本不可能出现非「X系」的魔法属性 ⇒ 这一条不制造漏报）；
    武器值是**武器名**（不是「拔剑」这种动作）；
-4. **证据必须字面出现在大纲里** —— AI 编出来的动作一律丢弃；
+4. **证据必须逐字出现在「该实体的小句」里** —— 一条检查同时管两件事：
+   - 「逐字出现在大纲里」⇒ AI 编出来的动作一律丢弃；
+   - 「出现在**这个实体**的小句里」⇒ 动作不能挂到别人头上（H-02a）。
+
+   为什么必须**合成一条**：拆成两条时，后一条会把前一条**顺带挡掉**
+   （证据若不在大纲里，在小句里就近匹配必然也找不到）⇒ 前一条没有独立牙齿
+   （复审 B3）。合成一条后，两种拒因互斥且都能独立触发。
 5. **三态**：``ai``（AI 抽过）/ ``fallback``（AI 不可用 ⇒ 走代码关键词表，
    且来源可分辨）/ ``""``（未评估）。
 
@@ -112,6 +118,30 @@ def _is_valid_value(kind: str, value: str) -> bool:
     return not value.endswith("系")
 
 
+def _evidence_in_ranges(
+    text: str, ranges: List[Tuple[int, int]], evidence: str
+) -> bool:
+    """证据是否**逐字**出现在给定的小句范围内（**就近匹配**）。
+
+    为什么是「就近」而不是「全篇首次出现」（复审 B2）：
+    旧实现取 ``text.find(evidence)`` —— 只找**第一次**出现的位置。
+    大纲里「李四拔出长剑。陈小握着长剑。」时，
+    AI 报「陈小 / 长剑 / evidence='长剑'」，
+    ``find`` 命中的是**李四**那句里的位置 ⇒ 落不进陈小的小句
+    ⇒ **陈小的动作被静默丢掉** ⇒ 多角色同章时真冲突重新变成漏报
+    —— 正是 H-02a 专门修好的东西，在新路径上被请回来。
+
+    改为在**该实体自己的小句**里就近找 ⇒ 既修好漏报，
+    又让「证据字面性」与「归属」变成同一条承重校验（见模块 docstring）。
+    """
+    if not evidence or not ranges:
+        return False
+    for lo, hi in ranges:
+        if evidence in text[lo:hi]:
+            return True
+    return False
+
+
 def normalize_extraction(
     data: Optional[Dict[str, Any]],
     *,
@@ -124,7 +154,8 @@ def normalize_extraction(
     - 实体不在候选清单里 ⇒ 该条丢弃（**AI 不得凭空造人**）；
     - ``kind`` 不在封闭枚举里 ⇒ 该条丢弃；
     - 属性值格式不对 ⇒ 该条丢弃；
-    - 证据不**字面**出现在大纲里 ⇒ 该条丢弃（AI 编的）；
+    - 证据不**逐字出现在该实体的小句里** ⇒ 该条丢弃
+      （同时管住「AI 编的」与「挂到别人头上」两件事，见模块 docstring）；
     - AI **给了动作但一条都用不了** ⇒ 判为**未评估**（它的回答不可信），
       调用方按兜底处理；
     - AI 合法地回答「没有动作」（空列表）⇒ ``source="ai"``，
@@ -162,21 +193,16 @@ def normalize_extraction(
         evidence = str(item.get("evidence") or "").strip()
         if len(evidence) < MIN_EVIDENCE_LEN or len(evidence) > MAX_EVIDENCE_LEN:
             continue
-        if evidence not in text:
-            # AI 编出来的动作：大纲里根本没这段话 ⇒ 丢弃
-            continue
-        # 归属校验：证据的起点必须落在**这个人**的小句里
-        # （「陈小拔剑」不能说成李四做的；连接词沿用的小句算前一个主体）。
-        # 归属校验同时保证「证据字面出现在大纲里」——找不到就落不进任何小句。
+        # 归属校验（承重）：证据必须**逐字出现在这个实体的小句里**。
+        # 这一条同时保证「证据字面出现在大纲里」（AI 编的动作一律丢弃）
+        # 与「动作不挂到别人头上」（H-02a）。
         credited = base_credited
         if entity_name not in base_credited:
             # 不在名单里的人**单独**算一次归属：这样「实体白名单」这条规则
             # 才有独立的 teeth —— 挡人的只有白名单，不会被归属校验顺带挡掉。
             # （只算他一个，不混进已知实体 ⇒ 不会影响已知实体的归属。）
             credited = assign_clause_spans(spans, name_list + [entity_name])
-        start = text.find(evidence)
-        ranges = credited.get(entity_name, [])
-        if not any(lo <= start < hi for lo, hi in ranges):
+        if not _evidence_in_ranges(text, credited.get(entity_name, []), evidence):
             continue
         key = (entity_name, kind, value)
         if key in seen:

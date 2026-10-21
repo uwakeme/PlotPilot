@@ -17,11 +17,15 @@ function request<T>(path: string, options?: FetchJsonOptions): Promise<T> {
   return fetchJson<T>(`${API_BASE}${path}`, options)
 }
 
-/** 扫描章节 AI 味 */
-export function scanChapter(content: string, chapterId?: string): Promise<ScanResult> {
+/** 扫描章节 AI 味
+ *
+ * `novelId` 给了 ⇒ 后端会加载该小说**已批准的已学规则**（F-06 的回灌），
+ * 否则命中数会低于实际。
+ */
+export function scanChapter(content: string, chapterId?: string, novelId?: string): Promise<ScanResult> {
   return request<ScanResult>('/scan', {
     method: 'POST',
-    body: { content, chapter_id: chapterId || '' },
+    body: { content, chapter_id: chapterId || '', novel_id: novelId || '' },
   })
 }
 

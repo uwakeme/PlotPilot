@@ -781,6 +781,14 @@ class BaseStoryPipeline(ABC):
 
         # 降级到 context_builder
         if bundle is None and ctx.context_builder is not None:
+            if character_context_selection:
+                # D-04 的取材结果在降级路径上**用不到**（context_builder
+                # 不支持按角色裁剪）—— 说出来，别让它静默消失（复审 §3.4c）。
+                logger.warning(
+                    "[%s] D-04 的 AI 角色取材在降级路径上用不到"
+                    "（context_builder 不支持按角色裁剪）ch=%s",
+                    ctx.novel_id, ctx.chapter_number,
+                )
             try:
                 ctx.context_text = ctx.context_builder.build_context(
                     novel_id=ctx.novel_id,
@@ -1711,7 +1719,11 @@ class BaseStoryPipeline(ABC):
             return None
 
         if selection is None or not selection.is_usable:
+            ctx.metadata["character_context_selection_source"] = ""
             return None
+        # 来源落进 metadata（与 D-03 的 foreshadow_selection_source 同口径）：
+        # 不落库 ⇒ 章后分不出「AI 选过」与「兜底」。
+        ctx.metadata["character_context_selection_source"] = selection.source
         return selection.to_payload()
 
     async def _decide_continuation_strategy(self, ctx: PipelineContext, draft: str):

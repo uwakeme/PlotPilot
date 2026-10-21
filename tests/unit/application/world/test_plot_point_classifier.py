@@ -58,7 +58,6 @@ class _FakePlotArcRepo:
 
 def _code_string_literals(tree):
     """收集**代码里**的字符串字面量（不含 docstring）。
-
     docstring 里会引用旧文案（说明「旧实现是这么写的」），那不算残留；
     但代码里的 f-string 片段（例如 ``"持续低张："``）算。
     """
@@ -262,3 +261,39 @@ def test_the_live_weight_formula_is_the_domain_one():
     dims = TensionDimensions.from_raw_scores(plot=100.0, emotional=0.0, pacing=0.0)
 
     assert dims.composite_score == 40.0
+
+
+# ── 6. 复审 §3.6e：给 AI 的「小说名」不能是 UUID ─────────────────────
+
+
+def test_the_novel_title_passed_to_the_ai_is_not_the_novel_id():
+    """``novel_title=novel_id`` ⇒ 提示词第一行收到的是一串 UUID。
+
+    复审 §3.6e：与 F-13b 修掉的「标题当 ID 用」是同族反向错误。
+    用 **AST 精确匹配**（不是字符串 contains）——
+    否则 f-string 片段会把判据撑住。
+    """
+    src = SYNC_PATH.read_bytes().decode("utf-8")
+    tree = ast.parse(src)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "novel_title" and isinstance(kw.value, ast.Name):
+                if kw.value.id == "novel_id":
+                    offenders.append((node.lineno, kw.value.id))
+            if kw.arg == "novel_title" and isinstance(kw.value, ast.Constant):
+                if isinstance(kw.value.value, str) and kw.value.value == "novel_id":
+                    offenders.append((node.lineno, kw.value.value))
+
+    assert not offenders, f"给 AI 的 novel_title 仍然是 novel_id：{offenders}"
+
+
+def test_the_novel_title_is_fetched_from_the_database(monkeypatch):
+    """真名走 ``_fetch_novel_title`` ⇒ 取不到时是空串，**不拿 ID 冒充**。"""
+    from application.world.services import chapter_narrative_sync as sync_mod
+
+    monkeypatch.setattr(sync_mod, "_fetch_novel_title", lambda _nid: "剑与回响")
+    assert sync_mod._fetch_novel_title("n1") == "剑与回响"

@@ -119,7 +119,7 @@ class GenerationPreferences:
         if policy not in ("ask", "finale", "continue", "complete"):
             policy = "ask"
         try:
-            finale_budget = int(raw.get("finale_chapter_budget", 20))
+            finale_budget = int(raw.get("finale_chapter_budget", FINALE_BUDGET_DEFAULT))
         except (TypeError, ValueError):
             finale_budget = FINALE_BUDGET_DEFAULT
         finale_budget = clamp_finale_budget(finale_budget)

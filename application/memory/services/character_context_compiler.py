@@ -23,9 +23,10 @@ from typing import Any, Dict, List, Optional, Sequence
 
 #: 事实类别的固定规格：id 前缀 / 展示标签 / 渲染模式 / 所在层 / 兜底条数 / 组内连接符
 #:
-#: ``mode="item"`` —— 每个候选独立成行（创伤 / 驱动力）。
-#: ``mode="group"`` —— 同类别候选连成一行（声线 / 口癖 / 知识边界 / 关系张力）。
-_CATEGORY_SPEC: Dict[str, Dict[str, Any]] = {
+#: **单一事实源**：类别、前缀、每类条数上限都只此一份。
+#: 取材侧的 schema（``character_context_selection_schema``）原先又抄了一份
+#: 类别与前缀（复审 §3.2 的第 5 处「同一逻辑写两份」）⇒ 现在它 import 本表。
+CATEGORY_SPEC: Dict[str, Dict[str, Any]] = {
     "scars": {"prefix": "s", "label": "创伤", "mode": "item", "tier": "t0", "limit": 2, "sep": ""},
     "motivations": {"prefix": "m", "label": "驱动力", "mode": "item", "tier": "t0", "limit": 2, "sep": ""},
     "voice": {"prefix": "v", "label": "声线", "mode": "group", "tier": "t0", "limit": 3, "sep": " / "},
@@ -89,7 +90,7 @@ class CharacterContextCompiler:
         out: List[FactCandidate] = []
 
         def _add(category: str, value: str, text: str, visible: bool) -> None:
-            spec = _CATEGORY_SPEC[category]
+            spec = CATEGORY_SPEC[category]
             index = sum(1 for c in out if c.category == category)
             out.append(
                 FactCandidate(
@@ -172,7 +173,7 @@ class CharacterContextCompiler:
         if current_state.get("summary"):
             t0_parts.append(f"当前状态:{current_state['summary']}")
 
-        for category, spec in _CATEGORY_SPEC.items():
+        for category, spec in CATEGORY_SPEC.items():
             if spec["tier"] != "t0":
                 continue
             picked = [c for c in candidates if c.category == category and c.id in chosen]
@@ -214,7 +215,7 @@ class CharacterContextCompiler:
     def _fallback_ids(candidates: Sequence[FactCandidate]) -> List[str]:
         """兜底：每个类别取前 N 条（与改造前的切片口径一致）。"""
         chosen: List[str] = []
-        for category, spec in _CATEGORY_SPEC.items():
+        for category, spec in CATEGORY_SPEC.items():
             picked = [c for c in candidates if c.category == category][: spec["limit"]]
             chosen.extend(c.id for c in picked)
         return chosen

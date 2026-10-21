@@ -101,27 +101,6 @@ def assign_clause_spans(
     return result
 
 
-def clause_credits_entity(
-    outline: str,
-    entity_name: str,
-    evidence: str,
-    credited: Optional[Dict[str, List[Tuple[int, int]]]] = None,
-) -> bool:
-    """证据是否真的能证明「**这个实体**做了这件事」。
-
-    判据：证据的**起点**必须落在该实体被归属的小句里。
-
-    - 「陈小拔剑」但 AI 说是李四 ⇒ 证据起点在陈小的小句 ⇒ **不成立** ⇒ 丢弃；
-    - 「李明释放火球术，然后拔剑攻击」里 AI 说李明拔剑、证据是「拔剑攻击」⇒
-      该小句按连接词沿用归给李明 ⇒ **成立** ✓；
-    - 证据不在大纲里 ⇒ **不成立**。
-    """
-    if not outline or not entity_name or not evidence:
-        return False
-    start = outline.find(evidence)
-    if start < 0:
-        return False
-    if credited is None:
-        credited = assign_clause_spans(clause_spans(outline), [entity_name])
-    ranges = credited.get(entity_name, [])
-    return any(lo <= start < hi for lo, hi in ranges)
+# 复审 §3.2c：``clause_credits_entity`` 曾是归属判据的**第三份拷贝**且**零调用方**
+# —— 同一逻辑写三份，改一处漏两处。归属判据现在只有 ``assign_clause_spans``
+# + 抽取层的「证据必须在该实体的小句里就近匹配」这一份 ⇒ 该函数删除。

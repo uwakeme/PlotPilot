@@ -25,30 +25,43 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from application.memory.services.character_context_compiler import CATEGORY_SPEC
+
 #: 来源标记
 SOURCE_AI = "ai"
 SOURCE_FALLBACK = "fallback"
 SOURCE_NONE = ""
 
 #: 事实类别（代码产出候选，AI 只在这些类别里挑）
-FACT_CATEGORIES: Tuple[str, ...] = (
-    "scars",
-    "motivations",
-    "voice",
-    "catchphrases",
-    "knowledge",
-    "relationships",
-)
+#: ⚠ 类别 / 前缀 / 每类条数上限的**单一事实源**是
+#: ``character_context_compiler.CATEGORY_SPEC`` —— 本模块原先又抄了一份
+#: 类别与前缀（复审 §3.2 的第 5 处「同一逻辑写两份」）⇒ 现在只从那里派生。
+FACT_CATEGORIES: Tuple[str, ...] = tuple(CATEGORY_SPEC)
 
 #: 类别 → 候选 id 前缀（稳定 id：同一份 projection 每次生成同一批 id）
 CATEGORY_PREFIX: Dict[str, str] = {
-    "scars": "s",
-    "motivations": "m",
-    "voice": "v",
-    "catchphrases": "c",
-    "knowledge": "k",
-    "relationships": "r",
+    cat: str(spec["prefix"]) for cat, spec in CATEGORY_SPEC.items()
 }
+
+#: 类别 → 该类最多取几条（= 兜底路径的条数 ⇒ 上下文占用不因 AI 取材而膨胀）
+CATEGORY_LIMIT: Dict[str, int] = {
+    cat: int(spec["limit"]) for cat, spec in CATEGORY_SPEC.items()
+}
+
+#: 单个角色最多取几条（= 各类条数上限之和 ⇒ 硬上限）
+MAX_FACTS_PER_CHARACTER: int = sum(CATEGORY_LIMIT.values())
+
+#: 候选 id 前缀 → 类别（id 形如 ``s0`` / ``m1`` ⇒ 前缀决定类别）
+_PREFIX_TO_CATEGORY: Dict[str, str] = {
+    prefix: cat for cat, prefix in CATEGORY_PREFIX.items()
+}
+
+
+def _category_of(fact_id: str) -> Optional[str]:
+    """由候选 id 反查类别；认不出 ⇒ ``None``（不按类别计数，交给总量上限兜）。"""
+    if not fact_id:
+        return None
+    return _PREFIX_TO_CATEGORY.get(fact_id[:1])
 
 
 class CharacterContextSelectionLlmPayload(BaseModel):
@@ -138,6 +151,11 @@ def normalize_selection(
 
     - 角色 id 不在 ``valid_fact_ids`` 里 ⇒ 整个角色丢弃（不存在的人）。
     - 事实 id 不在该角色的候选清单里 ⇒ 丢弃（**AI 不得凭空造记忆**）。
+    - **条数有上限**（代码保证的上下文预算，见 ``CATEGORY_LIMIT``）——
+      AI 可以决定「带哪几条」，但不能决定「带多少条」：
+      候选清单里可能有几十条，全带进去会把 T0 撑爆，
+      而 T0 的截断是**与角色无关**的 ⇒ 后面的角色锚点会被整行切掉
+      （复审 §3.4a：「锚点必进」是逐条成立，不是逐槽位成立）。
     - 一个角色既没挑事实也没给 T2 ⇒ 该角色不产出选择（走兜底）。
     """
     if not isinstance(data, dict):
@@ -157,9 +175,22 @@ def normalize_selection(
         if not isinstance(raw_ids, list):
             raw_ids = []
         allowed = valid_fact_ids[cid]
-        kept = tuple(
-            fid for fid in (str(x).strip() for x in raw_ids) if fid and fid in allowed
-        )
+        # 条数上限：先按**类别**限（= 兜底路径的每类条数），再按总量限。
+        per_category: Dict[str, int] = {}
+        kept_ids: List[str] = []
+        for fid in (str(x).strip() for x in raw_ids):
+            if not fid or fid not in allowed:
+                continue
+            category = _category_of(fid)
+            if category is not None:
+                limit = CATEGORY_LIMIT.get(category, MAX_FACTS_PER_CHARACTER)
+                if per_category.get(category, 0) >= limit:
+                    continue
+                per_category[category] = per_category.get(category, 0) + 1
+            if len(kept_ids) >= MAX_FACTS_PER_CHARACTER:
+                break
+            kept_ids.append(fid)
+        kept = tuple(kept_ids)
         t2 = str(item.get("t2_instruction") or "").strip().splitlines()[0][:200].strip() if item.get("t2_instruction") else ""
         if not kept and not t2:
             continue

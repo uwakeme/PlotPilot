@@ -521,3 +521,56 @@ async def test_service_without_candidates_is_unassessed():
     result = await service.select_for_chapter(novel_id="n1", chapter_number=3)
 
     assert result.source == SOURCE_NONE
+
+
+# ── 复审 §3.4a：条数上限（代码保证的上下文预算） ─────────────────────
+
+
+def test_the_ai_cannot_exceed_the_per_category_and_total_limits():
+    """AI 决定「带**哪**几条」，不能决定「带**多少**条」。
+
+    复审 §3.4a：候选清单里可能有几十条，全带进去会把 T0 撑爆；
+    而 T0 的截断是**与角色无关**的 ⇒ 后面的角色锚点会被整行切掉
+    （「锚点必进」是逐条成立，不是逐槽位成立）。
+    """
+    from application.character.services.character_context_selection_schema import (
+        CATEGORY_LIMIT,
+        CATEGORY_PREFIX,
+        MAX_FACTS_PER_CHARACTER,
+        normalize_selection,
+    )
+
+    ids = (
+        [f"s{i}" for i in range(20)]
+        + [f"m{i}" for i in range(20)]
+        + [f"c{i}" for i in range(20)]
+    )
+    result = normalize_selection(
+        {"characters": [{"character_id": "c1", "selected_fact_ids": ids}]},
+        valid_fact_ids={"c1": set(ids)},
+    )
+
+    kept = result.characters["c1"].fact_ids
+    assert len(kept) <= MAX_FACTS_PER_CHARACTER, f"AI 选了 {len(kept)} 条，超出总量上限"
+    for category, limit in CATEGORY_LIMIT.items():
+        prefix = CATEGORY_PREFIX[category]
+        picked = sum(1 for fid in kept if fid.startswith(prefix))
+        assert picked <= limit, f"{category} 选了 {picked} 条，超出该类上限 {limit}"
+
+
+def test_the_category_spec_is_the_single_source():
+    """类别 / 前缀 / 每类条数上限只此一份（compiler 的 CATEGORY_SPEC）。
+
+    复审 §3.2 的第 5 处「同一逻辑写两份」：取材 schema 原先又抄了一份
+    类别与前缀。
+    """
+    from application.character.services.character_context_selection_schema import (
+        CATEGORY_LIMIT,
+        CATEGORY_PREFIX,
+        FACT_CATEGORIES,
+    )
+    from application.memory.services.character_context_compiler import CATEGORY_SPEC
+
+    assert set(FACT_CATEGORIES) == set(CATEGORY_SPEC)
+    assert CATEGORY_PREFIX == {c: s["prefix"] for c, s in CATEGORY_SPEC.items()}
+    assert CATEGORY_LIMIT == {c: s["limit"] for c, s in CATEGORY_SPEC.items()}

@@ -1717,6 +1717,27 @@ def update_narrative_debts(
     return new_debts
 
 
+def _fetch_novel_title(novel_id: str) -> str:
+    """取小说**真名**（给 AI 的「小说名」用）。
+
+    复审 §3.6e：原来这里直接 ``novel_title=novel_id`` ⇒ 提示词第一行
+    ``【小说】{novel_title}`` 收到的是一串 UUID。与 F-13b 修掉的
+    「标题当 ID 用」是同族反向错误。
+    取不到 ⇒ 空串（不拿 ID 冒充标题）。
+    """
+    if not novel_id:
+        return ""
+    try:
+        from infrastructure.persistence.database.connection import get_database
+
+        row = get_database().fetch_one(
+            "SELECT title FROM novels WHERE id = ?", (str(novel_id),)
+        )
+        return str((row or {}).get("title") or "")
+    except Exception:
+        return ""
+
+
 async def _classify_plot_point(
     *,
     novel_id: str,
@@ -1748,7 +1769,7 @@ async def _classify_plot_point(
             content=content,
             tension_score=float(tension_score),
             prev_tension_score=prev_tension,
-            novel_title=novel_id,
+            novel_title=_fetch_novel_title(novel_id),
         )
     except Exception as exc:
         logger.warning(
