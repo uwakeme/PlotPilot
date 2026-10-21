@@ -214,7 +214,7 @@ class _Kernel:
     def apply_cast_plan(self, plan):
         return None
 
-    def build_context_locks(self, novel_id, chapter_number, plan=None):
+    def build_context_locks(self, novel_id, chapter_number, plan=None, selection=None):
         return SimpleNamespace(t0="KERNEL-FALLBACK", t1="KERNEL-T1", t2="KERNEL-T2")
 
 

@@ -93,6 +93,9 @@ class StoryPipelineRunner(DaemonHostMixin, BaseStoryPipeline):
             circuit_breaker=self.circuit_breaker,
             volume_summary_service=self.volume_summary_service,
             autopilot_host=self.host,
+            # D-04：角色上下文取材服务。漏装配 ⇒ 取材功能整条链是死的
+            # （AI 不会被调用，渲染方拿不到任何选择）。
+            character_context_selection_service=self._character_context_selection_service(),
         )
 
         try:
@@ -114,6 +117,23 @@ class StoryPipelineRunner(DaemonHostMixin, BaseStoryPipeline):
             pass
 
         return ctx
+
+    def _character_context_selection_service(self):
+        """D-04：角色上下文取材服务（AI 决定每个角色带哪些记忆进上下文）。"""
+        try:
+            from application.character.services.character_context_selection import (
+                CharacterContextSelectionService,
+            )
+
+            allocator = getattr(self.context_builder, "budget_allocator", None)
+            if allocator is None:
+                return None
+            return CharacterContextSelectionService(
+                llm_service=self.llm_service,
+                allocator=allocator,
+            )
+        except Exception:
+            return None
 
     def run_forever(self) -> None:
         from engine.runtime.daemon_loop import run_daemon_loop

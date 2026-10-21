@@ -211,6 +211,7 @@ class CharacterNarrativeKernel:
         chapter_number: int,
         *,
         plan: Optional[ChapterCastPlan] = None,
+        selection: Optional[Dict[str, Any]] = None,
     ) -> CharacterContextLocks:
         plan = plan or ChapterCastPlan(
             novel_id=novel_id,
@@ -235,7 +236,7 @@ class CharacterNarrativeKernel:
             elif slot.importance == "normal":
                 t1.append(self._format_t1_context(char, slot))
             else:
-                t2.append(self._format_t2_permission(char, slot))
+                t2.append(self._format_t2_permission(char, slot, selection=selection))
 
         return CharacterContextLocks(
             t0="\n".join(x for x in t0 if x),
@@ -561,8 +562,33 @@ class CharacterNarrativeKernel:
             bits.append(f"压力:{slot.notes.dramatic_pressure}")
         return " | ".join(bits)
 
-    def _format_t2_permission(self, char: Any, slot: CastSlot) -> str:
-        return f"- {getattr(char, 'name', slot.name)}：允许过场/提及，禁止抢走主线焦点"
+    def _format_t2_permission(
+        self,
+        char: Any,
+        slot: CastSlot,
+        selection: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """角色 T2 措辞。
+
+        默认措辞**只有一份实现**（``character_context_compiler.default_t2_instruction``）
+        —— 改造前这里与编译器各写一份、措辞逐字相同，改一处漏一处。
+        AI 给了本章专属措辞就用它，但「- {名字}：」前缀仍由代码拼（锚点必进）。
+        """
+        from application.memory.services.character_context_compiler import (
+            default_t2_instruction,
+        )
+
+        name = getattr(char, "name", slot.name)
+        instruction = ""
+        if isinstance(selection, dict):
+            characters = selection.get("characters")
+            if isinstance(characters, dict):
+                item = characters.get(str(slot.character_id))
+                if isinstance(item, dict):
+                    instruction = str(item.get("t2") or "").strip()
+        if instruction:
+            return f"- {name}：{instruction}"
+        return default_t2_instruction(name)
 
     def _forbidden_drift(self, char: Any) -> List[str]:
         out = []

@@ -62,6 +62,7 @@ REVIEW_IMPROVEMENT_SUGGESTIONS = "review-improvement-suggestions"
 CHAPTER_AI_REVIEW = "chapter-ai-review"
 CLICHE_SCAN = "cliche-scan"
 SETTING_DRIFT_AUDIT = "setting-drift-audit"
+CHARACTER_CONTEXT_SELECTION = "character-context-selection"
 
 # ── Memory ───────────────────────────────────────────────────────────────
 MEMORY_EXTRACTION = "memory-extraction"

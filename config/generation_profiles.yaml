@@ -105,3 +105,8 @@ macro_calibration:
   extends: base_generation_profile
   max_tokens: 2000
   temperature: 0.4
+
+character_context_selection:
+  extends: base_generation_profile
+  max_tokens: 3000
+  temperature: 0.3

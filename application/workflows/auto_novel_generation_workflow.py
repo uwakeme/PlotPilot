@@ -355,6 +355,7 @@ class AutoNovelGenerationWorkflow:
         max_tokens: int = 35000,
         allow_evolution_gate_bypass: bool = False,
         slot_weights: Optional[Dict[str, float]] = None,
+        character_context_selection: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
 
@@ -400,6 +401,8 @@ class AutoNovelGenerationWorkflow:
             # 此前只有下面的降级路径转发，导致算好的权重算完即丢，
             # 而上游日志仍打「槽位权重已施加」—— 正是本轮红线「假成功」。
             slot_weights=slot_weights,
+            # D-04：AI 取材结果必须转发到渲染方，否则算完即丢。
+            character_context_selection=character_context_selection,
         )
         context = assemble_chapter_bundle_context_text(payload)
         if evolution_gate_report:

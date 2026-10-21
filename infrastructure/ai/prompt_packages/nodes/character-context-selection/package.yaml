@@ -1,0 +1,27 @@
+name: 角色上下文取材
+category: writing
+source: application/character/services/character_context_selection.py
+description: 按章决定每个角色带哪些记忆进上下文，并定制 T2 措辞（AI 决定，代码只校验不越界）
+builtin: true
+tags:
+- 上下文
+- 角色
+- 取材
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+- name: chapter_outline
+  desc: 本章大纲/执行剧本
+  type: string
+  required: true
+- name: characters
+  desc: 候选角色及其事实候选清单（JSON 文本）
+  type: string
+  required: true
+id: character-context-selection
+sort_order: 108

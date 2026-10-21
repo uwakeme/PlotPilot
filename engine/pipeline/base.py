@@ -755,6 +755,9 @@ class BaseStoryPipeline(ABC):
 
         bundle = None
         slot_weights = await self._plan_slot_weights(ctx)
+        # D-04：AI 决定这一章每个角色带哪些记忆进上下文（渲染链是同步的，
+        # 只能在这里算好后下传）。
+        character_context_selection = await self._plan_character_context(ctx)
 
         # 优先使用 chapter_workflow（完整 bundle）
         if ctx.chapter_workflow is not None:
@@ -762,6 +765,7 @@ class BaseStoryPipeline(ABC):
                 bundle = ctx.chapter_workflow.prepare_chapter_generation(
                     ctx.novel_id, ctx.chapter_number, ctx.outline, scene_director=None,
                     slot_weights=slot_weights,
+                    character_context_selection=character_context_selection,
                 )
                 ctx.context_text = bundle.get("context", "")
                 ctx.context_tokens = bundle.get("context_tokens", 0)
@@ -1608,6 +1612,34 @@ class BaseStoryPipeline(ABC):
             streaming_bus.publish(novel_id, content=content)
         except Exception as e:
             logger.debug("[%s] streaming_bus.publish 失败: %s", novel_id, e)
+
+    async def _plan_character_context(self, ctx: PipelineContext) -> Optional[Dict[str, Any]]:
+        """D-04：让 AI 决定「这一章每个角色带哪些记忆进上下文」。
+
+        返回 ``None`` 表示**未评估** —— 调用方按兜底处理（代码固定切片，
+        与改造前逐位相同）。**绝不用代码代写的取材结果顶替 AI 的判断**
+        后再声称「AI 选过」；来源标记由调用链单独携带，不进 prompt 文本。
+        """
+        try:
+            service = ctx.get_dep("character_context_selection_service")
+            if service is None:
+                return None
+            selection = await service.select_for_chapter(
+                novel_id=ctx.novel_id,
+                chapter_number=int(ctx.chapter_number or 0),
+                outline=str(ctx.outline or ""),
+                novel_title=str(getattr(ctx.chapter_node, "title", "") or ""),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] 角色上下文取材失败，按未评估处理 ch=%s: %s",
+                ctx.novel_id, ctx.chapter_number, exc,
+            )
+            return None
+
+        if selection is None or not selection.is_usable:
+            return None
+        return selection.to_payload()
 
     async def _decide_continuation_strategy(self, ctx: PipelineContext, draft: str):
         """让 AI 判断这次要不要接着上次中断的正文写（D-08）。

@@ -239,6 +239,7 @@ class ContextBudgetAllocator:
         total_budget: int = 35000,
         scene_director: SceneDirectorInput = None,
         current_beat_index: int = 0,
+        character_context_selection: Optional[Dict[str, Any]] = None,
     ) -> BudgetAllocation:
         """执行预算分配
 
@@ -271,7 +272,10 @@ class ContextBudgetAllocator:
         )
 
         # ========== 第一步：收集所有内容 ==========
-        slots = self._collect_all_slots(novel_id, chapter_number, outline, scene_director_dict, current_beat_index)
+        slots = self._collect_all_slots(
+            novel_id, chapter_number, outline, scene_director_dict, current_beat_index,
+            character_context_selection=character_context_selection,
+        )
         
         # 提取过期伏笔用于终端强制约束
         pending_fs_slot = slots.get("pending_foreshadowings")
@@ -370,6 +374,7 @@ class ContextBudgetAllocator:
         outline: str,
         scene_director: Optional[Dict[str, Any]] = None,
         current_beat_index: int = 0,
+        character_context_selection: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, ContextSlot]:
         """收集所有上下文槽位"""
         slots = {}
@@ -450,7 +455,10 @@ class ContextBudgetAllocator:
 
         # ── T0-4: 角色锚点（核心人设）—— priority=110 ──
         # 保留：角色声线和习惯动作是写作的基石
-        character_anchors = self._get_character_anchors(novel_id, chapter_number, scene_director, outline)
+        character_anchors = self._get_character_anchors(
+            novel_id, chapter_number, scene_director, outline,
+            selection=character_context_selection,
+        )
         slots["character_anchors"] = ContextSlot(
             name="角色锚点",
             tier=PriorityTier.T0_CRITICAL,
@@ -640,7 +648,9 @@ class ContextBudgetAllocator:
         )
 
         # ── V9 降级: 角色状态锁向量 —— 从 T0(p=128) → T1(p=58) ──
-        character_state_lock_content = self._build_character_state_lock_block(novel_id, chapter_number)
+        character_state_lock_content = self._build_character_state_lock_block(
+            novel_id, chapter_number, selection=character_context_selection
+        )
         slots["character_state_lock"] = ContextSlot(
             name="角色状态锁(CHARACTER_STATE_LOCK)",
             tier=PriorityTier.T1_COMPRESSIBLE,
@@ -1046,6 +1056,7 @@ class ContextBudgetAllocator:
         chapter_number: int,
         scene_director: Optional[Dict[str, Any]] = None,
         outline: str = "",
+        selection: Optional[Dict[str, Any]] = None,
     ) -> str:
         """获取角色锚点（轨道二核心 - 集成智能调度）
         
@@ -1070,9 +1081,13 @@ class ContextBudgetAllocator:
                 )
                 # Generation is allowed to auto-materialize the cast contract.
                 kernel.apply_cast_plan(plan)
-                locks = self._projection_locks_for_plan(novel_id, plan, tier="t0", chapter_number=chapter_number)
+                locks = self._projection_locks_for_plan(
+                    novel_id, plan, tier="t0", chapter_number=chapter_number, selection=selection
+                )
                 if not locks:
-                    locks = kernel.build_context_locks(novel_id, chapter_number, plan=plan).t0.strip()
+                    locks = kernel.build_context_locks(
+                        novel_id, chapter_number, plan=plan, selection=selection
+                    ).t0.strip()
                 parts = []
                 if locks:
                     parts.append("【角色状态锚点】\n" + locks)
@@ -1978,7 +1993,12 @@ class ContextBudgetAllocator:
 
         return ""
 
-    def _build_character_state_lock_block(self, novel_id: str, chapter_number: int) -> str:
+    def _build_character_state_lock_block(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        selection: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """构建角色状态锁文本块（T0 注入）。
 
         从本章 cast plan 读取 normal/minor 角色，避免 Bible 前 7 个角色污染上下文。
@@ -1988,11 +2008,13 @@ class ContextBudgetAllocator:
             try:
                 plan = kernel.plan_cast(novel_id, chapter_number)
                 projected = self._projection_locks_for_plan(
-                    novel_id, plan, tier="support", chapter_number=chapter_number
+                    novel_id, plan, tier="support", chapter_number=chapter_number, selection=selection
                 )
                 if projected:
                     return projected
-                locks = kernel.build_context_locks(novel_id, chapter_number, plan=plan)
+                locks = kernel.build_context_locks(
+                    novel_id, chapter_number, plan=plan, selection=selection
+                )
                 parts = []
                 if locks.t1.strip():
                     parts.append(locks.t1.strip())
@@ -2051,6 +2073,7 @@ class ContextBudgetAllocator:
         *,
         tier: str,
         chapter_number: int = 0,
+        selection: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Prefer unified character projections for prompt locks; fallback callers handle empty.
 
@@ -2063,9 +2086,20 @@ class ContextBudgetAllocator:
             if not service:
                 return ""
             lines: List[str] = []
+            compiler = None
             for slot in getattr(plan, "slots", []) or []:
                 projection = service.get_projection(novel_id, slot.character_id)
                 locks = projection.get("context_locks") or {}
+                # D-04：AI 挑过 ⇒ 用 AI 选的候选重新渲染（编译结果本章号无关，
+                # 按章裁剪只能在这一层做）。没有 AI 选择 ⇒ 用缓存里的编译结果。
+                character_selection = self._character_selection(selection, slot.character_id)
+                if character_selection is not None:
+                    if compiler is None:
+                        from application.memory.services.character_context_compiler import (
+                            CharacterContextCompiler,
+                        )
+                        compiler = CharacterContextCompiler()
+                    locks = compiler.compile(projection, selection=character_selection)
                 if tier == "t0" and slot.importance == "major" and locks.get("t0"):
                     lines.append(self._merge_hidden_profile(locks, str(locks["t0"]), chapter_number))
                 elif tier == "support":
@@ -2076,6 +2110,85 @@ class ContextBudgetAllocator:
         except Exception as e:
             logger.debug("角色 Projection 锁构建失败: %s", e)
             return ""
+
+    @staticmethod
+    def _character_selection(
+        selection: Optional[Dict[str, Any]],
+        character_id: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """取某个角色的 AI 取材结果；没有 ⇒ ``None``（该角色走兜底）。"""
+        if not isinstance(selection, dict):
+            return None
+        characters = selection.get("characters")
+        if not isinstance(characters, dict):
+            return None
+        item = characters.get(str(character_id))
+        if not isinstance(item, dict):
+            return None
+        fact_ids = item.get("fact_ids")
+        return {
+            "fact_ids": [str(x) for x in (fact_ids or [])],
+            "t2": str(item.get("t2") or ""),
+        }
+
+    def build_character_context_candidates(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str = "",
+        scene_director: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """列出本章候选角色及其事实候选清单（供 AI 取材用）。
+
+        同步方法 —— 渲染链整体是同步的；AI 调用在 async 层做完再以参数下传。
+        候选清单**只有这一份实现**（AI 与渲染方共用同一套 id）。
+        """
+        from application.memory.services.character_context_compiler import (
+            CharacterContextCompiler,
+        )
+
+        kernel = self._get_character_kernel()
+        service = self._get_character_projection_service()
+        if not kernel or not service:
+            return []
+        try:
+            plan = kernel.plan_cast(
+                novel_id, chapter_number, outline, scene_director=scene_director
+            )
+        except Exception as exc:
+            logger.debug(
+                "角色上下文候选构建失败 novel=%s ch=%s: %s", novel_id, chapter_number, exc
+            )
+            return []
+
+        compiler = CharacterContextCompiler()
+        out: List[Dict[str, Any]] = []
+        for slot in getattr(plan, "slots", []) or []:
+            character_id = str(getattr(slot, "character_id", "") or "")
+            if not character_id:
+                continue
+            try:
+                projection = service.get_projection(novel_id, character_id)
+            except Exception as exc:
+                logger.debug("角色上下文候选：取 projection 失败 cid=%s: %s", character_id, exc)
+                continue
+            if not projection:
+                continue
+            facts = [
+                {"id": c.id, "category": c.label, "text": c.display[:160]}
+                for c in compiler.build_candidates(projection)
+                if c.visible
+            ]
+            if not facts:
+                continue
+            out.append({
+                "character_id": character_id,
+                "name": str(getattr(slot, "name", "") or ""),
+                "importance": str(getattr(slot, "importance", "") or ""),
+                "fact_ids": [f["id"] for f in facts],
+                "facts": facts,
+            })
+        return out
 
     @staticmethod
     def _merge_hidden_profile(locks: Dict[str, Any], base: str, chapter_number: int) -> str:
