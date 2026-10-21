@@ -606,11 +606,24 @@ const continueTarget = ref(null)
 
 watch(isTargetReachedPause, (active) => {
   if (active) {
-    finaleBudget.value = 20
-    const done = completedChapters.value
-    continueTarget.value = done + Math.max(20, Math.round((targetChapters.value || 0) * 0.2))
+    // 提案由后端给（J-01）：前端不再自己算「再写多少章」
+    void loadTargetBudgetProposal()
   }
 })
+
+/** 取后端给的加写预算提案（只填初值，用户仍可改）。 */
+async function loadTargetBudgetProposal() {
+  try {
+    const p = await novelApi.targetBudgetProposal(props.novelId)
+    finaleBudget.value = p.finale_budget
+    continueTarget.value = p.continue_target
+  } catch (err) {
+    // 拿不到提案 ⇒ 退回最小可用初值，不在前端编公式
+    console.warn('[AutopilotPanel] 取加写预算提案失败:', err)
+    finaleBudget.value = 20
+    continueTarget.value = completedChapters.value
+  }
+}
 
 async function decideFinale() {
   await applyTargetDecision('finale')

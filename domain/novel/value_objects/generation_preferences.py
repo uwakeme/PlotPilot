@@ -6,6 +6,25 @@ from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
 
+#: 终局预算钳制范围（登记表 J-01 的不变量；与前端输入框的钳制同源）
+FINALE_BUDGET_MIN = 5
+FINALE_BUDGET_MAX = 200
+FINALE_BUDGET_DEFAULT = 20
+
+
+def clamp_finale_budget(budget) -> int:
+    """终局预算钳到 [5, 200]；解析不了 ⇒ 默认值。
+
+    写路径（``merge_patch`` → ``from_dict``）与读路径共用这一个函数，
+    不再各写一份 ``max(5, min(200, …))``。
+    """
+    try:
+        value = int(budget)
+    except (TypeError, ValueError):
+        return FINALE_BUDGET_DEFAULT
+    return max(FINALE_BUDGET_MIN, min(FINALE_BUDGET_MAX, value))
+
+
 @dataclass
 class GenerationPreferences:
     """全托管与节拍指挥相关偏好。"""
@@ -102,8 +121,8 @@ class GenerationPreferences:
         try:
             finale_budget = int(raw.get("finale_chapter_budget", 20))
         except (TypeError, ValueError):
-            finale_budget = 20
-        finale_budget = max(5, min(200, finale_budget))
+            finale_budget = FINALE_BUDGET_DEFAULT
+        finale_budget = clamp_finale_budget(finale_budget)
         finale_mode = bool(raw.get("finale_mode", False))
         return cls(
             locked_genre=str(raw.get("locked_genre", "") or ""),

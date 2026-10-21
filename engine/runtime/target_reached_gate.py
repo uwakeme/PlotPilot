@@ -18,6 +18,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Literal
 
+from application.blueprint.services.target_budget import (
+    auto_extend_block,
+    clamp_finale_budget,
+)
 from domain.novel.entities.novel import Novel
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
 
@@ -28,15 +32,6 @@ logger = logging.getLogger(__name__)
 
 # 暂停原因键值：驾驶舱据此渲染「已达目标章数 · 请决定故事走向」决策卡片
 TARGET_REACHED_PAUSE_REASON = "target_reached"
-
-# 终局预算钳制范围（与 GenerationPreferences.from_dict 的钳制一致）
-_FINALE_BUDGET_MIN = 5
-_FINALE_BUDGET_MAX = 200
-
-
-def _clamp_finale_budget(budget: int) -> int:
-    return max(_FINALE_BUDGET_MIN, min(_FINALE_BUDGET_MAX, int(budget)))
-
 
 def resolve_target_reached(
     host: "DaemonHost",
@@ -59,7 +54,8 @@ def resolve_target_reached(
     policy = (prefs.target_reached_policy or "ask").strip().lower()
 
     # 仅需要加写预算的策略才查询真实完成数（ask/complete 无需额外 DB 开销）
-    if policy in ("finale", "continue") and completed_count is None:
+    # ask + finale_mode 也要查：用户手动选过「写终局」，这次达标说明预算写完了。
+    if (policy in ("finale", "continue") or prefs.finale_mode) and completed_count is None:
         completed_count = int(host._count_completed_chapters(novel.novel_id))
     completed_count = max(completed_count or 0, 0)
 
@@ -76,7 +72,7 @@ def resolve_target_reached(
                 completed_count,
             )
             return "complete"
-        budget = _clamp_finale_budget(prefs.finale_chapter_budget or 20)
+        budget = clamp_finale_budget(prefs.finale_chapter_budget or 20)
         novel.generation_prefs = GenerationPreferences.merge_patch(
             prefs, {"finale_mode": True}
         )
@@ -93,7 +89,7 @@ def resolve_target_reached(
         return "extended"
 
     if policy == "continue":
-        block = max(10, round(target * 0.1)) if target > 0 else 10
+        block = auto_extend_block(target_chapters=target)
         novel.target_chapters = max(target, completed_count) + block
         host._save_novel_state(novel)
         logger.info(
@@ -105,6 +101,23 @@ def resolve_target_reached(
             novel.target_chapters,
         )
         return "extended"
+
+    # ask 策略下用户手动选过「写终局」：前端已把目标抬到「完成数 + 终局预算」
+    # 并置了 finale_mode ⇒ 这次再达标说明**预算写完了** ⇒ 真正完结。
+    #
+    # 旧实现这里一律 pause ⇒ 前端承诺的「收束后自动完结」是**假承诺**，
+    # 而且用户会被同一张决策卡片反复打断（写完预算又问一遍）。
+    if prefs.finale_mode:
+        novel.generation_prefs = GenerationPreferences.merge_patch(
+            prefs, {"finale_mode": False}
+        )
+        host._save_novel_state(novel)
+        logger.info(
+            "[%s] 终局预算写完（完成 %s 章），全书收束完结",
+            novel.novel_id,
+            completed_count,
+        )
+        return "complete"
 
     if policy == "complete":
         return "complete"

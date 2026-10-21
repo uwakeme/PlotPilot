@@ -13,6 +13,12 @@ from application.world.services.auto_bible_generator import AutoBibleGenerator
 from application.world.services.auto_knowledge_generator import AutoKnowledgeGenerator
 from application.core.dtos.novel_dto import NovelDTO
 from application.core.chapter_target_limits import CHAPTER_TARGET_WORDS_MAX, CHAPTER_TARGET_WORDS_MIN
+from application.blueprint.services.target_budget import (
+    FINALE_BUDGET_MAX,
+    FINALE_BUDGET_MIN,
+    TARGET_CHAPTERS_MAX,
+    propose_continue_target,
+)
 from interfaces.api.dependencies import (
     get_novel_service,
     get_auto_bible_generator,
@@ -66,7 +72,12 @@ class UpdateNovelRequest(BaseModel):
     """更新小说基本信息请求"""
     title: str = Field(None, description="小说标题")
     author: str = Field(None, description="作者")
-    target_chapters: int = Field(None, gt=0, description="目标章节数")
+    target_chapters: int = Field(
+        None,
+        gt=0,
+        le=TARGET_CHAPTERS_MAX,
+        description="目标章节数（硬上限 TARGET_CHAPTERS_MAX，后端钳制，不靠前端）",
+    )
     premise: str = Field(None, description="故事梗概/创意")
     target_words_per_chapter: Optional[int] = Field(
         None,
@@ -243,6 +254,51 @@ def list_novels(
     if callable(consume) and consume():
         response.headers["X-SQLite-State"] = "corrupted"
     return novels
+
+
+@router.get("/{novel_id}/target-budget-proposal")
+async def get_target_budget_proposal(
+    novel_id: str,
+    service: NovelService = Depends(get_novel_service)
+):
+    """「继续写」加多少章 / 终局预算多少 —— **后端提案**（J-01）。
+
+    旧实现由前端自己算（``done + max(20, round(target * 0.2))``）再 PUT 回来：
+    提案口径散在客户端、后端没有权威值；终局预算的钳制也只写在前端输入框上。
+    现在提案与钳制都在后端一处，前端只显示初值、用户仍可改。
+    """
+    novel = service.get_novel(novel_id)
+    if not novel:
+        raise HTTPException(status_code=404, detail=f"Novel not found: {novel_id}")
+
+    target = int(getattr(novel, "target_chapters", 0) or 0)
+    completed = _count_completed_chapters(novel_id)
+    prefs = getattr(novel, "generation_prefs", None)
+    finale_budget = int(getattr(prefs, "finale_chapter_budget", 0) or 0) or 20
+
+    return {
+        "continue_target": propose_continue_target(
+            target_chapters=target, completed_chapters=completed
+        ),
+        "finale_budget": finale_budget,
+        "finale_budget_min": FINALE_BUDGET_MIN,
+        "finale_budget_max": FINALE_BUDGET_MAX,
+        "target_chapters_max": TARGET_CHAPTERS_MAX,
+    }
+
+
+def _count_completed_chapters(novel_id: str) -> int:
+    """已完成章数（与守护进程 ``_count_completed_chapters`` 同一口径）。"""
+    try:
+        from infrastructure.persistence.database.connection import get_database
+
+        row = get_database().fetch_one(
+            "SELECT COUNT(*) AS cnt FROM chapters WHERE novel_id = ? AND status = 'completed'",
+            (novel_id,),
+        )
+        return int(row["cnt"]) if row and row["cnt"] is not None else 0
+    except Exception:
+        return 0
 
 
 @router.put("/{novel_id}", response_model=NovelDTO)

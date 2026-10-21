@@ -29,6 +29,18 @@ function pickString(raw: Record<string, unknown>, keys: string[], defaultValue =
 }
 
 /** 与后端 novels.generation_prefs_json 一致（按需扩展） */
+/** 「继续写」加多少章 / 终局预算多少 —— 后端提案（J-01） */
+export interface TargetBudgetProposalDTO {
+  /** 建议的新目标章数（用户可改） */
+  continue_target: number
+  /** 建议的终局收束章数预算（5–200，用户可改） */
+  finale_budget: number
+  finale_budget_min: number
+  finale_budget_max: number
+  /** 目标章数硬上限 */
+  target_chapters_max: number
+}
+
 export interface GenerationPrefsDTO {
   phase_display_mode?: boolean
   /** 兼容旧配置字段；当前版本不再驱动正文截断 */
@@ -205,6 +217,15 @@ export const novelApi = {
    * Update novel basic information
    * PUT /api/v1/novels/{novelId}
    */
+  /**
+   * 「继续写」加多少章 / 终局预算多少 —— 后端提案（J-01）
+   * GET /api/v1/novels/{novelId}/target-budget-proposal
+   */
+  targetBudgetProposal: (novelId: string) =>
+    apiClient.get<TargetBudgetProposalDTO>(
+      `/novels/${novelId}/target-budget-proposal`
+    ) as unknown as Promise<TargetBudgetProposalDTO>,
+
   updateNovel: (
     novelId: string,
     data: {
