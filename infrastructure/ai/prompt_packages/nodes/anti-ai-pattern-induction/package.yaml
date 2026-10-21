@@ -1,0 +1,28 @@
+name: AI 味模式归纳
+category: review
+source: application/audit/services/anti_ai_pattern_induction.py
+description: 从本章正文归纳这本书特有的 AI 味表达（AI 归纳，代码只校验不越界）
+builtin: true
+tags:
+- Anti-AI
+- 审阅
+- 归纳
+- JSON输出
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+  required: true
+- name: content
+  desc: 本章正文节选
+  type: string
+  required: true
+- name: known_hits
+  desc: 本章已命中的通用 AI 味模式（不要重复报）
+  type: string
+id: anti-ai-pattern-induction
+sort_order: 111

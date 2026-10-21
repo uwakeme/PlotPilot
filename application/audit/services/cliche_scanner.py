@@ -123,11 +123,15 @@ class ClicheScanner:
     支持分类统计和替换建议。
     """
 
-    def __init__(self, use_enhanced: bool = True):
+    def __init__(self, use_enhanced: bool = True, extra_patterns=None):
         """初始化扫描器
 
         Args:
             use_enhanced: 是否使用增强版模式（默认 True）
+            extra_patterns: 额外规则（F-06：本书特有的**已学规则**）。
+                格式同 AI_CLICHE_PATTERNS_ENHANCED：
+                (正则, 模式名, 严重性, 分类, 替换建议)。
+                追加在既有规则**之后**，不改动既有规则。
         """
         if use_enhanced:
             raw_patterns = AI_CLICHE_PATTERNS_ENHANCED
@@ -153,6 +157,26 @@ class ClicheScanner:
                 (re.compile(pattern), name, "warning", "", "")
                 for pattern, name in legacy_patterns
             ]
+
+        # F-06：追加本书特有的已学规则（AI 归纳 → 落库 → 回灌）。
+        if extra_patterns:
+            for item in extra_patterns:
+                try:
+                    if len(item) == 5:
+                        pattern, name, severity, category, hint = item
+                    else:
+                        pattern, name = item
+                        severity, category, hint = "warning", "", ""
+                    # F-06：已学规则是**字面关键词**（不是正则）⇒ 这里必须
+                    # ``re.escape``。否则人工添加的规则能塞进灾难性回溯的正则
+                    # （如 ``(a+)+$``），扫描时会卡死线程。
+                    # 注意：只 escape 追加进来的已学规则，
+                    # 既有内置规则本来就是正则，不能动。
+                    self.compiled_patterns.append(
+                        (re.compile(re.escape(str(pattern))), name, severity, category, hint)
+                    )
+                except Exception:
+                    continue
 
     def scan_cliches(self, text: str) -> List[ClicheHit]:
         """扫描文本中的俗套句式

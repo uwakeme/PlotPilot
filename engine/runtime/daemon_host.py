@@ -838,6 +838,11 @@ class DaemonHostMixin:
                 content,
             )
 
+            # F-06：AI 归纳「本书特有的 AI 味表达」→ 校验 → 落库 ⇒ 下一章起
+            # 会被扫描器检测到。必须在这一步做：归纳是 LLM 调用（异步），
+            # 而扫描是同步的（跑在线程池里）。
+            await self._induce_anti_ai_patterns(novel_id, chapter_number, content, report)
+
             if report:
                 logger.info(
                     f"[{novel_id}] 🛡️ Anti-AI 审计完成 ch={chapter_number} "
@@ -880,6 +885,38 @@ class DaemonHostMixin:
         return None
 
 
+    async def _induce_anti_ai_patterns(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        content: str,
+        report: Any,
+    ) -> None:
+        """F-06：AI 归纳本书特有的 AI 味表达并落库（可回灌进扫描器）。
+
+        失败不影响主流程；AI 不可用时**不产生任何模式**（不编）。
+        """
+        try:
+            llm_service = getattr(self, "llm_service", None)
+            if llm_service is None:
+                return
+            from application.audit.services.anti_ai_learning import (
+                get_anti_ai_learning_service,
+            )
+
+            await get_anti_ai_learning_service().induce_and_store_patterns(
+                novel_id=novel_id,
+                chapter_number=chapter_number,
+                content=content,
+                hits=list(getattr(report, "hits", []) or []),
+                llm_service=llm_service,
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] AI 味模式归纳失败（不影响主流程）ch=%s: %s",
+                novel_id, chapter_number, e,
+            )
+
     def _sync_anti_ai_audit(
         self,
         novel_id: str,
@@ -889,12 +926,13 @@ class DaemonHostMixin:
         """同步执行 Anti-AI 审计。"""
         from application.audit.services.anti_ai_audit import get_anti_ai_auditor
         from application.audit.services.anti_ai_metrics import get_anti_ai_metrics_service
-        from application.audit.services.anti_ai_learning import get_anti_ai_learning_service
 
         # 1. 审计扫描
+        # F-06：带上 novel_id ⇒ 扫描时把该小说**已批准的已学规则**一起加载
+        # （AI 归纳 → 落库 → 回灌，闭环）。
         auditor = get_anti_ai_auditor()
         chapter_id = f"ch-{chapter_number}"
-        report = auditor.scan_chapter(chapter_id, content)
+        report = auditor.scan_chapter(chapter_id, content, novel_id=novel_id)
 
         # 2. 计算指标
         metrics_svc = get_anti_ai_metrics_service()
@@ -905,14 +943,9 @@ class DaemonHostMixin:
             hits=report.hits,
         )
 
-        # 3. 学习新模式
-        learning_svc = get_anti_ai_learning_service()
-        learning_svc.analyze_chapter_audit(
-            novel_id=novel_id,
-            chapter_number=chapter_number,
-            content=content,
-            hits=report.hits,
-        )
+        # 3. 学习新模式 —— 移到异步包装里做（归纳是 LLM 调用，见
+        # ``_induce_anti_ai_patterns``）：旧实现在这里用固定模板 + 固定触发词
+        # 做统计，那不是学习（F-06）。
 
         # 4. 持久化审计结果到数据库
         try:

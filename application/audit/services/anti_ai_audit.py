@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from application.audit.services.cliche_scanner import ClicheHit, ClicheScanner
 
@@ -58,9 +58,17 @@ class AntiAIAuditor:
     SEVERITY_WEIGHTS = _SEVERITY_WEIGHTS
     ASSESSMENT_THRESHOLDS = _ASSESSMENT_THRESHOLDS
 
-    def scan_chapter(self, chapter_id: str, content: str) -> AntiAIAuditReport:
-        """对章节进行 Anti-AI 审计。"""
-        scanner = ClicheScanner(use_enhanced=True)
+    def scan_chapter(
+        self, chapter_id: str, content: str, novel_id: str = ""
+    ) -> AntiAIAuditReport:
+        """对章节进行 Anti-AI 审计。
+
+        ``novel_id`` 给了 ⇒ 把该小说**已批准的已学规则**（F-06：AI 归纳、落库、
+        版本化）一起喂给扫描器 ⇒ 归纳出来的模式**真的会被检测到**（闭环）。
+        """
+        scanner = ClicheScanner(
+            use_enhanced=True, extra_patterns=self._load_learned_patterns(novel_id)
+        )
         hits = scanner.scan_cliches(content)
         metrics = self._calculate_metrics(chapter_id, hits, content)
         recommendations = self._generate_recommendations(metrics, hits)
@@ -72,6 +80,20 @@ class AntiAIAuditor:
             recommendations=recommendations,
             improvement_suggestions=improvement_suggestions,
         )
+
+    @staticmethod
+    def _load_learned_patterns(novel_id: str) -> List[Tuple[str, str, str, str, str]]:
+        """该小说已批准的已学规则（F-06）。取不到 ⇒ 空列表（不阻断审计）。"""
+        if not novel_id:
+            return []
+        try:
+            from application.audit.services.anti_ai_learning import (
+                get_anti_ai_learning_service,
+            )
+
+            return get_anti_ai_learning_service().get_approved_patterns(novel_id)
+        except Exception:
+            return []
 
     def _calculate_metrics(self, chapter_id: str, hits: List[ClicheHit], content: str) -> AntiAIMetrics:
         """计算 Anti-AI 指标。"""

@@ -133,6 +133,7 @@ ANTI_AI_CHAPTER_AUDIT = "anti-ai-chapter-audit"
 ANTI_AI_CHARACTER_STATE_LOCK = "anti-ai-character-state-lock"
 ANTI_AI_FINALE_ENHANCEMENT = "anti-ai-finale-enhancement"
 ANTI_AI_MID_GENERATION_REFRESH = "anti-ai-mid-generation-refresh"
+ANTI_AI_PATTERN_INDUCTION = "anti-ai-pattern-induction"
 
 # ── Autopilot / Workflow ─────────────────────────────────────────────────
 WORKFLOW_CHAPTER_GENERATION = "workflow-chapter-generation"
@@ -210,6 +211,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     ANTI_AI_BEHAVIOR_PROTOCOL, ANTI_AI_ALLOWLIST_EXPLAIN,
     ANTI_AI_CHAPTER_AUDIT, ANTI_AI_CHARACTER_STATE_LOCK,
     ANTI_AI_FINALE_ENHANCEMENT, ANTI_AI_MID_GENERATION_REFRESH,
+    ANTI_AI_PATTERN_INDUCTION,
     # Autopilot / Workflow
     WORKFLOW_CHAPTER_GENERATION, AUTOPILOT_STREAM_BEAT,
     BEAT_FOCUS_INSTRUCTIONS, LIFECYCLE_PHASE_DIRECTIVES,

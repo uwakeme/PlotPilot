@@ -64,7 +64,15 @@ class _Host(DaemonHostMixin):
     ``__getattr__`` 是本组用例的核心守卫：任何**新增**的宿主方法调用
     （改写正文、重试、阻断之类）都会先被记进 ``calls``、再抛出
     ``_ForbiddenIntervention``。魔术替身不会守这条。
+
+    ``llm_service`` 显式声明为 ``None``：真实 daemon 由
+    ``init_daemon_dependencies``（daemon_host.py:79）挂上它，
+    供 F-06 的 AI 模式归纳使用。本组用例不关心归纳，
+    声明「本替身没有 LLM 服务」即可让归纳短路 ——
+    顺带避免 ``__getattr__`` 把这个**合法**属性当成「未预期的干预」。
     """
+
+    llm_service = None
 
     def __init__(self, report: AntiAIAuditReport):
         self.calls: list = []
