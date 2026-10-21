@@ -10,6 +10,11 @@ from application.engine.services.context_builder import ContextBuilder
 from application.analyst.services.state_extractor import StateExtractor
 from application.analyst.services.state_updater import StateUpdater
 from application.audit.services.conflict_detection_service import ConflictDetectionService
+from application.audit.services.conflict_action_extraction import ConflictActionExtractor
+from application.audit.services.conflict_action_extraction_schema import (
+    SOURCE_AI as CONFLICT_SOURCE_AI,
+    SOURCE_FALLBACK as CONFLICT_SOURCE_FALLBACK,
+)
 from application.engine.services.style_constraint_builder import build_style_summary
 from application.engine.dtos.generation_result import GenerationResult
 from application.engine.dtos.scene_director_dto import SceneDirectorAnalysis
@@ -282,6 +287,12 @@ class AutoNovelGenerationWorkflow:
         self.llm_service = llm_service
         self.evolution_gate_service = evolution_gate_service
 
+        # H-02b：冲突检测的「实体-动作对」由 AI 抽（``ConflictActionExtractor``）。
+        # 没有 LLM 服务 ⇒ 只剩关键词表兜底（来源标记会体现出来）。
+        self._conflict_action_extractor = (
+            ConflictActionExtractor(llm_service) if llm_service is not None else None
+        )
+
         # ★ V6 记忆引擎（跨章节状态机）
         self.memory_engine = memory_engine
         if memory_engine and bible_repository:
@@ -541,7 +552,9 @@ class AutoNovelGenerationWorkflow:
         style_warnings = self._scan_cliches(content)
         chapter_state = await self._extract_chapter_state(content, chapter_number)
         consistency_report = self._check_consistency(chapter_state, novel_id)
-        ghost_annotations = self._detect_conflicts(novel_id, chapter_number, outline, scene_director)
+        ghost_annotations, conflict_source = await self._detect_conflicts(
+            novel_id, chapter_number, outline, scene_director
+        )
         state_report = None
         if self.state_updater:
             try:
@@ -586,6 +599,9 @@ class AutoNovelGenerationWorkflow:
             "chapter_state": chapter_state,
             "consistency_report": consistency_report,
             "ghost_annotations": ghost_annotations,
+            # H-02b：动作抽取来源（ai / fallback）——「AI 判的」与「兜底的」
+            # 必须可分辨，否则读者会把兜底结果当成 AI 的判断。
+            "conflict_extraction_source": conflict_source,
             "memory_delta": memory_delta,
             "foreshadowing_report": state_report,
         }
@@ -842,6 +858,9 @@ class AutoNovelGenerationWorkflow:
                 "chars": len(content),
                 "beats": [],
                 "ghost_annotations": [ann.to_dict() for ann in ghost_annotations],
+                # H-02b：动作抽取来源（ai / fallback）——读者要能分得清
+                # 「AI 抽的动作」与「没抽到、走的关键词表兜底」。
+                "conflict_extraction_source": post.get("conflict_extraction_source", ""),
                 "style_warnings": [
                     {
                         "pattern": hit.pattern,
@@ -1886,14 +1905,22 @@ class AutoNovelGenerationWorkflow:
             logger.debug(f"EventTimeline load failed for consistency check: {e}")
         return timeline
 
-    def _detect_conflicts(
+    async def _detect_conflicts(
         self,
         novel_id: str,
         chapter_number: int,
         outline: str,
         scene_director: Optional[SceneDirectorAnalysis] = None
-    ) -> List[GhostAnnotation]:
+    ) -> Tuple[List[GhostAnnotation], str]:
         """检测冲突并生成幽灵批注
+
+        H-02b：「实体-动作对」由 **AI 抽**（``ConflictActionExtractor``）——
+        「谁做了什么」是创作判断，不该由一张写死的关键词表代做。
+        AI 判不出来（调用失败 / 输出不合契约 / 给的全是废数据）⇒ **未评估**
+        ⇒ 退回关键词表兜底（与改造前逐位一致），来源标记可分辨。
+
+        ⚠ **AI 合法地说「这段没有魔法/武器动作」不算未评估** ⇒ 不回退
+        （模型说「没有」与「没问」必须可分辨）。
 
         Args:
             novel_id: 小说 ID
@@ -1902,12 +1929,12 @@ class AutoNovelGenerationWorkflow:
             scene_director: 场记分析结果（可选）
 
         Returns:
-            GhostAnnotation 列表
+            (GhostAnnotation 列表, 抽取来源标记)
         """
         # 如果没有冲突检测服务，返回空列表
         if not self.conflict_detection_service:
             logger.debug("ConflictDetectionService not available, skipping conflict detection")
-            return []
+            return [], CONFLICT_SOURCE_FALLBACK
 
         try:
             # 构造 name_to_entity_id 映射（从 Bible 获取）
@@ -1916,19 +1943,37 @@ class AutoNovelGenerationWorkflow:
             # 获取实体状态（从 Bible 或 NarrativeEntityStateService）
             entity_states = self._get_entity_states(novel_id, chapter_number, name_to_entity_id)
 
+            # H-02b：AI 抽「实体-动作对」；判不出来 ⇒ 兜底（entity_actions=None）
+            entity_actions = None
+            source = CONFLICT_SOURCE_FALLBACK
+            extractor = getattr(self, "_conflict_action_extractor", None)
+            if extractor is not None and name_to_entity_id:
+                extraction = await extractor.extract(
+                    outline=outline,
+                    entity_names=list(name_to_entity_id.keys()),
+                    chapter_number=chapter_number,
+                )
+                if extraction.is_usable:
+                    entity_actions = extraction.actions
+                    source = CONFLICT_SOURCE_AI
+
             # 调用冲突检测服务
             annotations = self.conflict_detection_service.detect(
                 outline=outline,
                 entity_states=entity_states,
                 name_to_entity_id=name_to_entity_id,
-                scene_director=scene_director
+                scene_director=scene_director,
+                entity_actions=entity_actions,
             )
 
-            return annotations
+            logger.info(
+                "冲突检测：%d 条批注，动作抽取来源=%s", len(annotations), source
+            )
+            return annotations, source
 
         except Exception as e:
             logger.warning(f"Conflict detection failed: {e}", exc_info=True)
-            return []
+            return [], CONFLICT_SOURCE_FALLBACK
 
     def _build_name_to_entity_id_mapping(self, novel_id: str) -> Dict[str, str]:
         """构造实体名称到 ID 的映射

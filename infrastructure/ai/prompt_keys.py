@@ -65,6 +65,7 @@ SETTING_DRIFT_AUDIT = "setting-drift-audit"
 CHARACTER_CONTEXT_SELECTION = "character-context-selection"
 CHARACTER_BELIEF_CHECK = "character-belief-check"
 PLOT_POINT_CLASSIFICATION = "plot-point-classification"
+CONFLICT_ACTION_EXTRACTION = "conflict-action-extraction"
 
 # ── Memory ───────────────────────────────────────────────────────────────
 MEMORY_EXTRACTION = "memory-extraction"
@@ -180,6 +181,8 @@ ALL_KEYS: frozenset[str] = frozenset({
     REVIEW_IMPROVEMENT_SUGGESTIONS, CHAPTER_AI_REVIEW, CLICHE_SCAN, SETTING_DRIFT_AUDIT,
     CHARACTER_BELIEF_CHECK,
     PLOT_POINT_CLASSIFICATION,
+    # 冲突动作抽取（H-02b）
+    CONFLICT_ACTION_EXTRACTION,
     # 角色上下文取材（D-04）
     CHARACTER_CONTEXT_SELECTION,
     # Memory

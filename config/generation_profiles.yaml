@@ -126,6 +126,11 @@ anti_ai_pattern_induction:
   max_tokens: 2000
   temperature: 0.2
 
+conflict_action_extraction:
+  extends: base_generation_profile
+  max_tokens: 1500
+  temperature: 0.1
+
 plot_point_classification:
   extends: base_generation_profile
   max_tokens: 1200

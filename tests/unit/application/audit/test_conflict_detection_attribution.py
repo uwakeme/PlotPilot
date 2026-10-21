@@ -23,26 +23,41 @@ for entity_name in name_to_entity_id.keys():
 
 1. 动作按**句内共现**归属：实体名与关键词出现在同一句才算它做的。
 2. 有场记时只用场记佐证过的词族（AI 决定本场什么重要），没有则退回内置表。
-3. 内置表保留，但它的角色降级为**词义映射**（火系 对 水系 角色意味着什么），
-   不再兼当检测启发式。
+3. 内置表保留，但它的角色降级为**兜底**（H-02b 之后，正常路径由 AI 抽
+   「实体-动作对」；这张表只在 AI 未评估时用，行为与改造前逐位一致）。
+
+## H-02b 之后的表示形式（2026-10-21）
+
+动作不再用 ``fire_magic`` / ``use_sword`` 这种**封闭英文 id**，改成
+``EntityAction(kind, value)``：
+
+- ``kind`` 是封闭枚举（``magic`` / ``weapon``）—— 代码保证；
+- ``value`` 是**归一化后的属性值**（魔法「火系」、武器「剑」）——
+  与设定库里的 ``magic_type`` / ``weapon`` **同口径**，
+  比较时不需要第二张映射表。
+
+**本文件的断言只改了「表示形式」，行为断言一条没动**：
+「陈小拔剑 ⇒ 陈小用剑、李四没有动作」这个核心主张前后完全一致。
 
 ⚠ 词表辨析：内置表是**字面**匹配（「拔剑」不匹配「拔剑」）；
    `scene_director.action_types` 是自由中文（「近身搏斗」），**不是**冲突检测要的
-   `fire_magic`/`use_sword` 枚举 ⇒ 用不了；可用的是 `trigger_keywords`。
-`scene_director.action_types` 是自由中文（「近身搏斗」），
-**不是**冲突检测要的 `fire_magic`/`use_sword` 枚举 ⇒ 用不了；
-可用的是 `trigger_keywords`。
+   动作类别（``magic`` / ``weapon``）⇒ 用不了；可用的是 `trigger_keywords`。
 """
 import sys
 from types import SimpleNamespace
 
 import pytest
 
+from application.audit.services.conflict_action_extraction_schema import EntityAction
 from application.audit.services.conflict_detection_service import (
     ConflictDetectionService,
     _split_into_sentences,
     _trigger_corroborates,
 )
+
+#: 兜底关键词表产出的动作（表示形式见模块 docstring）
+_USE_SWORD = EntityAction(kind="weapon", value="剑")
+_FIRE_MAGIC = EntityAction(kind="magic", value="火系")
 
 
 def _entity(name, entity_id, **state):
@@ -73,7 +88,7 @@ def test_action_is_not_attributed_to_every_entity_in_the_outline():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id)
 
-    assert actions.get("陈小") == ["use_sword"], f"陈小应被记为用剑：{actions}"
+    assert actions.get("陈小") == [_USE_SWORD], f"陈小应被记为用剑：{actions}"
     assert "李四" not in actions, (
         f"李四没拔剑却被记了动作 —— 这就是全篇扫描的误报：{actions}"
     )
@@ -86,7 +101,7 @@ def test_magic_is_attributed_only_to_the_character_who_cast_it():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id)
 
-    assert actions.get("李四") == ["fire_magic"], actions
+    assert actions.get("李四") == [_FIRE_MAGIC], actions
     assert "陈小" not in actions, f"陈小是挨打的那个，不该被记为施法：{actions}"
 
 
@@ -126,8 +141,8 @@ def test_scene_director_does_not_gate_the_detection():
     actions = svc._extract_entity_actions(outline, name_to_entity_id, scene)
 
     # 场记说「魔法」时，火球这条**仍然要查**（否则真冲突被漏掉）
-    assert actions.get("李四") == ["fire_magic"], actions
-    assert actions.get("陈小") == ["use_sword"], actions
+    assert actions.get("李四") == [_FIRE_MAGIC], actions
+    assert actions.get("陈小") == [_USE_SWORD], actions
 
 
 def test_scene_director_triggers_land_in_the_log(caplog):
@@ -147,7 +162,7 @@ def test_scene_director_triggers_land_in_the_log(caplog):
     with caplog.at_level(_logging.DEBUG, logger="application.audit.services.conflict_detection_service"):
         actions = svc._extract_entity_actions(outline, name_to_entity_id, scene)
 
-    assert actions.get("陈小") == ["use_sword"], actions
+    assert actions.get("陈小") == [_USE_SWORD], actions
     assert any("拔剑" in r.getMessage() for r in caplog.records), (
         "场记抽出的敏感词汇没有进日志 —— AI 的判断留不下痕迹"
     )
@@ -162,7 +177,7 @@ def test_scene_director_trigger_keywords_may_be_more_specific():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id, scene)
 
-    assert actions.get("陈小") == ["fire_magic"], actions
+    assert actions.get("陈小") == [_FIRE_MAGIC], actions
 
 
 def test_without_scene_director_the_builtin_table_still_works():
@@ -173,7 +188,7 @@ def test_without_scene_director_the_builtin_table_still_works():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id, None)
 
-    assert actions.get("陈小") == ["use_sword"], actions
+    assert actions.get("陈小") == [_USE_SWORD], actions
 
 
 def test_empty_scene_director_triggers_fall_back_to_the_table():
@@ -188,7 +203,7 @@ def test_empty_scene_director_triggers_fall_back_to_the_table():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id, _scene_director(triggers=[]))
 
-    assert actions.get("陈小") == ["use_sword"], actions
+    assert actions.get("陈小") == [_USE_SWORD], actions
 
 
 def test_scene_director_is_actually_read():
@@ -294,7 +309,7 @@ def test_connective_clause_inherits_the_previous_subject():
 
     actions = svc._extract_entity_actions(outline, name_to_entity_id)
 
-    assert actions.get("李明") == ["fire_magic", "use_sword"], actions
+    assert actions.get("李明") == [_FIRE_MAGIC, _USE_SWORD], actions
 
 
 def test_trigger_corroboration_is_bidirectional():

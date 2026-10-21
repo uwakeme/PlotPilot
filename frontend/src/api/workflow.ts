@@ -293,6 +293,12 @@ export interface GenerateChapterWorkflowResponse {
   token_count: number
   style_warnings?: StyleWarning[]
   ghost_annotations?: unknown[]
+  /**
+   * 冲突检测的「实体-动作对」抽取来源（H-02b）：
+   * 'ai' = LLM 抽的；'fallback' = LLM 不可用，走的关键词表兜底。
+   * 两者必须可分辨 —— 否则读者会把兜底结果当成 AI 的判断。
+   */
+  conflict_extraction_source?: string
   /** 流式 done 事件附带的指挥器节拍（与 beats_generated 一致，兜底） */
   beats?: StreamGeneratedBeat[]
 }
@@ -497,6 +503,9 @@ export async function consumeGenerateChapterStream(
             }
             if (o.ghost_annotations != null) {
               result.ghost_annotations = o.ghost_annotations as unknown[]
+            }
+            if (o.conflict_extraction_source != null) {
+              result.conflict_extraction_source = String(o.conflict_extraction_source)
             }
             const ev: GenerateChapterStreamEvent = {
               type: 'done',

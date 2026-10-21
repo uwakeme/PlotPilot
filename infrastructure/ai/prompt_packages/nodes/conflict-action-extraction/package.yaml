@@ -1,0 +1,30 @@
+name: 冲突动作抽取
+category: review
+source: application/audit/services/conflict_action_extraction.py
+description: 从章节大纲抽「谁做了什么」（AI 抽实体-动作对，代码只校验不越界）
+builtin: true
+tags:
+- 冲突
+- 一致性
+- 审阅
+- 抽取
+- JSON输出
+output_format: json
+variables:
+- name: novel_title
+  desc: 小说名称
+  type: string
+- name: chapter_number
+  desc: 章节号
+  type: integer
+  required: true
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: entities
+  desc: 候选实体名清单（JSON 文本）
+  type: string
+  required: true
+id: conflict-action-extraction
+sort_order: 115
