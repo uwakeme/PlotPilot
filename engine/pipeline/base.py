@@ -766,6 +766,19 @@ class BaseStoryPipeline(ABC):
                     ctx.novel_id, ctx.chapter_number, ctx.outline, scene_director=None,
                     slot_weights=slot_weights,
                     character_context_selection=character_context_selection,
+                    # H-01a：**写前连续性闸门不阻断，也不许让上下文降级。**
+                    # 闸门在 `_step_prepare_governance` 已经跑过一次（对规划期大纲），
+                    # 那里按「已知的有意偏离」只告警 + 报告随行。
+                    # 这里（对七段剧本）是第二次判定：workflow 在发现 blocking 违规时
+                    # 会 raise "evolution_gate_blocked:"，而本行的 `except Exception`
+                    # 会把它当成「上下文准备失败」⇒ **整份 bundle 被丢掉、退回
+                    # build_context(max_tokens=20000)**（主路径是 35000），
+                    # 只有一条 warning ⇒ 上下文被静默削薄 43%。
+                    # 而 workflow 本来就把闸门结论放进 bundle
+                    # （`evolution_gate` / `evolution_gate_blocked`）并把 blocking
+                    # 违规以「=== EVOLUTION GATE ===」块**前置进上下文文本**给模型看
+                    # ⇒ 传 bypass=True 正是恢复原设计：不阻断、但把违规告诉模型。
+                    allow_evolution_gate_bypass=True,
                 )
                 ctx.context_text = bundle.get("context", "")
                 ctx.context_tokens = bundle.get("context_tokens", 0)

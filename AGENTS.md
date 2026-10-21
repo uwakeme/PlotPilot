@@ -136,6 +136,16 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
   - 后果要说清：登记表那条不变量「**死亡角色不得实际登场**」**目前没有代码保证** ——
     闸门只负责**报出来**（报告在 `ctx.evolution_continuity_report`）。
     要真正拦章，得先给管线一个「改大纲」的能力。
+  - **也不许让上下文降级**（H-01a，2026-10-21 补）：同一条链路上还有**第二处**闸门判定
+    （`prepare_chapter_generation` 内部，对七段剧本再判一次）。它遇到 blocking 违规会
+    `raise "evolution_gate_blocked:"`，而 `base.py` 的 `except Exception` 会把它当成
+    「上下文准备失败」⇒ **整份 bundle 被丢掉**、预算从 35000 掉到 20000
+    ⇒ 上下文被**静默削薄 43%**。管线的修法是给那次调用传
+    `allow_evolution_gate_bypass=True`：闸门仍然跑、结论仍然进 bundle
+    （`evolution_gate` / `evolution_gate_blocked`）、blocking 违规仍然以
+    「=== EVOLUTION GATE ===」块**前置进上下文文本**给模型看，
+    但**不中断上下文组装**。守卫：
+    `tests/unit/engine/test_evolution_gate_context_integrity.py`。
   - 记录位置：登记表 `docs/superpowers/specs/2026-10-16-ai-participation-decision-registry.md`
     的「偏离登记」小节；ledger
     `.superpowers/sdd/2026-10-16-ai-participation-batch0-plan/progress.md`。
