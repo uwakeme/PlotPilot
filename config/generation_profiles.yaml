@@ -142,6 +142,12 @@ structure_proposal:
   max_tokens: 800
   temperature: 0.2
 
+# G-05：本章新角色识别（NER）。判读题 ⇒ 温度低。
+character_ner:
+  extends: base_generation_profile
+  max_tokens: 1200
+  temperature: 0.2
+
 # B-08：新一幕所属卷的声明。判读题 => 温度低（要稳）。
 act_volume_placement:
   extends: base_generation_profile

@@ -1,0 +1,30 @@
+name: 本章新角色识别
+category: planning
+source: application/character/services/character_ner.py::extract
+description: 由 AI 找出本章出场、但不在已知角色/地点名单里的角色（取代代码用正则猜人名）
+builtin: true
+tags:
+- 角色
+- 选角
+- 结构
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: outline
+  desc: 本章大纲正文
+  type: string
+  required: true
+- name: known_names
+  desc: 已在册的角色名
+  type: string
+  default: （无）
+- name: location_names
+  desc: 已知的地点名
+  type: string
+  default: （无）
+id: planning-character-ner
+sort_order: 124

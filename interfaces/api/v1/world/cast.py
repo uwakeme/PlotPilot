@@ -167,6 +167,33 @@ class CastScheduleResponse(BaseModel):
 
 
 # 重要性文字 → chapter_elements importance 值
+async def _ai_scene_cast(novel_id: str, outline: str, kernel) -> Optional[dict]:
+    """AI 做 NER：本章出场、但不在册的角色名单（G-05）。
+
+    ⚠ 这条「显式名单」通道此前在生产上**从未被触发**——
+    路由硬传 ``scene_director=None`` ⇒ 登记表说的「LLM 做 NER」其实是**待接线**的目标。
+    ⇒ 现在把它接上：AI 不可用 ⇒ 返回 None ⇒ 内核回落正则 + 黑名单（逐位一致）。
+    """
+    if not (outline or "").strip():
+        return None
+    try:
+        from application.character.services.character_ner import CharacterNerService
+        from interfaces.api.dependencies import get_llm_service
+
+        result = await CharacterNerService(get_llm_service()).extract(
+            novel_id=novel_id,
+            outline=outline,
+            known_names=kernel.known_character_names(novel_id),
+            location_names=kernel.known_location_names(novel_id),
+        )
+    except Exception as exc:
+        logger.warning("角色 NER 失败，回落正则兜底 novel=%s: %s", novel_id, exc)
+        return None
+    if not result.is_assessed:
+        return None
+    return {"characters": result.names}
+
+
 @router.post("/novels/{novel_id}/cast/schedule", response_model=CastScheduleResponse)
 async def schedule_cast(
     novel_id: str,
@@ -187,6 +214,8 @@ async def schedule_cast(
             novel_id=novel_id,
             chapter_number=request.chapter_number,
             outline=request.outline,
+            # G-05：显式名单通道接 AI NER（不可用 ⇒ None ⇒ 内核回落正则兜底）
+            scene_director=await _ai_scene_cast(novel_id, request.outline, kernel),
         )
         if request.mode == "apply":
             plan = kernel.apply_cast_plan(plan)

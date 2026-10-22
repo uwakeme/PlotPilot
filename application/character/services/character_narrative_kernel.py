@@ -360,12 +360,17 @@ class CharacterNarrativeKernel:
         explicit = []
         if scene_director and isinstance(scene_director.get("characters"), list):
             explicit = [str(x).strip() for x in scene_director["characters"] if str(x).strip()]
-        candidates = set(explicit)
-        if outline:
-            candidates.update(re.findall(r"[一-龥]{2,4}", outline))
+        # G-05：顺序 = 显式名单（AI 给的）在前，正则候选按**出现顺序**在后。
+        # ⚠ 此前是 set + sorted() ⇒ **字典序** ⇒ 截断时真名可能被噪声挤掉。
+        ordered: List[str] = []
+        seen: set = set()
+        for name in list(explicit) + (re.findall(r"[一-龥]{2,4}", outline) if outline else []):
+            if name and name not in seen:
+                seen.add(name)
+                ordered.append(name)
 
         out: List[NewCharacterCandidate] = []
-        for name in sorted(candidates):
+        for name in ordered:
             if name in known_names:
                 continue
             if name in location_names or name in self._non_character_words:
@@ -383,7 +388,7 @@ class CharacterNarrativeKernel:
                 function = "explicit_scene_cast"
                 confidence = 0.82
                 reason = "场记明确列为出镜角色，自动创建最小角色档案"
-            elif self._looks_like_ephemeral(name, outline):
+            elif self._looks_like_ephemeral(name):
                 recommendation = "ephemeral"
                 function = "walk_on"
                 confidence = 0.62
@@ -599,13 +604,33 @@ class CharacterNarrativeKernel:
             out.append(f"不得无因越过禁忌：{str(tab)[:80]}")
         return out
 
+    def known_character_names(self, novel_id: str) -> List[str]:
+        """已在册的角色名（给 AI NER 当排除名单）。"""
+        bible = self._get_bible(novel_id)
+        return [
+            getattr(c, "name", "")
+            for c in (getattr(bible, "characters", []) or [])
+            if getattr(c, "name", "")
+        ]
+
+    def known_location_names(self, novel_id: str) -> List[str]:
+        """已知的地点名（给 AI NER 当排除名单）。"""
+        return sorted(self._bible_location_names(novel_id))
+
     def _bible_location_names(self, novel_id: str) -> set:
         bible = self._get_bible(novel_id)
         return {getattr(l, "name", "") for l in (getattr(bible, "locations", []) or []) if getattr(l, "name", "")}
 
-    def _looks_like_ephemeral(self, name: str, outline: str) -> bool:
-        nearby_words = ("侍卫", "掌柜", "店主", "弟子", "路人", "守卫", "仆人", "使者", "小二")
-        return any(w in outline for w in nearby_words) or name.endswith(("甲", "乙"))
+    def _looks_like_ephemeral(self, name: str) -> bool:
+        """这个**名字本身**像一次性功能人物吗？
+
+        ⚠ G-05：此前这里扫的是**整篇大纲**——
+        大纲里只要出现过「守卫/掌柜/…」里的任何一个词，
+        **本章所有**候选都被判成一次性人物 ⇒ 真名反而被降级。
+        ⇒ 现在只判名字本身。
+        """
+        role_words = ("守卫", "掌柜", "店主", "弟子", "路人", "守卫", "仆人", "使者", "小二")
+        return any(w in name for w in role_words) or name.endswith(("甲", "乙"))
 
     def _apply_new_character_candidates(self, plan: ChapterCastPlan, chapter_id: str) -> None:
         for cand in plan.new_character_candidates:
