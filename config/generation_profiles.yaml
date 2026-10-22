@@ -112,6 +112,12 @@ macro_breakpoint:
   max_tokens: 4000
   temperature: 0.3
 
+# H-01：死亡角色的出场方式判定。这是**判读** ⇒ 温度略低（要稳）。
+evolution_dead_character_check:
+  extends: base_generation_profile
+  max_tokens: 2000
+  temperature: 0.2
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

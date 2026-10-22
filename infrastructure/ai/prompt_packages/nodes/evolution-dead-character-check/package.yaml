@@ -1,0 +1,23 @@
+name: 死亡角色出场判定
+category: evolution
+source: application/evolution/services/dead_character_checker.py
+description: 由 AI 判断「死亡角色在大纲里是活跃登场，还是只是回忆/遗物/传闻」（取代代码的「名字出现即违规」）
+builtin: true
+tags:
+- 故事演进
+- 连续性
+- 死亡角色
+- 审阅
+- JSON输出
+output_format: json
+variables:
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: candidates_json
+  desc: 候选死亡角色清单（JSON 文本）：character_id / 名字
+  type: string
+  required: true
+id: evolution-dead-character-check
+sort_order: 117

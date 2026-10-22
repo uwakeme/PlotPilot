@@ -644,10 +644,13 @@ class BaseStoryPipeline(ABC):
                         "[%s] 门的角色库不可用，别名不参与匹配: %s",
                         ctx.novel_id, repo_error,
                     )
-                continuity = EvolutionGateService(
+                # H-01：AI 判「死亡角色是活跃登场还是回忆/遗物」
+                # （旧实现只看名字有没有出现 ⇒ 回忆/遗物一律误报）。
+                continuity = await EvolutionGateService(
                     SqliteEvolutionRepository(db),
                     character_repository=character_repository,
-                ).check(
+                    llm_service=ctx.llm_service,
+                ).check_with_ai(
                     novel_id=ctx.novel_id,
                     chapter_number=ctx.chapter_number,
                     branch_id="main",
@@ -762,7 +765,7 @@ class BaseStoryPipeline(ABC):
         # 优先使用 chapter_workflow（完整 bundle）
         if ctx.chapter_workflow is not None:
             try:
-                bundle = ctx.chapter_workflow.prepare_chapter_generation(
+                bundle = await ctx.chapter_workflow.prepare_chapter_generation_async(
                     ctx.novel_id, ctx.chapter_number, ctx.outline, scene_director=None,
                     slot_weights=slot_weights,
                     character_context_selection=character_context_selection,

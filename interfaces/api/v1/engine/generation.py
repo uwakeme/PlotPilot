@@ -240,7 +240,8 @@ async def _create_pre_call_review_invocation(
     scene_director: Optional[SceneDirectorAnalysis],
 ) -> dict:
     _ensure_chapter_generation_invocation_contract()
-    bundle = workflow.prepare_chapter_generation(
+    # H-01：async 版 —— 先让 AI 判「死亡角色是回忆还是活跃登场」
+    bundle = await workflow.prepare_chapter_generation_async(
         novel_id,
         request.chapter_number,
         request.outline,

@@ -97,6 +97,8 @@ PLANNING_MACRO_CALIBRATION = "planning-macro-calibration"
 # H-06 子项 A：宏观诊断的**断点语义分类**（由 LLM 判「是不是偏离、哪一类」，
 # 取代代码的标签求交表 + scar/执念规则；「判不出」不再被说成「人设崩塌」）
 PLANNING_MACRO_BREAKPOINT = "planning-macro-breakpoint"
+# H-01：死亡角色在大纲里的出场方式（AI 判「活跃登场 vs 回忆/遗物/传闻」）
+PLANNING_DEAD_CHARACTER_CHECK = "evolution-dead-character-check"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
 BEAT_COT_BRIDGE = "beat-cot-bridge"
@@ -204,6 +206,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_FIRST_ACT,
     PLANNING_MACRO_CALIBRATION,
     PLANNING_MACRO_BREAKPOINT,
+    PLANNING_DEAD_CHARACTER_CHECK,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
     # Style

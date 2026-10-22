@@ -371,10 +371,15 @@ class AutoNovelGenerationWorkflow:
         slot_weights: Optional[Dict[str, float]] = None,
         character_context_selection: Optional[Dict[str, Any]] = None,
         foreshadow_context: Optional[str] = None,
+        dead_character_verdicts: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
 
         托管守护进程与 HTTP 接口应复用此方法，避免「两套基建」。
+
+        ``dead_character_verdicts``：H-01 —— AI 判好的「死亡角色是活跃登场
+        还是回忆/遗物」结论（``{character_id: verdict}``）。
+        没传 ⇒ 闸门走**规则兜底**（名字命中即拦，与改造前逐位一致）。
         """
         storyline_context = self._get_storyline_context(novel_id, chapter_number)
         plot_tension = self._get_plot_tension(novel_id, chapter_number)
@@ -386,6 +391,7 @@ class AutoNovelGenerationWorkflow:
                     chapter_number=chapter_number,
                     outline_content=outline,
                     branch_id="main",
+                    dead_character_verdicts=dead_character_verdicts,
                 ).to_dict()
                 if (
                     not allow_evolution_gate_bypass
@@ -653,7 +659,7 @@ class AutoNovelGenerationWorkflow:
         self._current_chapter_number = chapter_number
 
         logger.info("阶段 1-2: 规划 + 结构化上下文（prepare_chapter_generation）")
-        bundle = self.prepare_chapter_generation(
+        bundle = await self.prepare_chapter_generation_async(
             novel_id,
             chapter_number,
             outline,
@@ -758,7 +764,7 @@ class AutoNovelGenerationWorkflow:
             yield {"type": "phase", "phase": "planning"}
             yield {"type": "phase", "phase": "context"}
             logger.info("阶段 1-2: prepare_chapter_generation（规划 + 结构化上下文）")
-            bundle = self.prepare_chapter_generation(
+            bundle = await self.prepare_chapter_generation_async(
                 novel_id,
                 chapter_number,
                 outline,
@@ -1109,6 +1115,52 @@ class AutoNovelGenerationWorkflow:
             beat_target_words=beat_target_words,
             voice_anchors=voice_anchors,
             chapter_draft_so_far=chapter_draft_so_far,
+        )
+
+    async def prepare_chapter_generation_async(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str,
+        *,
+        scene_director: Optional[SceneDirectorAnalysis] = None,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
+        allow_evolution_gate_bypass: bool = False,
+        slot_weights: Optional[Dict[str, float]] = None,
+        character_context_selection: Optional[Dict[str, Any]] = None,
+        foreshadow_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """异步版：先让 AI 判「死亡角色是回忆还是活跃登场」，再走同步实现。
+
+        ⚠ ``EvolutionGateService.check()`` **必须**保持同步（有一个调用点在纯同步
+        方法里）⇒ AI 判定放在**调用方**（async 处）算好后下传，
+        同步实现与闸门共用同一份候选发现逻辑（不写两份）。
+        """
+        verdicts: Dict[str, str] = {}
+        if self.evolution_gate_service is not None and self.llm_service is not None:
+            try:
+                verdicts = await self.evolution_gate_service.classify_dead_characters(
+                    novel_id=novel_id,
+                    chapter_number=chapter_number,
+                    outline_content=outline,
+                )
+            except Exception as exc:
+                # 判不出来 ⇒ 空 dict ⇒ 闸门走规则兜底（不放宽）
+                logger.warning(
+                    "死亡角色出场判定失败，闸门走规则兜底 novel=%s: %s", novel_id, exc
+                )
+                verdicts = {}
+        return self.prepare_chapter_generation(
+            novel_id,
+            chapter_number,
+            outline,
+            scene_director=scene_director,
+            max_tokens=max_tokens,
+            allow_evolution_gate_bypass=allow_evolution_gate_bypass,
+            slot_weights=slot_weights,
+            character_context_selection=character_context_selection,
+            foreshadow_context=foreshadow_context,
+            dead_character_verdicts=verdicts,
         )
 
     def _build_prompt(

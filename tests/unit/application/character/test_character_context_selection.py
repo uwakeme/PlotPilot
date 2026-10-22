@@ -402,7 +402,8 @@ async def test_pipeline_forwards_the_selection_to_the_workflow():
     selection = {"source": "ai", "characters": {"c1": {"fact_ids": ["s0"], "t2": "x"}}}
     ctx = PipelineContext(novel_id="n1", chapter_number=3, outline="大纲")
     ctx.chapter_workflow = MagicMock()
-    ctx.chapter_workflow.prepare_chapter_generation = MagicMock(
+    # H-01：管线改走 async 版（先让 AI 判死亡角色的出场方式）
+    ctx.chapter_workflow.prepare_chapter_generation_async = AsyncMock(
         return_value={"context": "CTX", "context_tokens": 1, "bundle": {}}
     )
     pipeline._plan_slot_weights = AsyncMock(return_value=None)
@@ -411,7 +412,7 @@ async def test_pipeline_forwards_the_selection_to_the_workflow():
     await pipeline._step_build_context(ctx)
 
     assert (
-        ctx.chapter_workflow.prepare_chapter_generation.call_args.kwargs[
+        ctx.chapter_workflow.prepare_chapter_generation_async.call_args.kwargs[
             "character_context_selection"
         ]
         is selection

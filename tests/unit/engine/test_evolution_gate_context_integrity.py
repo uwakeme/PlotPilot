@@ -62,6 +62,7 @@ for _parent in ROOT.parents:
         break
 
 BASE_REL = "engine/pipeline/base.py"
+_WORKFLOW_REL = "application/workflows/auto_novel_generation_workflow.py"
 
 _BLOCKING_REPORT = {
     "is_pass": False,
@@ -127,7 +128,11 @@ def test_the_pipeline_asks_the_workflow_not_to_abort_on_the_gate():
     calls = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                and node.func.attr == "prepare_chapter_generation":
+                and node.func.attr in (
+                    "prepare_chapter_generation",
+                    # H-01：管线侧改走 async 版（先让 AI 判死亡角色的出场方式）
+                    "prepare_chapter_generation_async",
+                ):
             calls.append(node)
 
     assert calls, "找不到 prepare_chapter_generation 的调用点"
@@ -143,6 +148,42 @@ def test_the_pipeline_asks_the_workflow_not_to_abort_on_the_gate():
             "allow_evolution_gate_bypass 必须是 True —— "
             "闸门按「已知的有意偏离」不阻断，也不许让上下文降级"
         )
+
+
+def test_the_async_wrapper_forwards_the_bypass_flag():
+    """async 包装必须把 ``allow_evolution_gate_bypass`` 转发下去（H-01）。
+
+    管线传的是 ``prepare_chapter_generation_async``；包装里若漏转发，
+    bypass=True 会在包装里丢掉 ⇒ 闸门一判 blocking 就 raise ⇒
+    ``base.py`` 的 ``except Exception`` 把它当成「上下文准备失败」
+    ⇒ **整份 bundle 被丢掉、预算掉到 20000**。
+    """
+    src = (ROOT / _WORKFLOW_REL).read_bytes().decode("utf-8-sig")
+    tree = ast.parse(src)
+
+    wrapper = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) \
+                and node.name == "prepare_chapter_generation_async":
+            wrapper = node
+            break
+    assert wrapper is not None, "找不到 prepare_chapter_generation_async"
+
+    forwarded = False
+    for node in ast.walk(wrapper):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        if name != "prepare_chapter_generation":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "allow_evolution_gate_bypass":
+                forwarded = True
+    assert forwarded, (
+        "async 包装没转发 allow_evolution_gate_bypass "
+        "⇒ 管线传的 bypass=True 会在包装里丢掉"
+    )
 
 
 def test_the_pipeline_still_reports_the_gate_verdict():

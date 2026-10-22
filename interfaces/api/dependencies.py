@@ -1338,7 +1338,13 @@ def get_evolution_snapshot_service():
 def get_evolution_gate_service():
     from application.evolution.services.gate_service import EvolutionGateService
 
-    return EvolutionGateService(get_evolution_repository(), get_unified_character_repository())
+    # H-01：注入 LLM 服务 ⇒ 闸门能判「死亡角色是活跃登场还是回忆/遗物」
+    # （没有它 ⇒ 回落规则判定：名字命中即拦，与改造前逐位一致）
+    return EvolutionGateService(
+        get_evolution_repository(),
+        get_unified_character_repository(),
+        llm_service=get_llm_service(),
+    )
 
 
 def get_evolution_override_service():

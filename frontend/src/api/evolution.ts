@@ -32,9 +32,13 @@ export interface EvolutionGateReport {
     type: string
     message: string
     suggestion?: string
+    /** H-01：这条结论是谁给的（ai / rule / 空=未评估） */
+    source?: string
   }>
   required_continuations: string[]
   repair_plan: string[]
+  /** H-01：判不出来（未评估）的条数 —— 显式可数，不等于「没违规」 */
+  unassessed_count?: number
   governance_budget?: {
     chapter_number: number
     max_new_storylines: number

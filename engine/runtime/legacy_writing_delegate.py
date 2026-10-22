@@ -315,7 +315,8 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
     context = ""
     if host.chapter_workflow:
         try:
-            bundle = host.chapter_workflow.prepare_chapter_generation(
+            # H-01：async 版 —— 先让 AI 判「死亡角色是回忆还是活跃登场」
+            bundle = await host.chapter_workflow.prepare_chapter_generation_async(
                 novel.novel_id.value, chapter_num, outline, scene_director=None
             )
             context = bundle["context"]

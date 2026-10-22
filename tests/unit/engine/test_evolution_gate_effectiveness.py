@@ -241,6 +241,12 @@ async def test_blocking_violation_is_logged_and_carried_not_swallowed(monkeypatc
             captured["check"] = kwargs
             return _FakeReport(violations)
 
+        # H-01：管线侧现在走 async 的 ``check_with_ai``
+        # （AI 判「死亡角色是活跃登场还是回忆/遗物」）。
+        async def check_with_ai(self, **kwargs):
+            captured["check"] = kwargs
+            return _FakeReport(violations)
+
     monkeypatch.setattr(gate_mod, "EvolutionGateService", _FakeGate)
     # 三个仓储都是方法内局部 import，且构造时就用 db.get_connection() ——
     # 必须一并打桩，否则在假 db 上抛异常，被方法内层的

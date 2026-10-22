@@ -76,7 +76,8 @@ async def gate(
     req: GateRequest,
     service: EvolutionGateService = Depends(get_evolution_gate_service),
 ) -> Dict[str, Any]:
-    report = service.check(
+    # H-01：AI 判「死亡角色是活跃登场还是回忆/遗物/传闻」
+    report = await service.check_with_ai(
         novel_id=novel_id,
         chapter_number=req.chapter_number,
         branch_id=req.branch_id,
