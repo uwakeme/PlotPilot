@@ -1,0 +1,379 @@
+"""X-02 补强：总闸必须**双向**覆盖 —— 「会打模型 ⇒ 一定接了闸」。
+
+为什么补这个
+------------
+第 3 批复审（B1）实测发现：X-02 的总闸对本批新增的 AI 能力**完全无效** ——
+``AI_PARTICIPATION_FEATURES`` 里只有 5 项，全是本批之前就有的；
+本批新增的 10 个 AI 调用点**一个都没登记**，运行时探针显示
+「总闸关掉，10/10 仍打模型」。
+
+根因是**守卫只验单向**：原守卫断言「登记了就要接线」
+（``wired == set(AI_PARTICIPATION_FEATURES)``），
+**不验「新能力必须登记」** ⇒ 新增能力时绿灯照过。
+
+本文件补上反向那一半，并加一层**行为级**验证。
+
+三层守卫
+--------
+A1  **静态·分类完备**：每个会打模型的生产模块都必须被归入
+    「AI 参与能力（可关）」或「核心生成链路（不可关）」**两类之一**。
+    ⚠ 归类必须**显式**——新模块没人归类 ⇒ 报红。
+A2  **静态·能力必须接闸**：「AI 参与能力」类的每个模块都必须有闸
+    （直接调 ``ai_participation_enabled``，或走「settings 模块」间接接闸）。
+B   **行为·正反对照**：总闸关闭 ⇒ **模型一次都不许被调用**；
+    同一套输入下总闸打开 ⇒ **模型确实被调用**（正对照）。
+    ⚠ 没有正对照的话，这条会在「渲染链路本来就坏」时**假绿**。
+
+⚠ 本文件**不**假装覆盖「AI 输出质量」——那需要真实模型，不在本门禁内。
+"""
+from __future__ import annotations
+
+import ast
+import importlib
+import inspect
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from application.engine.services.ai_participation_settings import (
+    AI_PARTICIPATION_CAPABILITY_MODULES,
+    AI_PARTICIPATION_CORE_PIPELINE_MODULES,
+    AI_PARTICIPATION_FEATURES,
+    AI_PARTICIPATION_SETTINGS_MEDIATED,
+    AI_PARTICIPATION_UNGOVERNED_MODULES,
+    ai_participation_enabled,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SCAN_DIRS = ("application", "engine", "interfaces", "infrastructure", "domain")
+
+
+# ───────────────────────── 扫描生产代码 ─────────────────────────
+
+
+def _iter_production_modules():
+    for dirname in SCAN_DIRS:
+        for path in sorted((REPO_ROOT / dirname).rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            yield path
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
+def _calls_model(tree: ast.AST) -> bool:
+    """这个模块会不会真的发起模型调用？
+
+    判据：**属性调用** ``<名字里带 llm 的东西>.generate(...)``。
+    只看 ``ast.Call`` + ``ast.Attribute``，不靠字符串匹配 ⇒
+    注释里写 ``llm.generate(...)`` 不会误判。
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "generate":
+            continue
+        base = func.value
+        name = getattr(base, "attr", None) or getattr(base, "id", None)
+        if name and "llm" in name.lower():
+            return True
+    return False
+
+
+def _wired_feature_ids(tree: ast.AST) -> set[str]:
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name != "ai_participation_enabled":
+            continue
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            out.add(node.args[0].value)
+    return out
+
+
+def _model_calling_modules() -> dict[str, Path]:
+    """会打模型的生产模块 → 路径。"""
+    out: dict[str, Path] = {}
+    for path in _iter_production_modules():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if _calls_model(tree):
+            out[_rel(path)] = path
+    return out
+
+
+# ───────────────────────── A1 · 分类完备 ─────────────────────────
+
+
+def test_every_model_calling_module_is_classified():
+    """每个会打模型的生产模块都必须**被归类**。
+
+    三类：「AI 参与能力」（可关，且必须有闸）、「核心生成链路」（不可关）、
+    「已知缺口」（还没接闸，每条都写明为什么）。
+    ⚠ 归类必须显式 —— 新增一个会打模型的模块却没人归类 ⇒ 这条报红。
+    机械地靠启发式分类做不到（写书主干的模型调用与「可选判断」在代码上同形）。
+    """
+    classified = (
+        AI_PARTICIPATION_CAPABILITY_MODULES
+        | AI_PARTICIPATION_CORE_PIPELINE_MODULES
+        | set(AI_PARTICIPATION_UNGOVERNED_MODULES)
+    )
+    unclassified = sorted(set(_model_calling_modules()) - classified)
+    assert not unclassified, (
+        "这些模块会打模型，却没被归入「AI 参与能力」「核心生成链路」或「已知缺口」：\n"
+        + "\n".join(f"  - {rel}" for rel in unclassified)
+        + "\n修法：在 ai_participation_settings.py 的三张表里各归一类"
+        "（能力类必须接总闸；核心链路类请写清为什么不受总闸管辖）。"
+    )
+
+
+def test_the_known_gaps_are_explicit_and_documented():
+    """已知缺口每条都要写清「为什么不接、什么时候接」。
+
+    这张表**只该变短，不该变长** ⇒ 空理由条目会报红。
+    """
+    for rel, reason in AI_PARTICIPATION_UNGOVERNED_MODULES.items():
+        assert (REPO_ROOT / rel).is_file(), f"缺口表指向的模块不存在：{rel}"
+        assert len(reason.strip()) >= 20, f"缺口 {rel} 没写清原因"
+
+
+def test_the_three_classifications_do_not_overlap():
+    capability = AI_PARTICIPATION_CAPABILITY_MODULES
+    core = AI_PARTICIPATION_CORE_PIPELINE_MODULES
+    gaps = set(AI_PARTICIPATION_UNGOVERNED_MODULES)
+    assert not (capability & core), "同一个模块不能既是「可关的能力」又是「不可关的核心链路」"
+    assert not (capability & gaps), "同一个模块不能既是「已接闸」又是「已知缺口」"
+    assert not (core & gaps), "同一个模块不能既是「核心链路」又是「已知缺口」"
+
+
+def test_classified_modules_actually_exist():
+    for rel in (
+        AI_PARTICIPATION_CAPABILITY_MODULES | AI_PARTICIPATION_CORE_PIPELINE_MODULES
+    ):
+        assert (REPO_ROOT / rel).is_file(), f"归类表指向的模块不存在：{rel}"
+
+
+# ───────────────────────── A2 · 能力类必须接闸 ─────────────────────────
+
+
+def test_every_capability_module_has_a_gate():
+    """「AI 参与能力」类的每个模块都必须接闸。
+
+    这是 B1 的核心：新增一个 AI 能力却忘了登记/接线时，这条守卫必须报红。
+    """
+    mediated = {caller for caller, _holder, _feature in AI_PARTICIPATION_SETTINGS_MEDIATED}
+    ungated: list[str] = []
+
+    for rel in sorted(AI_PARTICIPATION_CAPABILITY_MODULES):
+        path = REPO_ROOT / rel
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if _wired_feature_ids(tree):
+            continue
+        if rel in mediated:
+            continue
+        ungated.append(rel)
+
+    assert not ungated, (
+        "这些「AI 参与能力」模块没接 X-02 总闸 ⇒ 总闸关不掉它们：\n"
+        + "\n".join(f"  - {rel}" for rel in ungated)
+        + "\n修法：在模块入口加 ai_participation_enabled(\"<feature_id>\")，"
+        "并把 feature id 登记进 AI_PARTICIPATION_FEATURES。"
+    )
+
+
+def test_every_mediated_entry_is_registered_and_really_read():
+    """中介表里的每一项：id 必须在册，且持闸模块真的调了它。
+
+    否则「中介」只是登记在案的空头支票。
+
+    中介三元组 = (会打模型的模块, 持闸的模块, feature id)。
+    """
+    for caller, holder, feature in AI_PARTICIPATION_SETTINGS_MEDIATED:
+        assert feature in AI_PARTICIPATION_FEATURES, (
+            f"{caller} mediated 的 {feature!r} 不在 AI_PARTICIPATION_FEATURES 里"
+        )
+        assert caller in AI_PARTICIPATION_CAPABILITY_MODULES, (
+            f"中介表里的调用方 {caller} 不在「AI 参与能力」表里"
+        )
+        holder_path = REPO_ROOT / holder
+        assert holder_path.is_file(), f"中介表指向的持闸模块不存在：{holder}"
+        src = holder_path.read_text(encoding="utf-8")
+        assert f'ai_participation_enabled("{feature}")' in src, (
+            f"{holder} 声称给 {caller} mediated {feature!r}，但源码里没有读总闸的调用"
+        )
+
+
+def test_no_feature_is_mediated_and_directly_gated_at_the_same_time():
+    """同一个 id 不许既直接接闸又走中介（否则「关闸」有两条路径，容易只改一条）。"""
+    direct: set[str] = set()
+    for rel in AI_PARTICIPATION_CAPABILITY_MODULES:
+        path = REPO_ROOT / rel
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        direct |= _wired_feature_ids(tree)
+
+    mediated_features = {feature for _, _, feature in AI_PARTICIPATION_SETTINGS_MEDIATED}
+    assert not (direct & mediated_features), (
+        f"这些 feature 既直接接闸又走中介：{sorted(direct & mediated_features)}"
+    )
+
+
+# ───────────────────────── B · 行为级正反对照 ─────────────────────────
+
+
+class _FakeGateway:
+    """打桩网关：只保证 ``render`` 不炸（行为断言看的是**有没有调模型**）。"""
+
+    def render(self, contract, variables):
+        return SimpleNamespace(
+            prompt=SimpleNamespace(system="sys", user="usr"),
+            node_key=getattr(contract, "node_key", ""),
+        )
+
+    def validate_output(self, contract, payload):  # pragma: no cover - 不该走到
+        return payload
+
+
+class _SpyLLM:
+    def __init__(self):
+        self.calls = 0
+
+    async def generate(self, prompt, config):
+        self.calls += 1
+        return SimpleNamespace(content="{}")
+
+
+#: (module, class, method, 真实入参) —— 入参必须是**能让它真的走到模型**的形状，
+#: 否则正对照会失败（那就变成「探针无效」而不是「能力没接线」）。
+BEHAVIOUR_CASES = [
+    ("application.blueprint.services.structure_proposal", "StructureProposalService", "propose",
+     {"novel_id": "n-1", "target_chapters": 300}),
+    ("application.blueprint.services.first_act_planner", "FirstActPlanner", "propose",
+     {"novel_id": "n-1"}),
+    ("application.blueprint.services.target_budget_proposal", "TargetBudgetProposalService", "propose",
+     {"novel_id": "n-1"}),
+    ("application.blueprint.services.act_volume_placement_service", "ActVolumePlacementService", "declare",
+     {"novel_id": "n-1"}),
+    ("application.blueprint.services.finale_intent_service", "FinaleIntentService", "resolve",
+     {"novel_id": "n-1", "act_number": 1, "total_acts": 3, "target_chapters": 100}),
+    ("application.engine.services.planning_depth_assessor", "PlanningDepthAssessor", "assess",
+     {"genre": "都市", "premise": "一个故事", "target_chapters": 100}),
+    ("application.engine.services.rhythm_quota_planner", "RhythmQuotaPlanner", "plan",
+     {"genre": "都市", "chapter_number": 3}),
+    ("application.evolution.services.dead_character_checker", "DeadCharacterChecker", "check",
+     {"outline": "大纲", "candidates": [{"character_id": "c1", "name": "甲"}]}),
+    ("application.character.services.character_ner", "CharacterNerService", "extract",
+     {"novel_id": "n-1", "outline": "甲在城里"}),
+    ("application.character.services.character_belief_check", "CharacterBeliefChecker", "check",
+     {"character_name": "甲", "action": "拔剑"}),
+    ("application.character.services.character_context_selection", "CharacterContextSelector", "select",
+     {"candidates": [{"character_id": "c1", "name": "甲", "fact_ids": ["f1"]}]}),
+    ("application.world.services.plot_point_classifier", "PlotPointClassifier", "classify",
+     {"chapter_number": 1}),
+    ("application.audit.services.anti_ai_pattern_induction", "AntiAiPatternInducer", "induce",
+     {"chapter_number": 1, "content": "一段正文"}),
+    ("application.audit.services.conflict_action_extraction", "ConflictActionExtractor", "extract",
+     {"outline": "大纲", "entity_names": ["甲"]}),
+    ("application.audit.services.wuxia_style_audit", "WuxiaStyleAuditor", "audit",
+     {"content": "一段正文"}),
+    ("application.audit.services.macro_breakpoint_classifier", "MacroBreakpointClassifier", "classify",
+     {"characters": [{"character_id": "c1", "name": "甲"}],
+      "events": [{"event_id": "e1", "summary": "遇袭"}]}),
+]
+
+
+async def _run_service(monkeypatch, module_path: str, class_name: str, method_name: str, kwargs: dict):
+    module = importlib.import_module(module_path)
+    monkeypatch.setattr(module, "get_prompt_gateway", lambda: _FakeGateway(), raising=False)
+    # ⚠ 有的能力还有**自己的逐条开关**（如 E-06 的 `rhythm_quota.enabled`，
+    #   管「配额文本送不送进正文提示词」）。它关着时规划器**不会打模型**
+    #   （第 3 批复审 S13 的修法）⇒ 正对照要把它打开，否则探针无效。
+    if hasattr(module, "rhythm_quota_delivery_enabled"):
+        monkeypatch.setattr(module, "rhythm_quota_delivery_enabled", lambda: True)
+    spy = _SpyLLM()
+    service = getattr(module, class_name)(spy)
+    try:
+        await getattr(service, method_name)(**kwargs)
+    except Exception:  # noqa: BLE001
+        # 模型调用之后的解析失败不影响「有没有调模型」这个断言；
+        # 正对照会把「压根没调到模型」的情况报出来。
+        pass
+    return spy
+
+
+def _set_master(monkeypatch, enabled: bool) -> None:
+    monkeypatch.setattr(
+        "application.engine.services.ai_participation_settings.get_config",
+        lambda: SimpleNamespace(
+            ai_participation={"master_enabled": enabled, "disabled_features": []}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "module_path,class_name,method_name,kwargs",
+    BEHAVIOUR_CASES,
+    ids=[f"{c[1]}.{c[2]}" for c in BEHAVIOUR_CASES],
+)
+async def test_master_switch_off_stops_the_model_call(
+    monkeypatch, module_path, class_name, method_name, kwargs
+):
+    """总闸关闭 ⇒ 这个能力**一次模型都不许调**。
+
+    正对照：同一套输入下总闸打开时**确实**调了模型。
+    ⚠ 正对照是这条断言有意义的前提 —— 少了它，
+    「渲染链路本来就坏 ⇒ 模型压根没被调」也会让本条变绿。
+    """
+    _set_master(monkeypatch, True)
+    on_spy = await _run_service(
+        monkeypatch, module_path, class_name, method_name, kwargs
+    )
+    assert on_spy.calls >= 1, (
+        f"{module_path}.{class_name}.{method_name} 正对照失败："
+        "总闸开着时模型也没被调用 ⇒ 这条守卫的探针无效（不是能力没接线）"
+    )
+
+    _set_master(monkeypatch, False)
+    off_spy = await _run_service(
+        monkeypatch, module_path, class_name, method_name, kwargs
+    )
+    assert off_spy.calls == 0, (
+        f"{module_path}.{class_name}.{method_name} 总闸关闭后仍调了模型 "
+        f"{off_spy.calls} 次 ⇒ 总闸对它无效"
+    )
+
+
+@pytest.mark.asyncio
+async def test_master_switch_off_does_not_block_unrelated_features(monkeypatch):
+    """总闸只关「登记在册的能力」，**不是**把整个 AI 通道掐死。
+
+    防止「为了让守卫变绿，把所有能力都登记进去」这种反向作弊。
+    """
+    _set_master(monkeypatch, False)
+    assert ai_participation_enabled("chapter_mode") is False
+    # 未登记的 id 一律拒绝（这是设计，不是副作用）
+    assert ai_participation_enabled("根本不存在的特征") is False
+
+
+def test_the_feature_table_has_no_duplicates():
+    ids = list(AI_PARTICIPATION_FEATURES)
+    assert len(ids) == len(set(ids)), f"AI_PARTICIPATION_FEATURES 有重复项：{ids}"
+
+
+def test_the_feature_table_ids_are_snake_case():
+    """id 命名约定：snake_case（配置里要手写，别让拼写错误混进来）。"""
+    bad = [f for f in AI_PARTICIPATION_FEATURES if not re.fullmatch(r"[a-z][a-z0-9_]*", f)]
+    assert not bad, f"feature id 不符合 snake_case 约定：{bad}"

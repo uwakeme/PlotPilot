@@ -26,6 +26,9 @@ from infrastructure.ai.prompt_contracts.act_volume_placement import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.blueprint.services.act_volume_placement_contract import (
     SOURCE_NONE,
     VolumePlacement,
@@ -55,7 +58,7 @@ class ActVolumePlacementService:
         observed_acts_per_volume: str = "",
     ) -> VolumePlacement:
         """返回一次卷号声明；判不出来时卷号为 ``None``、来源 ``none``。"""
-        if self._llm is None:
+        if self._llm is None or not ai_participation_enabled("act_volume_placement"):
             return VolumePlacement(None, "", SOURCE_NONE)
 
         try:

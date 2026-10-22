@@ -30,6 +30,7 @@ import pytest
 
 from application.engine.services.voice_rewrite_result import (
     MAX_DIAGNOSIS_CHARS,
+    MAX_TECHNIQUE_CHARS,
     VoiceRewriteOutcome,
     parse_voice_rewrite,
 )
@@ -92,20 +93,28 @@ def test_json_without_a_usable_body_yields_no_content():
 
 
 def test_diagnosis_and_technique_are_clipped():
-    """诊断与手法有长度上限（防模型写长篇）。"""
+    """诊断与手法有长度上限（防模型写长篇）。
+
+    ⚠ 第 3 批复审 S11：原先 ``next_technique`` 也拿 ``MAX_DIAGNOSIS_CHARS`` 比，
+    而代码裁的是 ``MAX_TECHNIQUE_CHARS`` —— 两个常量**恰好都是 400** 才碰巧过。
+    ⇒ 现在各用各的常量，并用**字面量**把两个值都钉住
+    （将来两者分叉时，这条会立刻红）。
+    """
     outcome = parse_voice_rewrite(
         json.dumps(
             {
                 "rewritten": "正文",
                 "diagnosis": "D" * (MAX_DIAGNOSIS_CHARS + 100),
-                "next_technique": "T" * (MAX_DIAGNOSIS_CHARS + 100),
+                "next_technique": "T" * (MAX_TECHNIQUE_CHARS + 100),
             },
             ensure_ascii=False,
         )
     )
 
-    assert len(outcome.diagnosis) == MAX_DIAGNOSIS_CHARS
-    assert len(outcome.next_technique) == MAX_DIAGNOSIS_CHARS
+    assert len(outcome.diagnosis) == 400
+    assert len(outcome.next_technique) == 400
+    assert MAX_DIAGNOSIS_CHARS == 400
+    assert MAX_TECHNIQUE_CHARS == 400
 
 
 def test_empty_output_is_empty():

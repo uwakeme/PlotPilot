@@ -31,6 +31,9 @@ from infrastructure.ai.prompt_contracts.wuxia_style_audit import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.audit.services.wuxia_style_audit_schema import (
     SOURCE_AI,
     SOURCE_FALLBACK,
@@ -94,7 +97,7 @@ class WuxiaStyleAuditor:
 
     async def audit(self, *, content: str) -> StyleAudit:
         """返回审结果；判不出来时 ``source=""``（未评估）。"""
-        if self._llm is None or not content:
+        if self._llm is None or not ai_participation_enabled("wuxia_style_audit"):
             return StyleAudit([], SOURCE_NONE)
 
         try:

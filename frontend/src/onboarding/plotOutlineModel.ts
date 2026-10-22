@@ -118,59 +118,33 @@ function canonicalPhase(value: unknown): string {
 }
 
 /**
- * 按**实际段数**均分 1..totalChapters。
- *
- * J-03：原先这是前端自己那份 `STAGE_RANGE_RATIOS = [0.15, 0.40, 0.70, 0.90, 1.0]`，
- * 于是前后端各切各的、必然漂移。现在阶段数与断点由后端决定
- * （见 `application/blueprint/services/stage_plan_invariants.py`），
- * 这里只在前端本地编辑、后端区间缺失时兜底，均分即可 —— 不再承担创作判断。
- */
-export function buildStageChapterRanges(
-  totalChapters: number,
-  stageCount: number,
-): Array<{ chapter_start: number; chapter_end: number }> {
-  const total = Math.max(1, Math.floor(Number(totalChapters)) || 100)
-  const n = Math.max(1, Math.min(Math.floor(Number(stageCount)) || 1, total))
-  const ranges: Array<{ chapter_start: number; chapter_end: number }> = []
-  let previous = 0
-  for (let index = 0; index < n; index += 1) {
-    const remaining = n - index - 1
-    const end = index === remaining
-      ? total
-      : Math.min(
-        Math.max(previous + 1, Math.round((total * (index + 1)) / n)),
-        total - remaining,
-      )
-    const bounded = Math.max(previous + 1, end)
-    ranges.push({ chapter_start: previous + 1, chapter_end: bounded })
-    previous = bounded
-  }
-  return ranges
-}
-
-/**
  * 规范化阶段列表 —— J-03 后，前端只渲染，不改写。
  *
  * 后端已保证：阶段数 ∈ [3, 8]、断点首尾相接、phase / label 来自 AI。
  * 因此这里**不再按下标回贴**任何东西，只在字段缺失时按位置兜底。
- */
-/**
- * 规范化阶段列表 —— J-03 后，前端只渲染，不改写。
  *
- * 后端已保证：阶段数 ∈ [3, 8]、断点首尾相接、phase / label 来自 AI。
- * 因此这里**不再按下标回贴**任何东西，只在字段缺失时按位置兜底。
+ * ⚠ **前端不再自己算章节区间**（第 3 批复审 B2 修）：
+ *
+ * 此前这里有一份自己的均分公式，而它把「当前段之后还剩几段」
+ * 误当成「当前段是不是最后一段」（`index === remaining`）——
+ * 奇数阶段数时**中间那段**被误判成最后一段、一口吞掉尾部，
+ * 后面几段落到书的外面：
+ *
+ *     total=100 stages=5 ⇒ (1,20) (21,40) (41,100) (101,101) (102,102)
+ *
+ * 而后端的三条不变量（阶段数 ∈[3,8] / 首尾相接 / 末段终点 ≥ 目标）
+ * **全过** ⇒ 一份「有一段在书外」的阶段计划被静默写进库。
+ *
+ * 现在：AI / 后端给了区间就用，没给就**留空**（不编造）——
+ * 后端在保存时用 `stage_plan_invariants.chapter_ranges` 补齐，
+ * 断点口径只有一处，前端不再有第二份。
  */
 function normalizeStagePlanRanges(
   stagePlan: PlotOutlineDTO['stage_plan'],
   totalChapters: number,
 ): PlotOutlineDTO['stage_plan'] {
-  const ranges = buildStageChapterRanges(totalChapters, stagePlan.length)
   return stagePlan.map((stage, index) => {
     const fallbackStage = stageFallback(index)
-    const fallback = ranges[index] || {
-      chapter_start: index + 1,
-      chapter_end: Math.max(index + 1, Math.floor(Number(totalChapters)) || 100),
-    }
     const rawStart = coerceChapterNumber(stage.chapter_start)
     const rawEnd = coerceChapterNumber(stage.chapter_end)
     const keepManualRange = rawStart !== undefined && rawEnd !== undefined && rawStart <= rawEnd
@@ -179,8 +153,10 @@ function normalizeStagePlanRanges(
       // **不改写** —— 阶段名与阶段数由后端 / AI 决定
       phase: stage.phase || fallbackStage.phase,
       label: stage.label || fallbackStage.label,
-      chapter_start: keepManualRange ? rawStart : fallback.chapter_start,
-      chapter_end: keepManualRange ? rawEnd : fallback.chapter_end,
+      // **不编造区间** —— 断点由 AI / 后端决定；缺失就留空，
+      // 由后端在保存时补齐（前端不持有第二份区间算法）。
+      chapter_start: keepManualRange ? rawStart : undefined,
+      chapter_end: keepManualRange ? rawEnd : undefined,
     }
     return {
       ...next,

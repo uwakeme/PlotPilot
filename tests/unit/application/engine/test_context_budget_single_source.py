@@ -137,7 +137,14 @@ def test_legacy_fallbacks_use_the_constant():
 
 
 def test_no_degraded_budget_literal_remains():
-    """全仓不再有 `max_tokens=20000` 这个**降级**预算字面量。"""
+    """全仓不再有 `max_tokens=20000` 这个**降级**预算字面量。
+
+    ⚠ 第 3 批复审 S2：这条原先**只扫 `ast.Call` 的 keyword**，
+    扫不到**函数参数默认值**（`def f(..., max_tokens: int = 20000)`）
+    ⇒ 而 D-06 的 bug 本身就是这个形状（`auto_novel_generation_workflow.py`
+    有一处 `max_tokens: int = 20000` 的默认值）。
+    ⇒ 现在**两种形状都扫**。
+    """
     offenders = []
     for dirname in SCAN_DIRS:
         for path in (REPO_ROOT / dirname).rglob("*.py"):
@@ -146,16 +153,30 @@ def test_no_degraded_budget_literal_remains():
             except Exception:  # noqa: BLE001
                 continue
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                for kw in node.keywords:
-                    if kw.arg != "max_tokens":
-                        continue
-                    if (
-                        isinstance(kw.value, ast.Constant)
-                        and kw.value.value == 20000
-                    ):
-                        offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+                if isinstance(node, ast.Call):
+                    for kw in node.keywords:
+                        if kw.arg != "max_tokens":
+                            continue
+                        if (
+                            isinstance(kw.value, ast.Constant)
+                            and kw.value.value == 20000
+                        ):
+                            offenders.append(
+                                f"{path.relative_to(REPO_ROOT)}:{node.lineno} (call keyword)"
+                            )
+                # ⚠ 函数/方法的**参数默认值**（D-06 的 bug 就是这个形状）
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = node.args
+                    positional = list(args.posonlyargs) + list(args.args)
+                    defaults = list(args.defaults)
+                    for arg, default in zip(positional[-len(defaults):], defaults) if defaults else []:
+                        if arg.arg != "max_tokens":
+                            continue
+                        if isinstance(default, ast.Constant) and default.value == 20000:
+                            offenders.append(
+                                f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                                f"(参数默认值 {arg.arg})"
+                            )
     assert not offenders, f"仍有降级预算字面量 20000：{offenders}"
 
 

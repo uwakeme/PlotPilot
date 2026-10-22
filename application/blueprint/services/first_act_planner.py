@@ -21,6 +21,9 @@ from domain.ai.services.llm_service import LLMService
 from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.first_act import FIRST_ACT_CONTRACT
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,9 @@ class FirstActPlanner:
     ) -> Optional[Dict[str, Any]]:
         """返回 ``{"title", "description", "suggested_chapter_count", "reason"}``；
         拿不到可用结果返回 ``None``（调用方落代码兜底）。"""
+        if not ai_participation_enabled("first_act"):
+            logger.info("AI 参与总闸关闭：首幕提案按代码兜底处理 novel=%s", novel_id)
+            return None
         try:
             rendered = get_prompt_gateway().render(
                 FIRST_ACT_CONTRACT,

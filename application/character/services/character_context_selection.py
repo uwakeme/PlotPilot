@@ -32,6 +32,9 @@ from infrastructure.ai.prompt_contracts.character_context_selection import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.character.services.character_context_selection_schema import (
     CharacterContextSelection,
     SOURCE_NONE,
@@ -67,6 +70,12 @@ class CharacterContextSelector:
             str(c.get("character_id") or ""): set(str(x) for x in (c.get("fact_ids") or []))
             for c in usable
         }
+        if not ai_participation_enabled("character_context_selection"):
+            logger.info(
+                "AI 参与总闸关闭：角色上下文取材按未评估处理 ch=%s",
+                chapter_number,
+            )
+            return CharacterContextSelection({}, SOURCE_NONE)
         try:
             rendered = get_prompt_gateway().render(
                 CHARACTER_CONTEXT_SELECTION_CONTRACT,

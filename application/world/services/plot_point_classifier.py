@@ -23,6 +23,9 @@ from infrastructure.ai.prompt_contracts.plot_point_classification import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.world.services.plot_point_classifier_schema import (
     UNASSESSED,
     PlotPointVerdict,
@@ -54,6 +57,11 @@ class PlotPointClassifier:
         novel_title: str = "",
     ) -> PlotPointVerdict:
         """返回一次剧情点判定；判不出来时是**未评估**。"""
+        if not ai_participation_enabled("plot_point_classifier"):
+            logger.info(
+                "AI 参与总闸关闭：剧情点分类按未评估处理 ch=%s", chapter_number
+            )
+            return UNASSESSED
         try:
             rendered = get_prompt_gateway().render(
                 PLOT_POINT_CLASSIFICATION_CONTRACT,

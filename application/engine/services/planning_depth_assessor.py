@@ -24,6 +24,9 @@ from infrastructure.ai.prompt_contracts.planning_depth import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.blueprint.services.planning_depth import DEPTHS
 
 logger = logging.getLogger(__name__)
@@ -43,7 +46,7 @@ class PlanningDepthAssessor:
         target_chapters: int = 0,
     ) -> Optional[str]:
         """返回推荐档位；判不出来时返回 ``None``（调用方回落章数阈值）。"""
-        if self._llm is None:
+        if self._llm is None or not ai_participation_enabled("planning_depth"):
             return None
         try:
             rendered = get_prompt_gateway().render(

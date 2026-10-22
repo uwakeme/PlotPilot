@@ -186,9 +186,9 @@ def test_the_ledger_keeps_at_most_the_cap_per_category():
             EmotionalWound(description=f"损失{i}", impact="多疑", chapter_number=i)
         )
 
-    assert len(ledger.wounds) == MAX_ITEMS_PER_CATEGORY
+    assert len(ledger.wounds) == 20
     # 留最新
-    assert ledger.wounds[-1].description == f"损失{MAX_ITEMS_PER_CATEGORY + 4}"
+    assert ledger.wounds[-1].description == "损失24"
 
 
 def test_the_trim_count_is_visible_in_the_payload():
@@ -211,7 +211,7 @@ def test_open_loops_are_never_trimmed():
             OpenLoop(description=f"悬念{i}", hint="线索", planted_chapter=i)
         )
 
-    assert len(ledger.open_loops) == MAX_ITEMS_PER_CATEGORY + 10
+    assert len(ledger.open_loops) == 30
     assert ledger.trimmed_items == 0
 
 
@@ -272,3 +272,8 @@ async def test_a_parse_failure_still_raises():
             chapter_number=4,
             current_ledger=EmotionLedger.create_empty(),
         )
+
+
+def test_the_ledger_cap_is_pinned_by_value():
+    """常量本身的值必须被钉住（每类 20 条是登记表写死的规模上限）。"""
+    assert MAX_ITEMS_PER_CATEGORY == 20

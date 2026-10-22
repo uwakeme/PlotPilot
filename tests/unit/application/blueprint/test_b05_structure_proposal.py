@@ -79,9 +79,9 @@ def test_the_grid_is_clamped_to_the_depth_limit():
         target_chapters=100000,
     )
 
-    assert proposal.parts == MAX_PARTS
-    assert proposal.volumes_per_part == MAX_VOLUMES_PER_PART
-    assert proposal.acts_per_volume == MAX_ACTS_PER_VOLUME
+    assert proposal.parts == 10
+    assert proposal.volumes_per_part == 10
+    assert proposal.acts_per_volume == 10
     assert proposal.clamped is True, "被夹过必须说出口，不许静默"
 
 
@@ -96,7 +96,7 @@ def test_clamping_is_reported_even_when_only_one_layer_is_out_of_range():
         target_chapters=100000,
     )
 
-    assert proposal.parts == MAX_PARTS
+    assert proposal.parts == 10
     assert proposal.volumes_per_part == 3
     assert proposal.acts_per_volume == 3
     assert proposal.clamped is True, "夹紧过必须说出口"
@@ -201,7 +201,7 @@ async def test_the_service_returns_the_proposed_grid(monkeypatch):
     assert (proposal.parts, proposal.volumes_per_part, proposal.acts_per_volume) == (3, 4, 5)
     assert proposal.source == SOURCE_AI
     # 上限要进提示词（模型也得知道边界）
-    assert gateway.variables["max_parts"] == str(MAX_PARTS)
+    assert gateway.variables["max_parts"] == "10"
     assert gateway.variables["target_chapters"] == "300"
 
 
@@ -386,3 +386,8 @@ def test_the_node_and_profile_are_registered():
     package_ids = {p.get("id") for p in prompts}
     assert PLANNING_STRUCTURE_PROPOSAL in package_ids
     assert generation_config_from_profile("structure_proposal") is not None
+
+
+def test_the_structure_limits_are_pinned_by_value():
+    """常量本身的值必须被钉住（否则上面的字面量断言会在常量改动时假红）。"""
+    assert (MAX_PARTS, MAX_VOLUMES_PER_PART, MAX_ACTS_PER_VOLUME) == (10, 10, 10)

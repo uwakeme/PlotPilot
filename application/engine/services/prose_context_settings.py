@@ -67,6 +67,20 @@ DEFAULT_SLOTS: Tuple[str, ...] = (
 #: 每块默认上限（字符）—— fact_lock 在长篇上会涨到两万字，必须切
 DEFAULT_MAX_CHARS_PER_SLOT = 2000
 
+#: 每块的**额外**开销（块标题 ``=== XXX ===`` + 截断标记）的预留字符数。
+#:
+#: 第 3 批复审 S5：此前 builder 只守「逐块上限」（2000），
+#: 而 composer 的**总长**兜底是 ``max_chars_per_slot × 槽位数``（2000×3=6000）。
+#: 但 builder 的实际产出 = Σ(块标题 + 内容 + 截断标记) ≈ 6109
+#: ⇒ **超过** composer 的兜底 ⇒ composer 被迫在第三块**中间**腰斩，
+#: 把那块自己的「（本块已按上限截断）」标记换成了总标记
+#: ⇒ 模型看到的最后一块不再标着「2000 字上限」。
+#:
+#: ⇒ 现在**总长上限**由这一个公式给出（builder 与 composer 共用）：
+#:     总上限 = (每块上限 + 每块开销) × 块数
+#: ⇒ builder 自己守住它 ⇒ composer 的兜底截断**不会发生**。
+PROSE_CONTEXT_SLOT_OVERHEAD_CHARS = 200
+
 
 @dataclass(frozen=True)
 class ProseContextRuntimeSettings:
@@ -100,3 +114,14 @@ def get_prose_context_runtime_settings() -> ProseContextRuntimeSettings:
             defaults.max_chars_per_slot,
         ),
     )
+
+
+def prose_context_total_cap(settings: ProseContextRuntimeSettings | None = None) -> int:
+    """「硬事实」整包的**总长上限**（字符）。
+
+    builder 与 composer **共用**这一个公式 ⇒ 两边不会各算一套
+    （此前 builder 6109 / composer 6000 的错位就是这么来的）。
+    """
+    current = settings or get_prose_context_runtime_settings()
+    slots = max(len(current.slots), 1)
+    return (current.max_chars_per_slot + PROSE_CONTEXT_SLOT_OVERHEAD_CHARS) * slots

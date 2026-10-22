@@ -42,6 +42,9 @@ from infrastructure.ai.prompt_contracts.structure_proposal import (
     STRUCTURE_PROPOSAL_CONTRACT,
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +257,7 @@ class StructureProposalService:
         target_chapters: int = 0,
     ) -> StructureGridProposal:
         """返回网格提案；判不出来 ⇒ ``source=""``（未评估，调用方回落兜底）。"""
-        if self._llm is None:
+        if self._llm is None or not ai_participation_enabled("structure_proposal"):
             return StructureGridProposal(*FALLBACK_GRID, source=SOURCE_NONE)
 
         try:

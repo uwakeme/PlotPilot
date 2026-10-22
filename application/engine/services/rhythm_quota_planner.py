@@ -24,10 +24,14 @@ from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.rhythm_quota import RHYTHM_QUOTA_CONTRACT
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.engine.services.rhythm_quota import (
     SOURCE_NONE,
     RhythmQuota,
     normalize_quota,
+    rhythm_quota_delivery_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,7 +52,15 @@ class RhythmQuotaPlanner:
         arc_tension: Optional[int] = None,
     ) -> RhythmQuota:
         """返回配额；判不出来时 ``source=""``（未评估，调用方回落代码表）。"""
-        if self._llm is None:
+        if self._llm is None or not ai_participation_enabled("rhythm_quota"):
+            return RhythmQuota(source=SOURCE_NONE)
+        # ⚠ **开关关着就别打模型**（第 3 批复审 S13）：
+        #   `rhythm_quota.enabled` 管的是「配额文本送不送进正文提示词」。
+        #   此前只在**投递侧**看开关 ⇒ 开关关着时仍然**付费调一次模型**、
+        #   拿回来的结果再被丢掉 ⇒ 白花钱。
+        #   现在在**调用侧**也看 ⇒ 关着就真的不打模型。
+        if not rhythm_quota_delivery_enabled():
+            logger.info("节奏配额开关关闭，跳过 AI 配额（不打模型）")
             return RhythmQuota(source=SOURCE_NONE)
 
         try:

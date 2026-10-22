@@ -27,6 +27,9 @@ from infrastructure.ai.prompt_contracts.conflict_action_extraction import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.audit.services.conflict_action_extraction_schema import (
     SOURCE_AI,
     SOURCE_NONE,
@@ -55,7 +58,7 @@ class ConflictActionExtractor:
         chapter_number: int = 0,
     ) -> ConflictActionExtraction:
         """返回抽取结果；判不出来时 ``source=""``（未评估）。"""
-        if self._llm is None or not outline:
+        if self._llm is None or not ai_participation_enabled("conflict_action_extraction"):
             return ConflictActionExtraction({}, SOURCE_NONE)
 
         names = [str(n).strip() for n in (entity_names or []) if str(n).strip()]

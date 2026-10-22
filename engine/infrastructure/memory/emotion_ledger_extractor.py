@@ -4,6 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from domain.ai.services.llm_service import GenerationConfig
 from engine.core.value_objects.emotion_ledger import (
@@ -45,6 +48,10 @@ class EmotionLedgerExtractor:
         if len(content) < 100:
             return _empty_deltas()
 
+        if not ai_participation_enabled("emotion_ledger"):
+            logger.info(
+                "AI 参与总闸关闭：情绪账本抽取按未评估处理", 
+            )
         if self._llm is None:
             logger.debug("EmotionLedgerExtractor: llm_service 未配置，跳过提取")
             return _empty_deltas()

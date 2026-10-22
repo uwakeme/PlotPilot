@@ -203,6 +203,36 @@ def test_prompt_no_longer_demands_exactly_three_in_fixed_order():
     assert "3~5" in system_md or "3 到 5" in system_md
 
 
+def test_the_prompt_range_and_the_code_cap_are_both_pinned():
+    """提示词的建议区间与代码的硬上限**各自**钉住。
+
+    第 3 批复审 S4：提示词写「3~5 个」，代码上限是 **6**
+    （``MAX_MAIN_PLOT_OPTIONS``）⇒ 两边口径不一致，而守卫只钉了提示词那半边。
+
+    现状是**有意的**（不是漂移）：
+    - 提示词给作者**建议**区间 3~5（多于 5 个只会让选择变难）；
+    - 代码允许到 **6** —— 多一条余量，且 A-03 已保证**超出不会被静默丢弃**
+      （会带着「被丢弃了几条」的说明交回作者）。
+
+    ⇒ 这里把两个数字都用**字面量**钉住（不引用常量 ⇒ 改常量会红），
+    并写清「两者不同是有意的」，免得下一个人以为是漏改。
+    """
+    from application.blueprint.services.setup_main_plot_suggestion_service import (
+        MAX_MAIN_PLOT_OPTIONS,
+        MIN_MAIN_PLOT_OPTIONS,
+    )
+
+    assert (MIN_MAIN_PLOT_OPTIONS, MAX_MAIN_PLOT_OPTIONS) == (3, 6), (
+        "候选数量下限/上限变了 —— 提示词的建议区间也要一起改"
+    )
+    system_md = (
+        Path(
+            "infrastructure/ai/prompt_packages/nodes/planning-main-plot-option/system.md"
+        ).read_text(encoding="utf-8")
+    )
+    assert "3~5" in system_md, "提示词的建议区间（3~5）没了"
+
+
 # ── 静默截断已消除 ─────────────────────────────────────────────────
 
 def test_six_options_are_not_silently_dropped_to_five():

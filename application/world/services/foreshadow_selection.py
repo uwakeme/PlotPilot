@@ -22,6 +22,9 @@ from infrastructure.ai.prompt_contracts.foreshadow_selection import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.world.services.foreshadow_selection_schema import (
     SOURCE_AI,
     SOURCE_NONE,
@@ -62,6 +65,11 @@ class ForeshadowSelectionPlanner:
             for c in candidates
         ]
 
+        if not ai_participation_enabled("foreshadow_selection"):
+            logger.info(
+                "AI 参与总闸关闭：伏笔取材按未评估处理 ch=%s", chapter_number
+            )
+            return ForeshadowSelection((), {}, SOURCE_NONE, ())
         try:
             rendered = get_prompt_gateway().render(
                 FORESHADOW_SELECTION_CONTRACT,

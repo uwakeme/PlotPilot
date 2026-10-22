@@ -136,8 +136,8 @@ def test_field_format_hint_is_a_single_source():
     assert "2-3句" not in WORLDBUILDING_FIELD_FORMAT_HINT
     assert "单段" in WORLDBUILDING_FIELD_FORMAT_HINT
     assert "不得换行" in WORLDBUILDING_FIELD_FORMAT_HINT
-    assert str(MIN_WORLDBUILDING_FIELD_CHARS) in WORLDBUILDING_FIELD_FORMAT_HINT
-    assert str(MAX_WORLDBUILDING_FIELD_CHARS) in WORLDBUILDING_FIELD_FORMAT_HINT
+    assert "不少于20字" in WORLDBUILDING_FIELD_FORMAT_HINT
+    assert "不多于500字" in WORLDBUILDING_FIELD_FORMAT_HINT
 
 
 def test_generated_desc_uses_the_shared_hint():
@@ -161,3 +161,13 @@ def test_prompt_bump_happened():
     assert (int(major), int(minor)) >= (5, 45), f"bundle 版本没 bump（当前 {version}）"
     assert "v5.45.0:" in meta, "changelog 里缺 v5.45.0（A-06）条目"
     assert "A-06" in meta, "changelog 里没写清这一笔是 A-06"
+
+
+def test_the_field_char_bounds_are_pinned_by_value():
+    """常量本身的值必须被钉住。
+
+    ⚠ 断言用**字面量**（"不少于20字"）而不是 ``str(MIN_...)``：
+    HINT 是用常量拼出来的 f-string ⇒ 用常量断言它是**恒真式**。
+    """
+    assert MIN_WORLDBUILDING_FIELD_CHARS == 20
+    assert MAX_WORLDBUILDING_FIELD_CHARS == 500

@@ -30,6 +30,9 @@ from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.character_ner import CHARACTER_NER_CONTRACT
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.character.services.character_ner_schema import CharacterNerLlmPayload
 
 logger = logging.getLogger(__name__)
@@ -78,7 +81,7 @@ class CharacterNerService:
         text = (outline or "").strip()
         if not text:
             return CharacterNerResult(source=SOURCE_NONE)
-        if self._llm is None:
+        if self._llm is None or not ai_participation_enabled("character_ner"):
             logger.debug("CharacterNerService: llm_service 未配置，跳过 NER")
             return CharacterNerResult(source=SOURCE_NONE)
 

@@ -22,6 +22,9 @@ from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.finale_intent import FINALE_INTENT_CONTRACT
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.blueprint.services.finale_intent_contract import (
     FinaleIntent,
     SOURCE_NONE,
@@ -50,6 +53,12 @@ class FinaleIntentService:
         is_last_act: bool = False,
     ) -> FinaleIntent:
         """返回一次终局意图判定；判不出来时 ``is_finale_act=None``、方向为空串。"""
+        if not ai_participation_enabled("finale_intent"):
+            logger.info(
+                "AI 参与总闸关闭：终局意图按未判定处理 novel=%s act=%s",
+                novel_id, act_number,
+            )
+            return FinaleIntent(None, "", SOURCE_NONE)
         try:
             rendered = get_prompt_gateway().render(
                 FINALE_INTENT_CONTRACT,

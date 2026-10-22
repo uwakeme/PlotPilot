@@ -38,6 +38,9 @@ from infrastructure.ai.prompt_contracts.target_budget import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.blueprint.services.target_budget import (
     clamp_target_chapters,
     propose_continue_block,
@@ -119,6 +122,12 @@ class TargetBudgetProposalService:
 
     async def _ask_ai(self, **variables: Any) -> Optional[Dict[str, Any]]:
         """问 AI；拿不到**完整且自洽**的提案就返回 None（由调用方回落公式）。"""
+        if not ai_participation_enabled("target_budget_proposal"):
+            logger.info(
+                "AI 参与总闸关闭：目标预算提案按引擎默认公式处理 novel=%s",
+                variables.get("novel_id"),
+            )
+            return None
         try:
             rendered = get_prompt_gateway().render(
                 TARGET_BUDGET_PROPOSAL_CONTRACT,

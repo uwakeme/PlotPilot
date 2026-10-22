@@ -20,6 +20,9 @@ from infrastructure.ai.prompt_contracts.anti_ai_pattern_induction import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.audit.services.anti_ai_pattern_induction_schema import (
     SOURCE_AI,
     SOURCE_NONE,
@@ -55,7 +58,7 @@ class AntiAiPatternInducer:
         来源标记为 ``""`` 表示**未评估**（AI 不可用 / 输出不合契约）——
         此时**不产生任何模式**，绝不用代码代写的模式顶替。
         """
-        if self._llm is None or not content:
+        if self._llm is None or not ai_participation_enabled("anti_ai_pattern_induction"):
             return [], SOURCE_NONE
 
         hits_text = ""

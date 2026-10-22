@@ -28,6 +28,7 @@ from application.character.services.character_context_selection_schema import (
     SOURCE_FALLBACK,
     SOURCE_NONE,
     CharacterContextSelection,
+    MAX_FACTS_PER_CHARACTER,
     normalize_selection,
     selection_from_payload,
 )
@@ -549,7 +550,7 @@ def test_the_ai_cannot_exceed_the_per_category_limit():
     kept = result.characters["c1"].fact_ids
     prefix = CATEGORY_PREFIX["scars"]
     picked = sum(1 for fid in kept if fid.startswith(prefix))
-    assert picked == CATEGORY_LIMIT["scars"], f"伤痕取了 {picked} 条，上限 {CATEGORY_LIMIT['scars']}"
+    assert picked == 2, f"伤痕取了 {picked} 条，上限 2"
 
 
 def test_the_ai_cannot_exceed_the_total_limit():
@@ -577,7 +578,7 @@ def test_the_ai_cannot_exceed_the_total_limit():
     )
 
     kept = result.characters["c1"].fact_ids
-    assert sum(CATEGORY_LIMIT.values()) > MAX_FACTS_PER_CHARACTER, (
+    assert 15 > 10, (
         "前提不成立：总量上限必须比各类上限之和更严，否则它没有独立牙齿"
     )
     assert len(kept) == MAX_FACTS_PER_CHARACTER, (
@@ -600,4 +601,20 @@ def test_the_category_spec_is_the_single_source():
 
     assert set(FACT_CATEGORIES) == set(CATEGORY_SPEC)
     assert CATEGORY_PREFIX == {c: s["prefix"] for c, s in CATEGORY_SPEC.items()}
-    assert CATEGORY_LIMIT == {c: s["limit"] for c, s in CATEGORY_SPEC.items()}
+    assert CATEGORY_LIMIT == {
+        "scars": 2,
+        "motivations": 2,
+        "voice": 3,
+        "catchphrases": 3,
+        "knowledge": 3,
+        "relationships": 2,
+    }
+
+
+def test_the_category_limits_are_pinned_by_value():
+    """常量本身的值必须被钉住。
+
+    ⚠ 原断言 ``CATEGORY_LIMIT == {c: s["limit"] for c, s in CATEGORY_SPEC.items()}``
+    是**恒真式** —— CATEGORY_LIMIT 本来就是从 CATEGORY_SPEC 派生的。
+    """
+    assert MAX_FACTS_PER_CHARACTER == 10

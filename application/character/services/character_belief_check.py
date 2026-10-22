@@ -29,6 +29,9 @@ from infrastructure.ai.prompt_contracts.character_belief_check import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.character.services.character_belief_check_schema import (
     UNASSESSED,
     BehaviorVerdict,
@@ -67,6 +70,12 @@ class CharacterBeliefChecker:
         taboos = [str(t).strip() for t in (moral_taboos or []) if str(t).strip()]
         wounds = [w for w in (active_wounds or []) if isinstance(w, dict)][:_MAX_WOUNDS]
 
+        if not ai_participation_enabled("character_belief_check"):
+            logger.info(
+                "AI 参与总闸关闭：角色行为一致性按未评估处理 character=%s",
+                character_name,
+            )
+            return UNASSESSED
         try:
             rendered = get_prompt_gateway().render(
                 CHARACTER_BELIEF_CHECK_CONTRACT,

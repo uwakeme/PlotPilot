@@ -39,13 +39,20 @@ from application.engine.dag.plan.schema import ChapterExecutionPlan
 
 logger = logging.getLogger(__name__)
 
-#: 上下文构建的**全局** token 上限（**唯一一处定义**）。
+#: 上下文构建的**全局** token 上限（**预算口径的唯一定义点**）。
 #:
 #: ⚠ D-06：此前全仓有**两个**硬编码预算 ——
 #: 主路径 35000、降级路径 20000（`engine/pipeline/base.py` 的 builder 兜底、
 #: `engine/runtime/legacy_writing_delegate.py` 的两处兜底）
 #: ⇒ 降级发生时上下文被**静默削薄 43%**，而调用方只看到一条 warning。
 #: ⇒ 现在所有调用点都引用这一个常量：预算是多少只由这一处决定。
+#:
+#: ⚠ 第 3 批复审 S3：35000 这个**字面量**在本仓还有若干处（DTO 默认值、
+#: 预算分配器的参数默认值、记忆编排器的默认总额…）——
+#: 它们是**各自模块的默认参数**，不是「另一份预算定义」；
+#: 主路径实际走的是本常量（``build_context(max_tokens=…)`` → ``allocate(total_budget=…)``）。
+#: 那几处若要改，本常量也要一起改 ⇒ 见
+#: ``tests/unit/application/engine/test_context_budget_single_source.py``。
 DEFAULT_CONTEXT_MAX_TOKENS = 35000
 
 
@@ -312,12 +319,22 @@ class ContextBuilder:
         """挑出要送进正文提示词的「硬事实」槽位（每块带上限，截断要说明）。"""
         from application.engine.services.prose_context_settings import (
             get_prose_context_runtime_settings,
+            prose_context_total_cap,
         )
 
         settings = get_prose_context_runtime_settings()
         if not settings.enabled:
             return ""
         parts: List[str] = []
+        # 总上限与 composer 的兜底总长**同一个公式**
+        # （`prose_context_total_cap`，builder 与 composer 共用）。
+        # ⚠ 此前 builder 只守逐块上限（2000 + 截断标记 + 块标题 ⇒ 三块合计 6109）
+        #   而 composer 的总上限是 6000 ⇒ composer 被迫在**第三块中间**腰斩，
+        #   把那块自己的「（本块已按上限截断）」标记换成了总标记
+        #   ⇒ 模型看到的最后一块不再标着「2000 字上限」。
+        #   现在 builder 自己守住总上限 ⇒ composer 的兜底截断变成**不会发生**。
+        total_cap = prose_context_total_cap(settings)
+        used = 0
         for key in settings.slots:
             slot = (allocation.slots or {}).get(key)
             if slot is None:
@@ -328,7 +345,19 @@ class ContextBuilder:
             cap = settings.max_chars_per_slot
             if cap > 0 and len(content) > cap:
                 content = content[:cap].rstrip() + "\n（本块已按上限截断）"
-            parts.append(f"=== {slot.name.upper()} ===\n{content}")
+            header = f"=== {slot.name.upper()} ===\n"
+            remaining = total_cap - used - len(header) if total_cap > 0 else 0
+            if total_cap > 0 and remaining <= 0:
+                break
+            if total_cap > 0 and len(content) > remaining:
+                # 放不下这一块 ⇒ 按**剩余额度**截，并保留逐块标记
+                keep = max(0, remaining - len("\n（本块已按上限截断）"))
+                content = content[:keep].rstrip() + "\n（本块已按上限截断）"
+                parts.append(f"{header}{content}")
+                used += len(header) + len(content)
+                break
+            parts.append(f"{header}{content}")
+            used += len(header) + len(content)
         return "\n\n".join(parts)
 
     def _build_layer2_smart_retrieval(

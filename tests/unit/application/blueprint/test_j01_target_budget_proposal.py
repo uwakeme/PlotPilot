@@ -119,8 +119,8 @@ async def test_finale_budget_upper_bound_is_code_guaranteed(monkeypatch):
         current_finale_budget=12,
     )
 
-    assert result["finale_budget"] == FINALE_BUDGET_MAX
-    assert result["finale_budget_max"] == FINALE_BUDGET_MAX
+    assert result["finale_budget"] == 200
+    assert result["finale_budget_max"] == 200
 
 
 @pytest.mark.asyncio
@@ -153,8 +153,8 @@ async def test_null_proposal_falls_back_to_engine_formula(monkeypatch):
         target_chapters=100, completed_chapters=100
     )
     assert result["finale_budget"] == clamp_finale_budget(12)
-    assert result["finale_budget_min"] == FINALE_BUDGET_MIN
-    assert result["finale_budget_max"] == FINALE_BUDGET_MAX
+    assert result["finale_budget_min"] == 5
+    assert result["finale_budget_max"] == 200
 
 
 @pytest.mark.asyncio
@@ -269,3 +269,8 @@ async def test_http_endpoint_surfaces_the_proposal_source(monkeypatch):
     # 端点真的把「本书目标 / 已完成 / 当前终局预算」送进了提案
     assert captured["target_chapters"] == 100
     assert captured["current_finale_budget"] == 12
+
+
+def test_the_finale_budget_bounds_are_pinned_by_value():
+    """常量本身的值必须被钉住（终局预算 [5,200] 是登记表写死的不变量）。"""
+    assert (FINALE_BUDGET_MIN, FINALE_BUDGET_MAX) == (5, 200)

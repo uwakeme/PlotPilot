@@ -35,6 +35,9 @@ from infrastructure.ai.prompt_contracts.macro_breakpoint import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.audit.services.macro_breakpoint_schema import (
     SOURCE_NONE,
     BreakpointClassification,
@@ -103,7 +106,7 @@ class MacroBreakpointClassifier:
         events: List[Dict[str, Any]],
     ) -> BreakpointClassification:
         """返回分类结果；判不出来时 ``source=""``（未评估）。"""
-        if self._llm is None or not events:
+        if self._llm is None or not ai_participation_enabled("macro_breakpoint"):
             return BreakpointClassification({}, SOURCE_NONE)
 
         char_payload = [_trim_character(c) for c in (characters or [])]

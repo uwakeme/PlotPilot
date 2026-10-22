@@ -1,0 +1,194 @@
+"""B2：前端阶段区间不再自算 —— 断点口径只留后端一处。
+
+背景（第 3 批复审 B2）
+----------------------
+前端 ``plotOutlineModel.ts`` 有一份自己的章节区间公式，它把
+「当前段之后还剩几段」误当成「当前段是不是最后一段」
+（``index === remaining``）⇒ **奇数阶段数时算出越界章号**：
+
+    total=100 stages=5 ⇒ (1,20) (21,40) (41,100) (101,101) (102,102)
+
+实测（审查方用 Node 跑真实 TS 公式）：
+``total=20 stages=5`` ⇒ 21/22 越界；``total=10 stages=3`` ⇒ 11 越界。
+**默认就是 5 段** ⇒ 默认路径就是坏的。
+
+更糟的是**后端静默接受**：三条不变量（阶段数 ∈[3,8] / 首尾相接 /
+末段终点 ≥ 目标）**全过** —— 因为区间是连续的，末段终点 102 ≥ 100
+⇒ 一份「有一段在书外」的阶段计划被静默写进库并驱动后续规划。
+
+为什么不能只是「把 ``index === remaining`` 改成 ``index === n - 1``」
+----------------------------------------------------------------------
+改对公式只是把「越界」变成「不越界」，但**两份口径仍在**：
+前端均分、后端 5 段用比例表 ``(0.15, 0.40, 0.70, 0.90, 1.0)``、
+非 5 段用均分，且 Python ``round()`` 是银行家舍入、``Math.round`` 是四舍五入
+⇒ **同样的输入两边算出不同的断点**。
+
+而且前端算出来的区间会**被提交回后端**（``buildEditablePlotOutlinePayload``
+原样带上 ``chapter_start``/``chapter_end``），后端对**显式**区间是照单全收的
+⇒ 前端那份估算会直接落库，变成「事实上的第二份真相」。
+
+⇒ **修法**：前端**不再算**区间。AI / 后端给了就用，没给就**留空**，
+由后端在保存时用 ``stage_plan_invariants.chapter_ranges`` 补齐。
+保存后前端用服务端返回的归一化结果重绘（``NovelSetupGuide.vue``
+的 ``response.plot_outline || payload``）⇒ 口径只有一处。
+
+⚠ 后端**允许**计划覆盖到比目标更大的章数（既有行为，见
+``test_plan_longer_than_target_is_allowed``）⇒ 「不编造」这条防线
+只能落在前端 ⇒ 守卫钉住「前端不再持有区间算法」。
+
+⚠ 守卫的局限（写在文件头，不假装它更强）
+----------------------------------------
+前端**零测试设施**（只有 ``npm run build`` 门禁）⇒ 这里对前端的断言是
+**文件内容级**（钉住「没有区间算法」这个**缺席**）。
+「缺席」型断言比「存在」型可靠：多一份算法就会命中。
+但它**挡不住**「换个写法再写一份」⇒ 前端行为仍需 ``npm run build`` + 人工走查。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from application.blueprint.services.setup_plot_outline_continuation import (
+    normalize_setup_plot_outline_payload,
+)
+from application.blueprint.services.stage_plan_invariants import (
+    MAX_STAGES,
+    MIN_STAGES,
+    chapter_ranges,
+    validate_stage_plan_shape,
+)
+
+ROOT = Path(__file__).resolve().parents[4]
+FRONTEND_MODEL = ROOT / "frontend/src/onboarding/plotOutlineModel.ts"
+
+
+def _frontend_code() -> str:
+    """只取**代码**部分（去掉注释）。
+
+    ⚠ 前端文件里有解释历史变更的注释 ⇒ 查全文会命中**自己写的说明文字**
+    （假红）。这里用**正则**整体剥掉 ``/* ... */`` 与 ``// ...``。
+    """
+    import re
+
+    source = FRONTEND_MODEL.read_text(encoding="utf-8")
+    without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    without_line = re.sub(r"//[^\n]*", "", without_block)
+    return without_line
+
+
+def _outline(stages):
+    return {
+        "main_story_overview": "概述",
+        "expected_ending": "结局",
+        "core_conflict": "冲突",
+        "stage_plan": stages,
+    }
+
+
+def _stage(start=None, end=None, *, phase="", label="", summary="一段"):
+    row = {"summary": summary}
+    if start is not None:
+        row["chapter_start"] = start
+    if end is not None:
+        row["chapter_end"] = end
+    if phase:
+        row["phase"] = phase
+    if label:
+        row["label"] = label
+    return row
+
+
+# ───────────────────────── 前端不再持有区间算法 ─────────────────────────
+
+
+def test_frontend_has_no_chapter_range_algorithm():
+    """前端**不许**再自己算章节区间。
+
+    判据是**缺席**：区间算法的入口函数名不许存在，
+    且不许出现「按段数循环切区间」的形状。
+
+    ⚠ 这条断言钉的是「没有」，不是「有」⇒ 比存在型断言可靠
+    （多写一份就命中），但挡不住「换个写法再写一份」。
+    """
+    code = _frontend_code()
+
+    assert "buildStageChapterRanges" not in code, (
+        "前端又自己算章节区间了 —— 断点口径必须只有后端一处"
+    )
+    # 均分公式的形状：round(total * (index + 1) / n)
+    assert "Math.round((total * (index + 1)) / n)" not in code, (
+        "前端又出现了均分切区间的公式"
+    )
+
+
+def test_frontend_does_not_fabricate_ranges_when_missing():
+    """阶段**没带**区间时，前端不许替它编一个。
+
+    判据：``chapter_start`` 的取值只允许来自 ``rawStart``（原始值），
+    不允许来自任何「算出来的」变量。
+    """
+    code = _frontend_code()
+
+    assert "chapter_start: keepManualRange ? rawStart : undefined" in code, (
+        "前端必须「有就用、没有就留空」，不许回填算出来的区间"
+    )
+    assert "chapter_start: keepManualRange ? rawStart : fallback" not in code, (
+        "前端不许在区间缺失时回填兜底区间"
+    )
+
+
+def test_frontend_keeps_the_provided_ranges():
+    """AI / 后端给了区间 ⇒ 前端原样保留（不许改写）。"""
+    code = _frontend_code()
+
+    assert "chapter_end: keepManualRange ? rawEnd : undefined" in code, (
+        "前端必须保留 AI / 后端给出的区间"
+    )
+
+
+# ───────────────────────── 后端是唯一补齐方 ─────────────────────────
+
+
+@pytest.mark.parametrize("count", list(range(MIN_STAGES, MAX_STAGES + 1)))
+@pytest.mark.parametrize("total", [3, 4, 5, 6, 7, 8, 9, 20, 80, 100, 500])
+def test_backend_ranges_are_always_inside_the_book(count, total):
+    """后端自己算的区间**永远**在书内、首尾相接、覆盖整本书。
+
+    这条是前端「不编造」之后的**兜底保证**：即便有人再写一份算法，
+    后端补出来的值仍然是安全的。
+    """
+    ranges = chapter_ranges(total, count)
+    assert ranges[0][0] == 1, (count, total, ranges)
+    assert ranges[-1][1] == total, (count, total, ranges)
+    for (a, b), (c, d) in zip(ranges, ranges[1:]):
+        assert b + 1 == c, (count, total, ranges)
+        assert a <= b, (count, total, ranges)
+        assert 1 <= a <= b <= total, (count, total, ranges)
+
+
+@pytest.mark.parametrize("count", list(range(MIN_STAGES, MAX_STAGES + 1)))
+def test_backend_fills_missing_ranges_on_save(count):
+    """阶段**没带**区间时，后端在保存时补齐（前端留下的空白由它收口）。"""
+    stages = [_stage(summary=f"第{i}段") for i in range(count)]
+    out = normalize_setup_plot_outline_payload(_outline(stages), target_chapters=90)
+
+    got = [(s["chapter_start"], s["chapter_end"]) for s in out["stage_plan"]]
+    assert got == chapter_ranges(90, count)
+    assert got[-1][1] == 90
+    assert validate_stage_plan_shape(out["stage_plan"], target_chapters=90) == []
+
+
+def test_the_old_buggy_frontend_output_is_not_what_the_backend_produces():
+    """回归：旧前端公式的产物（末两段在书外）**不会**由后端产生。
+
+    后端**允许**显式的超长计划（既有行为）⇒ 这条不是「后端会拒绝它」，
+    而是「后端自己算的时候不会产出它」—— 两件事要分清。
+    """
+    buggy = [(1, 20), (21, 40), (41, 100), (101, 101), (102, 102)]
+    produced = chapter_ranges(100, 5)
+
+    assert produced != buggy, "后端又产出了越界区间"
+    assert produced[-1][1] == 100
+    for (_, b), (c, _) in zip(produced, produced[1:]):
+        assert b + 1 == c

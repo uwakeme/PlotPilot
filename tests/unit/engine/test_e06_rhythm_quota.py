@@ -308,8 +308,19 @@ def test_the_node_is_registered():
 
 @pytest.mark.asyncio
 async def test_the_planner_uses_the_ai_verdict(monkeypatch):
-    """规划器：AI 的判定能落地（走真实契约校验）。"""
+    """规划器：AI 的判定能落地（走真实契约校验）。
+
+    ⚠ 第 3 批复审 S13：**开关关着就不该打模型**。
+    此前 `rhythm_quota.enabled` 只管「文本送不送进正文提示词」，
+    规划器照样**付费调一次模型**、拿回来的结果再被丢掉。
+    ⇒ 现在规划器也看这个开关 ⇒ 本用例必须**把开关打开**
+    （否则它测的是「开关关着时的行为」，不是「AI 的判定能落地」）。
+    """
     import application.engine.services.rhythm_quota_planner as planner_mod
+
+    monkeypatch.setattr(
+        planner_mod, "rhythm_quota_delivery_enabled", lambda: True
+    )
 
     class _FakeGateway:
         def render(self, contract, variables):
@@ -346,6 +357,40 @@ async def test_the_planner_uses_the_ai_verdict(monkeypatch):
     assert quota.target_tension == 72
     assert quota.rhythm == "爆发"
     assert "决定性反击" in quota.instruction
+
+
+@pytest.mark.asyncio
+async def test_the_planner_does_not_call_the_model_when_the_switch_is_off(monkeypatch):
+    """开关关着 ⇒ **模型一次都不许被调用**（第 3 批复审 S13）。
+
+    此前只在**投递侧**看开关 ⇒ 开关关着仍然付费调一次模型、
+    拿回来的结果再被丢掉 ⇒ 白花钱。
+    """
+    import application.engine.services.rhythm_quota_planner as planner_mod
+
+    monkeypatch.setattr(planner_mod, "rhythm_quota_delivery_enabled", lambda: False)
+
+    llm = Mock()
+    llm.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            content=json.dumps(
+                {
+                    "target_tension": 72,
+                    "rhythm": "爆发",
+                    "instruction": "综合张力目标：≥72。",
+                    "reason": "不该被调用",
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+
+    quota = await planner_mod.RhythmQuotaPlanner(llm).plan(
+        genre="都市异能", chapter_number=4, prev_tension=41.0, arc_tension=60
+    )
+
+    assert llm.generate.await_count == 0, "开关关着仍然调了模型"
+    assert quota.source == SOURCE_NONE
 
 
 @pytest.mark.asyncio

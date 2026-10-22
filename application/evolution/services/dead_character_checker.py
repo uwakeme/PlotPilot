@@ -29,6 +29,9 @@ from infrastructure.ai.prompt_contracts.dead_character_check import (
 )
 from infrastructure.ai.prompt_gateway import get_prompt_gateway
 
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from application.evolution.services.dead_character_check_schema import (
     SOURCE_NONE,
     DeadCharacterCheck,
@@ -60,7 +63,7 @@ class DeadCharacterChecker:
         ``candidates``：``[{"character_id": ..., "names": [...]}]`` ——
         由闸门给出（「已死亡 **且** 大纲提到了」的角色）。
         """
-        if self._llm is None or not outline or not candidates:
+        if self._llm is None or not ai_participation_enabled("dead_character_check"):
             return DeadCharacterCheck({}, SOURCE_NONE)
 
         payload = [

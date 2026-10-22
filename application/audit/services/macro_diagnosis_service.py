@@ -466,11 +466,36 @@ class MacroDiagnosisService:
             ORDER BY created_at DESC
             LIMIT 1
         """
-        row = self.db.fetch_one(sql, (novel_id,))
-        
+        # ⚠ **老库可能没有新列**（第 3 批复审 S14）：
+        #   迁移 runner 只 log error、**不阻断启动** ⇒ 迁移失败时服务照样起来，
+        #   而这条 SELECT 会直接炸（no such column）⇒ 诊断 API 500。
+        #   注入侧有「降级返回空串」的兜底，读取侧此前**没有** ⇒ 这里补上。
+        #   降级语义：新列当「未决定（pending）」，绝不假装已批准。
+        legacy_sql = """
+            SELECT id, novel_id, trigger_reason, trait, conflict_tags,
+                   breakpoints, breakpoint_count, status, resolved, resolved_at, resolved_by,
+                   context_patch, error_message, created_at
+            FROM macro_diagnosis_results
+            WHERE novel_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        try:
+            row = self.db.fetch_one(sql, (novel_id,))
+            missing_columns = False
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).lower()
+            if "no such column" not in message:
+                raise
+            logger.warning(
+                "macro_diagnosis_results 缺少新列（迁移未生效？），按未决定降级: %s", exc
+            )
+            row = self.db.fetch_one(legacy_sql, (novel_id,))
+            missing_columns = True
+
         if not row:
             return None
-        
+
         return {
             "id": row["id"],
             "novel_id": row["novel_id"],
@@ -484,9 +509,12 @@ class MacroDiagnosisService:
             "resolved_at": row["resolved_at"],
             "resolved_by": row["resolved_by"],
             # H-06 子项 B：注入决定（pending / approved / rejected）
-            "injection_decision": row["injection_decision"],
-            "decided_at": row["decided_at"],
-            "decided_by": row["decided_by"],
+            # ⚠ 缺列时一律「未决定」—— 绝不默认成「已批准」。
+            "injection_decision": (
+                "pending" if missing_columns else (row.get("injection_decision") or "pending")
+            ),
+            "decided_at": None if missing_columns else row.get("decided_at"),
+            "decided_by": None if missing_columns else row.get("decided_by"),
             # 校准文本本身要露给作者（他得先看见才谈得上批准）
             "context_patch": row["context_patch"] or "",
             "error_message": row["error_message"],

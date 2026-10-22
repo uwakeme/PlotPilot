@@ -72,7 +72,7 @@ def test_climaxes_are_clamped_to_the_upper_limit():
         target_chapters=300,
     )
 
-    assert proposal.climaxes_per_volume == MAX_CLIMAXES_PER_VOLUME
+    assert proposal.climaxes_per_volume == 6
     assert proposal.pacing_clamped is True, "被夹过必须说出口，不许静默"
     assert proposal.source == SOURCE_AI
 
@@ -124,7 +124,7 @@ def test_unusable_number_does_not_invent_one():
         target_chapters=300,
     )
 
-    assert proposal.climaxes_per_volume == FALLBACK_CLIMAXES_PER_VOLUME
+    assert proposal.climaxes_per_volume == 3
     # 网格是 AI 给的，但**卷内节奏**判不出来 ⇒ 兜底必须**明说**
     assert proposal.source == SOURCE_AI
     assert "代码兜底" in proposal.as_pacing_guide()
@@ -145,9 +145,24 @@ def test_fallback_guide_says_it_is_a_fallback():
 
 
 def test_fallback_marker_lives_in_the_source_not_only_in_a_test():
-    """兜底标记必须写在**实现**里（不然换个实现就悄悄冒充成 AI 的判断）。"""
+    """兜底标记必须写在**实现**里（不然换个实现就悄悄冒充成 AI 的判断）。
+
+    ⚠ 第 3 批复审 S9：这条原先**读整个实现文件**，
+    而「代码兜底」这个字符串**在注释里也有** ⇒ 把运行时的标记删掉、
+    只留注释，这条守卫照样绿 ⇒ 它钉的是「文件里有这四个字」，
+    不是「运行时会输出这四个字」。
+
+    ⇒ 现在**剥掉注释**再查 ⇒ 只剩注释里的会被判失败。
+    （上面的 ``as_pacing_guide()`` 那条才是**行为级**断言，两条互补。）
+    """
+    import re
+
     source = Path(structure_proposal_module.__file__).read_text(encoding="utf-8")
-    assert "代码兜底" in source, "实现里没有兜底标记 ⇒ 兜底会冒充成 AI 的判断"
+    without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    without_line = re.sub(r"//[^\n]*", "", without_block)
+    assert "代码兜底" in without_line, (
+        "实现的**代码**里没有兜底标记（只在注释里不算）⇒ 兜底会冒充成 AI 的判断"
+    )
 
 
 def test_ai_guide_does_not_claim_to_be_a_fallback():
@@ -336,3 +351,9 @@ def test_context_assembler_strip_handles_both_prefix_kinds():
 
     legacy_preset = "【世界观基调：冷硬】\n\n作者梗概正文"
     assert ContextAssembler._strip_internal_premise_prefix(legacy_preset) == "作者梗概正文"
+
+
+def test_the_pacing_limits_are_pinned_by_value():
+    """常量本身的值必须被钉住。"""
+    assert MAX_CLIMAXES_PER_VOLUME == 6
+    assert FALLBACK_CLIMAXES_PER_VOLUME == 3

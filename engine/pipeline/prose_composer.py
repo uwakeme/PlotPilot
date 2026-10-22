@@ -11,6 +11,7 @@ from application.ai_invocation.contracts.autopilot_writing import (
 from application.ai_invocation.dtos import InvocationSessionStatus
 from application.engine.services.prose_context_settings import (
     get_prose_context_runtime_settings,
+    prose_context_total_cap,
 )
 from infrastructure.ai.prompt_keys import CHAPTER_PROSE_GENERATION
 from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
@@ -80,8 +81,14 @@ class ChapterProseInvocationComposer:
         if settings.enabled:
             chapter_context = str(request.hard_facts or "").strip()
             if settings.max_chars_per_slot > 0 and len(chapter_context) > 0:
-                # 单块上限已在 builder 里切过；这里再兜一道总长上限（防槽位多时叠加）。
-                total_cap = settings.max_chars_per_slot * max(len(settings.slots), 1)
+                # 总长兜底：与 builder **同一个公式**（`prose_context_total_cap`）。
+                # ⚠ 此前 composer 用的是 `max_chars_per_slot × 槽位数`（6000），
+                #   而 builder 产出 6109（块标题 + 截断标记也算进去了）
+                #   ⇒ composer 每次都在第三块**中间**腰斩，把那块自己的
+                #   「（本块已按上限截断）」标记换成了总标记
+                #   ⇒ 模型看到的最后一块不再标着「2000 字上限」。
+                #   现在 builder 自己守住总上限 ⇒ 这条兜底**不会触发**。
+                total_cap = prose_context_total_cap(settings)
                 if len(chapter_context) > total_cap:
                     chapter_context = (
                         chapter_context[:total_cap].rstrip()
