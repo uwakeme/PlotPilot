@@ -34,6 +34,30 @@ from infrastructure.ai.prompt_keys import (
 logger = logging.getLogger(__name__)
 
 
+def _unassessed_result(
+    outputs: Dict[str, Any], error: str, duration_ms: int
+) -> NodeResult:
+    """未评估的统一出口（与 ``val_style`` / ``anti_ai_audit`` 同一套约定）。
+
+    NodeStatus 里没有 UNASSESSED 成员 ⇒ 用 ERROR（它是枚举中唯一表示
+    「没产出结论」的值）。
+
+    ⚠ X-03：**不能**回 SUCCESS + 0 / [] ——
+    那读起来像「查过了，没问题」，而实际是「根本没查成」。
+    本文件此前 5 个校验节点全是这么干的：依赖方法名/签名对不上 ⇒
+    必抛异常 ⇒ 被内层 ``except Exception`` 吞成一条 warning ⇒
+    节点恒 SUCCESS + 分数 0 ⇒ **每个校验节点都没真正跑过一次**。
+    """
+    payload = {key: None for key in outputs}
+    payload["state"] = AssessmentState.UNASSESSED
+    return NodeResult(
+        outputs=payload,
+        status=NodeStatus.ERROR,
+        duration_ms=duration_ms,
+        error=error,
+    )
+
+
 # ─── val_style: 文风警报器 ───
 
 
@@ -194,38 +218,48 @@ class TensionNode(BaseNode):
         start = time.time()
         content = inputs.get("content", "")
 
+        # ⚠ X-03：旧实现把异常吞成一条 warning、分数停在 0.0、节点恒 SUCCESS。
+        # 而 `TensionScoringService.score` **不存在**（真实方法是 score_chapter）、
+        # 且构造函数要 llm_service ⇒ 这一步**每次都失败** ⇒ 张力节点从未真正评过分。
+        # 现在：失败 ⇒ 显式「未评估」（分数为 None），不再谎报 0 分通过。
+        # ⚠ 正确装配（score_chapter + 真实 llm_service）见 ledger 的 X3 段。
+        plot_tension: Any = None
+        emotional_tension: Any = None
+        pacing_tension: Any = None
+        composite: Any = None
+        state = AssessmentState.UNASSESSED
+        error = ""
+
         try:
-            plot_tension = 0.0
-            emotional_tension = 0.0
-            pacing_tension = 0.0
-            composite = 0.0
-
-            try:
-                from application.analyst.services.tension_scoring_service import TensionScoringService
-                novel_id = context.get("novel_id", "")
-                svc = TensionScoringService()
-                result = await svc.score(novel_id, content)
-                if result:
-                    plot_tension = getattr(result, "plot_tension", 0.0)
-                    emotional_tension = getattr(result, "emotional_tension", 0.0)
-                    pacing_tension = getattr(result, "pacing_tension", 0.0)
-                    composite = getattr(result, "composite", 0.0)
-            except Exception as e:
-                logger.warning(f"TensionScoringService 调用失败: {e}")
-
-            return NodeResult(
-                outputs={
-                    "plot_tension": plot_tension,
-                    "emotional_tension": emotional_tension,
-                    "pacing_tension": pacing_tension,
-                    "composite": composite,
-                },
-                status=NodeStatus.SUCCESS,
-                metrics={"composite": composite},
-                duration_ms=int((time.time() - start) * 1000),
-            )
+            from application.analyst.services.tension_scoring_service import TensionScoringService
+            novel_id = context.get("novel_id", "")
+            svc = TensionScoringService()
+            result = await svc.score(novel_id, content)
+            if result:
+                plot_tension = getattr(result, "plot_tension", 0.0)
+                emotional_tension = getattr(result, "emotional_tension", 0.0)
+                pacing_tension = getattr(result, "pacing_tension", 0.0)
+                composite = getattr(result, "composite", 0.0)
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"composite": 0.0}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"TensionScoringService 调用失败: {e}"
+            logger.warning(error)
+
+        outputs = {
+            "plot_tension": plot_tension,
+            "emotional_tension": emotional_tension,
+            "pacing_tension": pacing_tension,
+            "composite": composite,
+        }
+        if state is AssessmentState.UNASSESSED:
+            return _unassessed_result(outputs, error, int((time.time() - start) * 1000))
+
+        return NodeResult(
+            outputs={**outputs, "state": state},
+            status=NodeStatus.SUCCESS,
+            metrics={"composite": composite},
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return "content" in inputs
@@ -265,31 +299,74 @@ class AntiAINode(BaseNode):
         import time
         start = time.time()
         content = inputs.get("content", "")
+        novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+        # chapter_id 在 AntiAIAuditor 里只是个**标签**（不进库），
+        # 这里没有真正的章节 id，用章号拼一个可读的即可。
+        chapter_label = str(inputs.get("chapter_number") or context.get("chapter_number") or "")
+
+        # 缺字段一律 None（「没判」），不回填 0 / [] ——
+        # 「0 分 + 空命中」读起来完全像「查过了，没问题」。
+        severity_score: Any = None
+        hits: Any = None
+        recommendations: Any = None
+        state = AssessmentState.UNASSESSED
+        error = ""
 
         try:
-            severity_score = 0.0
-            hits = []
-            recommendations = []
+            # ⚠ X-03：旧实现调的是 `ClicheScanner().scan(content)` ——
+            # **ClicheScanner 没有 scan 方法**（真实 API：scan_cliches /
+            # scan_by_category / get_critical_count / get_category_stats），
+            # 必抛 AttributeError → 被本层 except 吞成一条 warning →
+            # severity_score 停在 0.0、节点恒 SUCCESS ⇒
+            # Anti-AI 审计**从未响过一次**。
+            # ⇒ 改走已有的单一事实源 AntiAIAuditor（章后审计用的就是它），
+            # 不在这里另写一套评分口径（否则又是一份「同逻辑两份」）。
+            from application.audit.services.anti_ai_audit import AntiAIAuditor
 
-            try:
-                from application.audit.services.cliche_scanner import ClicheScanner
-                scanner = ClicheScanner()
-                result = scanner.scan(content)
-                if result:
-                    severity_score = getattr(result, "severity_score", 0.0)
-                    hits = getattr(result, "hits", [])
-                    recommendations = getattr(result, "recommendations", [])
-            except Exception as e:
-                logger.warning(f"ClicheScanner 调用失败: {e}")
-
-            return NodeResult(
-                outputs={"severity_score": severity_score, "hits": hits, "recommendations": recommendations},
-                status=NodeStatus.SUCCESS,
-                metrics={"severity_score": severity_score},
-                duration_ms=int((time.time() - start) * 1000),
+            report = AntiAIAuditor().scan_chapter(
+                chapter_id=chapter_label, content=content, novel_id=novel_id
             )
+            severity_score = float(report.metrics.severity_score)
+            hits = [
+                {
+                    "pattern": h.pattern,
+                    "text": h.text,
+                    "start": h.start,
+                    "end": h.end,
+                    "severity": h.severity,
+                    "category": h.category,
+                    "replacement_hint": h.replacement_hint,
+                }
+                for h in report.hits
+            ]
+            recommendations = list(report.recommendations)
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"severity_score": 0.0, "hits": [], "recommendations": []}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"AntiAIAuditor 调用失败: {e}"
+            logger.warning(error)
+
+        if state is AssessmentState.UNASSESSED:
+            return _unassessed_result(
+                {
+                    "severity_score": severity_score,
+                    "hits": hits,
+                    "recommendations": recommendations,
+                },
+                error,
+                int((time.time() - start) * 1000),
+            )
+
+        return NodeResult(
+            outputs={
+                "severity_score": severity_score,
+                "hits": hits,
+                "recommendations": recommendations,
+                "state": state,
+            },
+            status=NodeStatus.WARNING if severity_score > 50 else NodeStatus.SUCCESS,
+            metrics={"severity_score": severity_score},
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return "content" in inputs
@@ -330,33 +407,46 @@ class ForeshadowCheckNode(BaseNode):
         import time
         start = time.time()
 
+        # ⚠ X-03：旧实现把异常吞成 warning、计数停在 0、节点恒 SUCCESS。
+        # 而 `ForeshadowingRepository.find_by_novel` **不存在**
+        # （真实方法是 get_by_novel_id）⇒ 这一步**每次都失败**。
+        # 现在：失败 ⇒ 显式「未评估」，不再谎报「0 条待回收」。
+        recovered: Any = None
+        pending: Any = None
+        recovery_rate: Any = None
+        state = AssessmentState.UNASSESSED
+        error = ""
+
         try:
-            recovered = 0
-            pending = 0
-            recovery_rate = 0.0
-
-            try:
-                from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepository
-                from infrastructure.persistence.database.connection import get_database
-                db = get_database()
-                repo = ForeshadowingRepository(db)
-                novel_id = inputs.get("novel_id") or context.get("novel_id", "")
-                all_f = repo.find_by_novel(novel_id)
-                recovered = len([f for f in all_f if getattr(f, 'status', '') == 'recovered'])
-                pending = len([f for f in all_f if getattr(f, 'status', '') == 'pending'])
-                total = recovered + pending
-                recovery_rate = (recovered / total * 100) if total > 0 else 0.0
-            except Exception as e:
-                logger.warning(f"伏笔雷达调用失败: {e}")
-
-            return NodeResult(
-                outputs={"recovered": recovered, "pending": pending, "recovery_rate": recovery_rate},
-                status=NodeStatus.SUCCESS,
-                metrics={"recovery_rate": recovery_rate},
-                duration_ms=int((time.time() - start) * 1000),
-            )
+            from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepository
+            from infrastructure.persistence.database.connection import get_database
+            db = get_database()
+            repo = ForeshadowingRepository(db)
+            novel_id = inputs.get("novel_id") or context.get("novel_id", "")
+            all_f = repo.find_by_novel(novel_id)
+            recovered = len([f for f in all_f if getattr(f, 'status', '') == 'recovered'])
+            pending = len([f for f in all_f if getattr(f, 'status', '') == 'pending'])
+            total = recovered + pending
+            recovery_rate = (recovered / total * 100) if total > 0 else 0.0
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"recovered": 0, "pending": 0, "recovery_rate": 0.0}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"伏笔雷达调用失败: {e}"
+            logger.warning(error)
+
+        outputs = {
+            "recovered": recovered,
+            "pending": pending,
+            "recovery_rate": recovery_rate,
+        }
+        if state is AssessmentState.UNASSESSED:
+            return _unassessed_result(outputs, error, int((time.time() - start) * 1000))
+
+        return NodeResult(
+            outputs={**outputs, "state": state},
+            status=NodeStatus.SUCCESS,
+            metrics={"recovery_rate": recovery_rate},
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return True
@@ -398,32 +488,48 @@ class NarrativeNode(BaseNode):
         start = time.time()
         content = inputs.get("content", "")
 
+        # ⚠ X-03：旧实现把异常吞成 warning、输出停在空串/空列表、节点恒 SUCCESS。
+        # 而 `ChapterAftermathPipeline.run_narrative_sync` **不存在**
+        # （真实入口是 run_after_chapter_saved）、且构造函数要 knowledge_service +
+        # llm_service ⇒ 这一步**每次都失败**。
+        # 现在：失败 ⇒ 显式「未评估」，不再谎报「同步完成但没内容」。
+        # ⚠ 正确装配见 ledger 的 X3 段。
+        summary: Any = None
+        events: Any = None
+        triples: Any = None
+        causal_edges: Any = None
+        state = AssessmentState.UNASSESSED
+        error = ""
+
         try:
-            summary = ""
-            events = []
-            triples = []
-            causal_edges = []
-
-            try:
-                from application.engine.services.chapter_aftermath_pipeline import ChapterAftermathPipeline
-                novel_id = context.get("novel_id", "")
-                pipeline = ChapterAftermathPipeline()
-                result = await pipeline.run_narrative_sync(novel_id, content)
-                if result:
-                    summary = getattr(result, "summary", "")
-                    events = getattr(result, "events", [])
-                    triples = getattr(result, "triples", [])
-                    causal_edges = getattr(result, "causal_edges", [])
-            except Exception as e:
-                logger.warning(f"ChapterAftermathPipeline 调用失败: {e}")
-
-            return NodeResult(
-                outputs={"summary": summary, "events": events, "triples": triples, "causal_edges": causal_edges},
-                status=NodeStatus.SUCCESS,
-                duration_ms=int((time.time() - start) * 1000),
-            )
+            from application.engine.services.chapter_aftermath_pipeline import ChapterAftermathPipeline
+            novel_id = context.get("novel_id", "")
+            pipeline = ChapterAftermathPipeline()
+            result = await pipeline.run_narrative_sync(novel_id, content)
+            if result:
+                summary = getattr(result, "summary", "")
+                events = getattr(result, "events", [])
+                triples = getattr(result, "triples", [])
+                causal_edges = getattr(result, "causal_edges", [])
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"summary": "", "events": [], "triples": [], "causal_edges": []}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"ChapterAftermathPipeline 调用失败: {e}"
+            logger.warning(error)
+
+        outputs = {
+            "summary": summary,
+            "events": events,
+            "triples": triples,
+            "causal_edges": causal_edges,
+        }
+        if state is AssessmentState.UNASSESSED:
+            return _unassessed_result(outputs, error, int((time.time() - start) * 1000))
+
+        return NodeResult(
+            outputs={**outputs, "state": state},
+            status=NodeStatus.SUCCESS,
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return "content" in inputs
@@ -462,25 +568,37 @@ class KGInferNode(BaseNode):
         import time
         start = time.time()
 
+        # ⚠ X-03：旧实现把异常吞成 warning、三元组停在空列表、节点恒 SUCCESS。
+        # 而 `KnowledgeGraphService()` 的构造函数要**三个**仓储
+        # （triple_repo / chapter_element_repo / story_node_repo），
+        # 且 `infer_from_chapter` 只收**一个** chapter_id
+        # （节点传的是 novel_id + chapter_number 两个）⇒ 这一步**每次都失败**。
+        # 现在：失败 ⇒ 显式「未评估」，不再谎报「没有三元组」。
+        # ⚠ 正确装配（真实仓储 + chapter_id 口径）见 ledger 的 X3 段。
+        inferred_triples: Any = None
+        state = AssessmentState.UNASSESSED
+        error = ""
+
         try:
-            inferred_triples = []
-
-            try:
-                from application.world.services.knowledge_graph_service import KnowledgeGraphService
-                novel_id = inputs.get("novel_id") or context.get("novel_id", "")
-                chapter_number = inputs.get("chapter_number") or context.get("chapter_number", 0)
-                svc = KnowledgeGraphService()
-                inferred_triples = await svc.infer_from_chapter(novel_id, chapter_number)
-            except Exception as e:
-                logger.warning(f"KnowledgeGraphService 调用失败: {e}")
-
-            return NodeResult(
-                outputs={"inferred_triples": inferred_triples},
-                status=NodeStatus.SUCCESS,
-                duration_ms=int((time.time() - start) * 1000),
-            )
+            from application.world.services.knowledge_graph_service import KnowledgeGraphService
+            novel_id = inputs.get("novel_id") or context.get("novel_id", "")
+            chapter_number = inputs.get("chapter_number") or context.get("chapter_number", 0)
+            svc = KnowledgeGraphService()
+            inferred_triples = await svc.infer_from_chapter(novel_id, chapter_number)
+            state = AssessmentState.DECIDED
         except Exception as e:
-            return NodeResult(outputs={"inferred_triples": []}, status=NodeStatus.ERROR, duration_ms=int((time.time() - start) * 1000), error=str(e))
+            error = f"KnowledgeGraphService 调用失败: {e}"
+            logger.warning(error)
+
+        outputs = {"inferred_triples": inferred_triples}
+        if state is AssessmentState.UNASSESSED:
+            return _unassessed_result(outputs, error, int((time.time() - start) * 1000))
+
+        return NodeResult(
+            outputs={**outputs, "state": state},
+            status=NodeStatus.SUCCESS,
+            duration_ms=int((time.time() - start) * 1000),
+        )
 
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         return True
