@@ -76,9 +76,18 @@ export interface MacroDiagnosisResult {
   resolved: boolean
   resolved_at: string | null
   resolved_by: string | null
+  /** H-06 子项 B：注入决定（pending 待确认 / approved 批准 / rejected 否决） */
+  injection_decision?: MacroInjectionDecision
+  decided_at?: string | null
+  decided_by?: string | null
+  /** H-06 子项 B：校准文本本身（作者要先看见才谈得上批准） */
+  context_patch?: string
   error_message: string | null
   created_at: string
 }
+
+/** H-06 子项 B：注入决定。⚠ 与 `resolved`（已处理 ⇒ 停注入）方向相反 */
+export type MacroInjectionDecision = 'pending' | 'approved' | 'rejected'
 
 export const macroRefactorApi = {
   /** GET /api/v1/novels/{novel_id}/macro-refactor/breakpoints */
@@ -128,6 +137,32 @@ export const macroRefactorApi = {
     apiClient.post<{ success: boolean; message: string }>(
       `/novels/${novelId}/macro-refactor/diagnosis/${diagnosisId}/resolve`
     ) as unknown as Promise<{ success: boolean; message: string }>,
+
+  /**
+   * GET /api/v1/novels/{novel_id}/macro-refactor/diagnosis/pending
+   *
+   * H-06 子项 B：待确认的宏观诊断（作者在这里批准/否决注入）。
+   */
+  listPendingDiagnoses: (novelId: string) =>
+    apiClient.get<MacroDiagnosisResult[]>(
+      `/novels/${novelId}/macro-refactor/diagnosis/pending`
+    ) as unknown as Promise<MacroDiagnosisResult[]>,
+
+  /**
+   * POST /api/v1/novels/{novel_id}/macro-refactor/diagnosis/{diagnosis_id}/decision
+   *
+   * H-06 子项 B：批准（approved ⇒ 校准指令进生成上下文）或否决（rejected ⇒ 不注入）。
+   * ⚠ 与 `resolveDiagnosis` 语义不同 —— 那个是「已处理 ⇒ 停注入」。
+   */
+  decideDiagnosis: (
+    novelId: string,
+    diagnosisId: string,
+    decision: Exclude<MacroInjectionDecision, 'pending'>
+  ) =>
+    apiClient.post<{ success: boolean; decision: string; message: string }>(
+      `/novels/${novelId}/macro-refactor/diagnosis/${diagnosisId}/decision`,
+      { decision }
+    ) as unknown as Promise<{ success: boolean; decision: string; message: string }>,
 }
 
 // ── 实体叙事状态 ────────────────────────────────────────────

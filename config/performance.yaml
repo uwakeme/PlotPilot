@@ -132,6 +132,15 @@ rhythm_quota:
 chapter_plan_structure:
   enabled: false
 
+# ─── 宏观诊断注入（H-06 子项 B）───
+# 诊断产出的「系统叙事校准」要不要等作者批准才注入。
+# ⚠ enabled 默认**关闭** ⇒ 注入侧与改造前逐位一致（照旧静默注入）。
+#   打开后只有作者批准（approved）的诊断才会进生成上下文。
+macro_diagnosis_injection:
+  enabled: false
+  # 注入文本上限（字符）—— 登记表 H-06 的不变量「注入 token 上限」
+  max_chars: 600
+
 # ─── 数据库配置 ───
 database:
   connection_pool:

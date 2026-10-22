@@ -103,3 +103,16 @@ class ApplyMutationResponse:
     success: bool
     updated_event: Dict[str, Any]  # 更新后的事件
     applied_mutations: List[Dict[str, Any]]  # 已应用的 mutations
+
+
+
+@dataclass
+class InjectionDecisionRequest:
+    """「注入决定」请求（H-06 子项 B）。
+
+    ``decision`` 只有两个合法值：``approved``（批准 ⇒ 校准指令进生成上下文）
+    与 ``rejected``（否决 ⇒ 不注入）。其它值一律拒收。
+
+    ⚠ 与既有的 ``resolved``（已处理 ⇒ 停注入）**方向相反**，不可互相替代。
+    """
+    decision: str

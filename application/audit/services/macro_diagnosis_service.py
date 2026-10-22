@@ -459,7 +459,8 @@ class MacroDiagnosisService:
         sql = """
             SELECT id, novel_id, trigger_reason, trait, conflict_tags,
                    breakpoints, breakpoint_count, status, resolved, resolved_at, resolved_by,
-                   error_message, created_at
+                   injection_decision, decided_at, decided_by,
+                   context_patch, error_message, created_at
             FROM macro_diagnosis_results
             WHERE novel_id = ?
             ORDER BY created_at DESC
@@ -482,6 +483,12 @@ class MacroDiagnosisService:
             "resolved": bool(row["resolved"]),
             "resolved_at": row["resolved_at"],
             "resolved_by": row["resolved_by"],
+            # H-06 子项 B：注入决定（pending / approved / rejected）
+            "injection_decision": row["injection_decision"],
+            "decided_at": row["decided_at"],
+            "decided_by": row["decided_by"],
+            # 校准文本本身要露给作者（他得先看见才谈得上批准）
+            "context_patch": row["context_patch"] or "",
             "error_message": row["error_message"],
             "created_at": row["created_at"]
         }
@@ -503,7 +510,8 @@ class MacroDiagnosisService:
         sql = """
             SELECT id, novel_id, trigger_reason, trait, conflict_tags,
                    breakpoints, breakpoint_count, status, resolved, resolved_at, resolved_by,
-                   error_message, created_at
+                   injection_decision, decided_at, decided_by,
+                   context_patch, error_message, created_at
             FROM macro_diagnosis_results
             WHERE novel_id = ?
             ORDER BY created_at DESC
@@ -524,6 +532,12 @@ class MacroDiagnosisService:
                 "resolved": bool(row["resolved"]),
                 "resolved_at": row["resolved_at"],
                 "resolved_by": row["resolved_by"],
+                # H-06 子项 B：注入决定（pending / approved / rejected）
+                "injection_decision": row["injection_decision"],
+                "decided_at": row["decided_at"],
+                "decided_by": row["decided_by"],
+                # 校准文本本身要露给作者（他得先看见才谈得上批准）
+                "context_patch": row["context_patch"] or "",
                 "error_message": row["error_message"],
                 "created_at": row["created_at"]
             }
@@ -565,6 +579,98 @@ class MacroDiagnosisService:
             logger.error(f"[MacroDiagnosis] 标记已解决失败: {e}")
             return False
     
+    def record_injection_decision(
+        self,
+        novel_id: str,
+        diagnosis_id: str,
+        decision: str,
+        decided_by: str = "manual"
+    ) -> bool:
+        """记录一次「注入决定」（H-06 子项 B）。
+
+        合法决定只有两个：``approved``（批准 ⇒ 校准指令进生成上下文）与
+        ``rejected``（否决 ⇒ 不注入）。其它值一律**拒收**（不改库）。
+
+        ⚠ 与 ``mark_resolved`` 的方向**相反**，两者不可互相替代：
+        ``resolved=1`` = 「作者已处理完这条 ⇒ 停注入」；
+        ``approved`` = 「作者认可这条校准 ⇒ 注入」。
+        """
+        from application.audit.services.macro_diagnosis_injection import (
+            is_valid_decision,
+        )
+
+        if not is_valid_decision(decision):
+            logger.warning(
+                "[MacroDiagnosis] 非法注入决定被拒收: diagnosis_id=%s decision=%r",
+                diagnosis_id,
+                decision,
+            )
+            return False
+
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            sql = """
+                UPDATE macro_diagnosis_results
+                SET injection_decision = ?, decided_at = ?, decided_by = ?
+                WHERE id = ? AND novel_id = ?
+            """
+            self.db.execute(
+                sql,
+                (decision, now, decided_by, diagnosis_id, novel_id),
+            )
+            self.db.get_connection().commit()
+
+            logger.info(
+                "[MacroDiagnosis] 记录注入决定: diagnosis_id=%s decision=%s by=%s",
+                diagnosis_id,
+                decision,
+                decided_by,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"[MacroDiagnosis] 记录注入决定失败: {e}")
+            return False
+
+    def list_pending_decisions(self, novel_id: str) -> List[Dict[str, Any]]:
+        """列出**待确认**的诊断结果（注入决定 = pending 且未解决）。
+
+        这是「注入经提案确认」的用户入口：作者在这里看到诊断结论与
+        校准文本，然后批准或否决。
+        """
+        sql = """
+            SELECT id, novel_id, trigger_reason, trait, conflict_tags,
+                   breakpoints, breakpoint_count, status, resolved, resolved_at, resolved_by,
+                   injection_decision, decided_at, decided_by,
+                   context_patch, error_message, created_at
+            FROM macro_diagnosis_results
+            WHERE novel_id = ? AND status = 'completed' AND resolved = 0
+              AND injection_decision = 'pending'
+            ORDER BY created_at DESC
+        """
+        rows = self.db.fetch_all(sql, (novel_id,))
+        return [
+            {
+                "id": row["id"],
+                "novel_id": row["novel_id"],
+                "trigger_reason": row["trigger_reason"],
+                "trait": row["trait"],
+                "conflict_tags": json.loads(row["conflict_tags"]) if row["conflict_tags"] else [],
+                "breakpoints": json.loads(row["breakpoints"]) if row["breakpoints"] else [],
+                "breakpoint_count": row["breakpoint_count"],
+                "status": row["status"],
+                "resolved": bool(row["resolved"]),
+                "resolved_at": row["resolved_at"],
+                "resolved_by": row["resolved_by"],
+                "injection_decision": row["injection_decision"],
+                "decided_at": row["decided_at"],
+                "decided_by": row["decided_by"],
+                "context_patch": row["context_patch"] or "",
+                "error_message": row["error_message"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
     def get_latest_unresolved_result(self, novel_id: str) -> Optional[Dict[str, Any]]:
         """获取最新的未解决诊断结果
         

@@ -15,7 +15,9 @@ from application.audit.dtos.macro_refactor_dto import (
     RefactorProposalRequest,
     RefactorProposal,
     ApplyMutationRequest,
-    ApplyMutationResponse
+    ApplyMutationResponse,
+
+    InjectionDecisionRequest,
 )
 from interfaces.api.dependencies import (
     get_macro_refactor_scanner,
@@ -307,3 +309,60 @@ async def mark_diagnosis_resolved(
         logger.error(f"Error marking diagnosis as resolved: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+
+
+@router.get("/{novel_id}/macro-refactor/diagnosis/pending")
+async def list_pending_diagnoses(
+    novel_id: str,
+    diagnosis_service: MacroDiagnosisService = Depends(get_macro_diagnosis_service)
+) -> List[Dict[str, Any]]:
+    """
+    列出**待确认**的宏观诊断（H-06 子项 B）。
+
+    「注入经提案确认」的用户入口：作者在这里看到诊断结论与校准文本，
+    然后批准（approved）或否决（rejected）。
+    """
+    try:
+        return diagnosis_service.list_pending_decisions(novel_id)
+    except Exception as e:
+        logger.error(f"Error listing pending diagnoses for novel {novel_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{novel_id}/macro-refactor/diagnosis/{diagnosis_id}/decision")
+async def decide_diagnosis_injection(
+    novel_id: str,
+    diagnosis_id: str,
+    payload: InjectionDecisionRequest = Body(...),
+    diagnosis_service: MacroDiagnosisService = Depends(get_macro_diagnosis_service)
+) -> Dict[str, Any]:
+    """
+    批准 / 否决一条诊断的「叙事校准」注入（H-06 子项 B）。
+
+    - ``approved`` ⇒ 之后生成上下文会带上这条校准指令；
+    - ``rejected`` ⇒ 不注入。
+
+    ⚠ 与 ``/resolve`` 的语义**不同**（那个是「已处理 ⇒ 停注入」）。
+    """
+    try:
+        success = diagnosis_service.record_injection_decision(
+            novel_id=novel_id,
+            diagnosis_id=diagnosis_id,
+            decision=payload.decision,
+            decided_by="manual",
+        )
+        if success:
+            return {
+                "success": True,
+                "decision": payload.decision,
+                "message": "已记录注入决定",
+            }
+        return {
+            "success": False,
+            "decision": payload.decision,
+            "message": "决定被拒收：只接受 approved / rejected",
+        }
+    except Exception as e:
+        logger.error(f"Error recording injection decision: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")

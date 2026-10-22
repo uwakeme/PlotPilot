@@ -1845,43 +1845,65 @@ class ContextBudgetAllocator:
         novel_id: str,
         chapter_number: int,
     ) -> str:
-        """获取宏观诊断「系统叙事校准」补丁（静默注入 Context 头部，无前端交互）。
+        """获取宏观诊断「系统叙事校准」补丁。
+
+        ⚠ H-06 子项 B：注入经**提案确认** ——
+        开关打开时只注入「作者已批准」（``injection_decision='approved'``）的诊断；
+        开关关闭时与改造前**逐位一致**（照旧静默注入最新一条未解决的诊断）。
 
         仅只读查询 DB 中已写好的 context_patch；扫描/计算在后台任务中完成，不在 allocate 热路径重跑。
-        优先使用后台 Map-Reduce 扫描后写入的 context_patch；对用户透明。
         已解决的诊断结果（resolved=1）不再注入。
+        注入文本受 **token 上限**约束（登记表 H-06 的不变量）。
         """
         try:
             from infrastructure.persistence.database.connection import get_database
-            
+            from application.audit.services.macro_diagnosis_injection import (
+                injection_max_chars,
+                macro_diagnosis_injection_enabled,
+            )
+
             db = get_database()
-            
-            sql = """
-                SELECT context_patch, breakpoints, trait, created_at
-                FROM macro_diagnosis_results
-                WHERE novel_id = ? AND status = 'completed' AND resolved = 0
-                ORDER BY created_at DESC
-                LIMIT 1
-            """
+
+            if macro_diagnosis_injection_enabled():
+                sql = """
+                    SELECT context_patch, breakpoints, trait, created_at
+                    FROM macro_diagnosis_results
+                    WHERE novel_id = ? AND status = 'completed' AND resolved = 0
+                      AND injection_decision = 'approved'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """
+            else:
+                sql = """
+                    SELECT context_patch, breakpoints, trait, created_at
+                    FROM macro_diagnosis_results
+                    WHERE novel_id = ? AND status = 'completed' AND resolved = 0
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """
             row = db.fetch_one(sql, (novel_id,))
-            
+
             if not row:
                 return ""
-            
+
             cp = row.get("context_patch")
             if cp and str(cp).strip():
-                return str(cp).strip()
-            
+                text = str(cp).strip()
+                # 登记表 H-06 的不变量「注入 token 上限」
+                cap = injection_max_chars()
+                if cap > 0 and len(text) > cap:
+                    suffix = "\n（叙事校准注入已按上限截断）"
+                    text = text[: max(cap - len(suffix), 0)].rstrip() + suffix
+                return text
+
             # 兼容旧库仅有 breakpoints 无 context_patch 时：不注入长列表，避免暴露「诊断」口吻
             return ""
-            
+
         except Exception as e:
             logger.warning(f"获取宏观叙事校准补丁失败: {e}")
-        
+
         return ""
-    
-    # ==================== V7 全局收敛沙漏方法 ====================
-    
+
     def _estimate_total_chapters(self, novel_id: str) -> int:
         """估算目标总章节数
         

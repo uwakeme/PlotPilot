@@ -122,6 +122,11 @@
         </div>
       </div>
 
+      <!-- H-06 子项 B：宏观诊断的叙事校准注入经作者确认 -->
+      <div class="pp-section">
+        <MacroRefactorPanel :slug="slug" />
+      </div>
+
     </div>
 
     <!-- ── Footer ───────────────────────────────── -->
@@ -181,6 +186,7 @@ import { novelApi } from '@/api/novel'
 import { parseGenreWorldFromPremise } from '@/utils/premisePresets'
 import { formatApiError, getHttpStatus } from '@/utils/apiError'
 import StylePresetSelector from './StylePresetSelector.vue'
+import MacroRefactorPanel from './MacroRefactorPanel.vue'
 
 const props = withDefaults(
   defineProps<{ slug: string; reloadNonce?: number }>(),
