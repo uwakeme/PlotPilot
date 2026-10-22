@@ -90,6 +90,8 @@ PLANNING_FINALE_INTENT = "planning-finale-intent"
 PLANNING_CONTINUATION_STRATEGY = "planning-continuation-strategy"
 # J-01：目标章数 / 终局预算提案（AI 决定「再写多少章」，取代常量公式）
 PLANNING_TARGET_BUDGET_PROPOSAL = "planning-target-budget-proposal"
+# C-07：全书首幕的标题/描述/建议章数（AI 决定，取代代码写死的占位文案）
+PLANNING_FIRST_ACT = "planning-first-act"
 # H-06：宏观诊断的叙事校准指令（由 LLM 写，取代代码代写的三套模板句）
 PLANNING_MACRO_CALIBRATION = "planning-macro-calibration"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
@@ -196,6 +198,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     FORESHADOW_SELECTION, PLANNING_CONTEXT_WEIGHTS,
     PLANNING_CHAPTER_MODE, PLANNING_FINALE_INTENT,
     PLANNING_CONTINUATION_STRATEGY, PLANNING_TARGET_BUDGET_PROPOSAL,
+    PLANNING_FIRST_ACT,
     PLANNING_MACRO_CALIBRATION,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,

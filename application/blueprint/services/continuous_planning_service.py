@@ -2004,6 +2004,121 @@ class ContinuousPlanningService:
 
     # ==================== 辅助方法 ====================
 
+    async def create_first_act_auto(
+        self,
+        novel_id: str,
+        parent_volume_id: str,
+        fallback_chapter_count: int = 0,
+    ) -> Dict:
+        """生成并落库**全书第一幕**（C-07：标题 / 描述 / 建议章数由 AI 决定）。
+
+        改造前这三项**全部由代码写死**（「第一幕 · 开端」
+        「故事起始，建立世界观与主角目标」+ 公式章数）—— 创作判断被写成了常量。
+
+        三态与来源
+        ----------
+        - AI 给出 title + description ⇒ 用它，落库来源 ``AI_MACRO`` / ``CONFIRMED``；
+        - AI 不可用 / 说不出来 / 输出不合契约 ⇒ 落**代码兜底**文案，
+          且落库来源保持 ``DRAFT`` / ``MANUAL``
+          ——**不**把兜底文案标成「AI 规划好的」（那是落库后的假来源）。
+        """
+        from application.blueprint.services.first_act_planner import FirstActPlanner
+
+        novel = None
+        if self.novel_repository is not None:
+            try:
+                novel = self.novel_repository.get_by_id(NovelId(novel_id))
+            except Exception as exc:
+                logger.warning("读取小说信息失败，首幕生成将用兜底上下文 novel=%s: %s", novel_id, exc)
+
+        volume_title = ""
+        try:
+            volume = await self.story_node_repo.get_by_id(parent_volume_id)
+            volume_title = str(getattr(volume, "title", "") or "")
+        except Exception as exc:
+            logger.warning("读取首幕父卷失败 novel=%s: %s", novel_id, exc)
+
+        info = await FirstActPlanner(self.llm_service).propose(
+            novel_id=novel_id,
+            title=str(getattr(novel, "title", "") or ""),
+            genre=str(getattr(novel, "genre", "") or ""),
+            premise=str(getattr(novel, "premise", "") or ""),
+            volume_title=volume_title,
+            bible_digest=self._bible_digest(novel_id),
+            fallback_chapter_count=fallback_chapter_count,
+        )
+
+        if info is not None:
+            chapter_count = info.get("suggested_chapter_count")
+            if not isinstance(chapter_count, int) or chapter_count <= 0:
+                chapter_count = int(fallback_chapter_count or 0)
+            node = self._create_node_from_data(
+                novel_id,
+                parent_volume_id,
+                NodeType.ACT,
+                {
+                    "number": 1,
+                    "title": info["title"],
+                    "description": info["description"],
+                    "suggested_chapter_count": chapter_count,
+                    "metadata": {
+                        "first_act_source": "ai",
+                        "first_act_reason": str(info.get("reason") or ""),
+                    },
+                },
+                0,
+            )
+            source = "ai"
+        else:
+            # 代码兜底：**如实**标成「未真正规划」（DRAFT / MANUAL），
+            # 不用 AI_MACRO / CONFIRMED —— 否则库里会声称这是 AI 规划好的。
+            node = StoryNode(
+                id=f"act-{novel_id}-1",
+                novel_id=novel_id,
+                parent_id=parent_volume_id,
+                node_type=NodeType.ACT,
+                number=1,
+                title="第一幕 · 开端",
+                description="故事起始，建立世界观与主角目标",
+                order_index=0,
+                planning_status=PlanningStatus.DRAFT,
+                planning_source=PlanningSource.MANUAL,
+                suggested_chapter_count=int(fallback_chapter_count or 0),
+                metadata={"first_act_source": "fallback"},
+            )
+            source = "fallback"
+
+        await self.story_node_repo.save(node)
+        return {
+            "success": True,
+            "next_act": node.to_dict(),
+            "source": source,
+            "message": f"已创建第 {node.number} 幕（{source}），请为其规划章节",
+        }
+
+    def _bible_digest(self, novel_id: str) -> str:
+        """给首幕生成用的 Bible 摘要（角色 / 世界 / 地点的名字与一句话）。"""
+        context = self._get_bible_context(novel_id)
+        if not context:
+            return ""
+        parts: List[str] = []
+        for key, label in (
+            ("characters", "角色"),
+            ("world_settings", "世界设定"),
+            ("locations", "地点"),
+        ):
+            items = context.get(key) or []
+            if not items:
+                continue
+            names = [
+                f"{item.get('name')}"
+                for item in items
+                if isinstance(item, dict) and item.get("name")
+            ]
+            if names:
+                parts.append(f"{label}：" + "、".join(names[:12]))
+        return "\n".join(parts)
+
     def _get_bible_context(self, novel_id: str) -> Dict:
         """获取 Bible 上下文"""
         if not self.bible_service:

@@ -19,11 +19,21 @@
 两个字段都**无下游消费者**（前端不读；`StoryNode.is_planned()` 零调用方），
 所以这是纯粹的诚实化，零行为影响。
 
-## 尚未落地
+## 已落地（第 3 批 · C-07）
 
-登记表 C-07 的真正诉求是「**AI 定首幕**」—— 那需要给规划服务加一个
-「没有 current_act 也能建首幕」的入口（现在只有 `create_next_act_auto`，
-它靠 `current_act.number + 1` 推算幕号），属第 2 批 P1。
+登记表 C-07 的真正诉求是「**AI 定首幕**」—— 2026-10-21 已落地：
+
+- 守护进程的首幕写入点**搬到了规划服务** `create_first_act_auto`
+  （`application/blueprint/services/continuous_planning_service.py`），
+  标题 / 描述 / 建议章数改由 **AI** 决定；
+- AI 不可用 ⇒ 落**代码兜底**文案，落库来源**如实**保持 `DRAFT` / `MANUAL`
+  —— **不**把兜底文案标成「AI 规划好的」（那还是落库后的假来源）；
+- 守护进程自己**不再**构造幕节点。
+
+⇒ 下面「daemon 首幕不许标 AI 规划」那条守卫随之**迁到新的写入点**：
+守住的是**同一个不变式**（代码代写的内容不许声称是 AI 规划的），
+不是被删掉。三个新增守卫分别盯：守护进程不再自己建幕 /
+首幕分支真的调了服务 / 兜底分支的来源标注。
 """
 import ast
 import pathlib
@@ -73,19 +83,76 @@ def _kwarg(call, arg: str):
 # ======================================================================
 
 
-def test_daemon_first_act_is_not_labelled_as_ai_planned():
-    """守护进程建的首幕：代码写死的内容，不能标 AI_MACRO / CONFIRMED。"""
+def _storynode_calls_in_function(rel: str, func_name: str):
+    """找出某个函数体（含 async）内所有 `StoryNode(...)` 构造调用。"""
+    out = []
+    for node in ast.walk(_ast_of(rel)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    fn = sub.func
+                    name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+                    if name == "StoryNode":
+                        out.append(sub)
+    return out
+
+
+def _called_names(rel: str):
+    """该文件里所有**被调用**的名字（属性调用 + 名字调用）。"""
+    names = set()
+    for node in ast.walk(_ast_of(rel)):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+            if name:
+                names.add(name)
+    return names
+
+
+def test_daemon_does_not_construct_act_nodes_itself():
+    """守护进程不再自己建幕节点 —— 首幕交给服务（AI 决定）。
+
+    C-07 之前这里直接 `StoryNode(title="第一幕 · 开端", ...)`，
+    那是「代码代写创作内容」的源头。写入点已搬到规划服务 ⇒ 这里必须**空**。
+    """
     calls = _storynode_calls("engine/runtime/act_planning_delegate.py")
-    assert calls, "没找到 StoryNode 构造"
     for call in calls:
-        title = _kwarg(call, "title") or ""
-        if "第一幕" not in title:
-            continue
-        assert _kwarg(call, "planning_source") != "PlanningSource.AI_MACRO", (
-            f"首幕是代码写死的，却标成 AI_MACRO（L{call.lineno}）"
+        node_type = _kwarg(call, "node_type") or ""
+        assert node_type != "NodeType.ACT", (
+            f"守护进程又开始自己建幕节点了（L{call.lineno}）"
         )
-        assert _kwarg(call, "planning_status") != "PlanningStatus.CONFIRMED", (
-            f"首幕没人确认过，却标成 CONFIRMED（L{call.lineno}）"
+
+
+def test_daemon_first_act_branch_really_calls_the_service():
+    """首幕分支必须**真的调用**服务（AST 判调用，不判文本）。
+
+    ⚠ 不用源码 `contains` —— 文件里的说明注释会提到这个函数名，
+    文本匹配会**命中自己的注释** ⇒ 恒绿。
+    """
+    assert "create_first_act_auto" in _called_names(
+        "engine/runtime/act_planning_delegate.py"
+    ), "守护进程的首幕分支没有调用 create_first_act_auto"
+
+
+def test_code_written_first_act_fallback_is_not_labelled_as_ai_planned():
+    """代码写死的首幕兜底文案，**不能**标成 AI 规划。
+
+    C-07 之后写入点搬到了 `continuous_planning_service.create_first_act_auto`：
+    AI 分支走 `_create_node_from_data`（真 AI 内容 ⇒ 标 AI 来源）；
+    兜底分支直接 `StoryNode(...)`（代码代写 ⇒ 必须 DRAFT / MANUAL）。
+    这里盯的是**兜底分支**那个直接构造。
+    """
+    calls = _storynode_calls_in_function(
+        "application/blueprint/services/continuous_planning_service.py",
+        "create_first_act_auto",
+    )
+    assert calls, "首幕写入点里找不到兜底的 StoryNode 构造（守卫失效？）"
+    for call in calls:
+        assert _kwarg(call, "planning_source") == "PlanningSource.MANUAL", (
+            f"代码代写的首幕，来源必须是 MANUAL（L{call.lineno}）"
+        )
+        assert _kwarg(call, "planning_status") == "PlanningStatus.DRAFT", (
+            f"代码代写的首幕没人确认过，状态必须是 DRAFT（L{call.lineno}）"
         )
 
 

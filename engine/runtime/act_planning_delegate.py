@@ -7,7 +7,7 @@ from engine.runtime.protocols import DaemonHostProtocol
 from typing import Any, Dict, List, Mapping
 
 from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
-from domain.structure.story_node import StoryNode, NodeType, PlanningStatus, PlanningSource
+from domain.structure.story_node import StoryNode
 
 logger = logging.getLogger(__name__)
 
@@ -522,28 +522,20 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
                     )
                 else:
                     logger.info("[%s] 创建首幕", novel.novel_id)
-                    first_act = StoryNode(
-                        id=f"act-{novel_id}-1",
+                    # C-07：首幕的标题/描述/建议章数改由 **AI** 决定
+                    # （此前全部代码写死：「第一幕 · 开端」「故事起始，建立世界观与主角目标」）。
+                    # AI 不可用时落**代码兜底**文案，且落库来源如实保持 DRAFT / MANUAL
+                    # ——**不**把兜底文案标成「AI 规划好的」（那是落库后的假来源）。
+                    create_result = await host.planning_service.create_first_act_auto(
                         novel_id=novel_id,
-                        parent_id=parent_volume.id,
-                        node_type=NodeType.ACT,
-                        number=1,
-                        title="第一幕 · 开端",
-                        description="故事起始，建立世界观与主角目标",
-                        order_index=0,
-                        # 这条幕的标题/描述是**代码写死的**
-                        # （「第一幕 · 开端」「故事起始，建立世界观与主角目标」），
-                        # 却落库为 `AI_MACRO` 与 `CONFIRMED` ——
-                        # 数据库里声称「这是 AI 规划好的」。
-                        # 那是**落库后的假来源**，比没来源更坏。
-                        # 此处用领域模型自己的基线（未真正规划）。
-                        # 两个字段均无下游消费者（前端不读，
-                        # `StoryNode.is_planned()` 零调用方）⇒ 改它不影响行为。
-                        planning_status=PlanningStatus.DRAFT,
-                        planning_source=PlanningSource.MANUAL,
-                        suggested_chapter_count=rec_chapters_per_act,
+                        parent_volume_id=parent_volume.id,
+                        fallback_chapter_count=rec_chapters_per_act,
                     )
-                    await host.story_node_repo.save(first_act)
+                    logger.info(
+                        "[%s] 首幕已创建（来源：%s）",
+                        novel.novel_id,
+                        create_result.get("source", "fallback") if isinstance(create_result, Mapping) else "fallback",
+                    )
 
                 all_nodes = await host.story_node_repo.get_by_novel(novel_id)
                 act_nodes = sorted(

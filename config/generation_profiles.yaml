@@ -144,3 +144,12 @@ target_budget_proposal:
   temperature: 0.3
   timeout_seconds: 30
   retries: 0
+
+# C-07：全书首幕（标题/描述/章数）。这是**创作内容**，不是分类
+# ⇒ 温度略高，且超时不能太长（守护进程在等它）。
+planning_first_act:
+  extends: base_generation_profile
+  max_tokens: 2000
+  temperature: 0.6
+  timeout_seconds: 60
+  retries: 1
