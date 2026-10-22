@@ -1,0 +1,23 @@
+name: 宏观断点语义诊断
+category: audit
+source: application/audit/services/macro_breakpoint_classifier.py
+description: 由 AI 判断「哪些事件偏离了角色人设、属于哪一类」（取代代码的标签求交表与 scar/执念规则）
+builtin: true
+tags:
+- 宏观诊断
+- 人设
+- 一致性
+- 审阅
+- JSON输出
+output_format: json
+variables:
+- name: characters_json
+  desc: 角色清单（JSON 文本）：id / 人设标签 / 伤疤 / 执念 / 当前状态
+  type: string
+  required: true
+- name: events_json
+  desc: 候选事件清单（JSON 文本）：event_id / 章节 / 摘要 / 标签
+  type: string
+  required: true
+id: planning-macro-breakpoint
+sort_order: 116

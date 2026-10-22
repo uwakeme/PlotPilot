@@ -58,7 +58,9 @@ def _breakpoints_payload(trait: str, breakpoints: List[Any]) -> str:
                 "chapter": data.get("chapter"),
                 "事件摘要": summary,
                 "标签": list(data.get("tags") or []),
-                "规则分类": str(data.get("breakpoint_type") or ""),
+                # H-06 子项 A：分类可能来自 AI，也可能来自规则或未评估
+                "分类": str(data.get("breakpoint_type") or ""),
+                "分类来源": str(data.get("breakpoint_source") or ""),
                 "突破原因": str(data.get("breakout_reason") or ""),
                 "角色": str(data.get("character_id") or ""),
             }

@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
 
-from application.audit.dtos.macro_refactor_dto import LogicBreakpoint
+from domain.novel.value_objects.novel_id import NovelId
+from application.audit.dtos.macro_refactor_dto import (
+    SOURCE_AI,
+    LogicBreakpoint,
+)
+from application.audit.services.macro_breakpoint_schema import (
+    VERDICT_TO_BREAKPOINT_TYPE,
+)
 from application.audit.services.macro_refactor_scanner import MacroRefactorScanner
 from infrastructure.persistence.database.connection import DatabaseConnection
 
@@ -61,7 +68,10 @@ class MacroDiagnosisResult:
                     "event_id": bp.event_id,
                     "chapter": bp.chapter,
                     "reason": bp.reason,
-                    "tags": bp.tags
+                    "tags": bp.tags,
+                    # H-06：断点类型与**它的来源**（ai / rule / 未评估）
+                    "breakpoint_type": bp.breakpoint_type.value,
+                    "breakpoint_source": bp.breakpoint_source,
                 }
                 for bp in self.breakpoints
             ],
@@ -89,11 +99,16 @@ class MacroDiagnosisService:
         db: DatabaseConnection,
         scanner: MacroRefactorScanner,
         llm_service: Any = None,
+        bible_repository: Any = None,
     ):
         self.db = db
         self.scanner = scanner
         # H-06：叙事校准指令由 LLM 写（None ⇒ 不生成校准 ⇒ 不注入）。
         self.llm_service = llm_service
+        # H-06 子项 A：AI 语义诊断需要**本书角色**（人设描述）。
+        # 只有 character_states 是不够的 —— 那张表只有带伤疤/执念的角色才有行，
+        # 角色表为空 ⇒ 分类通道等于白做（X-03 的教训）。
+        self.bible_repository = bible_repository
     
     def run_full_diagnosis(
         self,
@@ -118,12 +133,22 @@ class MacroDiagnosisService:
         traits: Optional[List[str]] = None,
         total_words_at_run: int = 0,
     ) -> MacroDiagnosisResult:
-        """扫描 → AI 写叙事校准指令 → 落库（生产路径，H-06）。
+        """扫描 → AI 语义分类 → AI 写叙事校准指令 → 落库（生产路径，H-06）。
+
+        断点分类由 **AI** 给（``macro_breakpoint_classifier``）：
+
+        - AI 判过了 ⇒ 断点类型用 AI 的判定（真崩塌 / 人物突破 / 应激反应）；
+          AI 说「不偏离」或「判不出来」的事件**不是**断点；
+        - AI 不可用 ⇒ 回落**代码规则判定**（改造前的行为），
+          且来源可分辨（``breakpoint_source``）；
+        - 规则**判不出**的（缺仓储 / 提不出角色 / 没找到触发原因）
+          一律落 ``UNASSESSED`` —— 「判不出」不说成「崩塌」。
 
         校准指令**只**来自 LLM：没给 / 调用失败 / 输出不合契约 ⇒ 落空
         ⇒ 生成上下文不注入任何东西。**代码不代写校准句。**
         """
         result = self._scan_full(novel_id, trigger_reason, traits)
+        await self._classify_breakpoints_with_ai(result, novel_id)
         calibration = ""
         if result.breakpoints:
             from application.audit.services.macro_calibration import (
@@ -140,6 +165,161 @@ class MacroDiagnosisService:
         )
         return result
 
+    async def _classify_breakpoints_with_ai(
+        self, result: MacroDiagnosisResult, novel_id: str
+    ) -> None:
+        """用 AI 的语义判定**覆盖**断点分类（就地改写 ``result.breakpoints``）。
+
+        AI 不可用 / 输出不合契约 ⇒ 什么都不做 ⇒ 沿用规则判定（来源可分辨）。
+        """
+        if self.llm_service is None:
+            return
+        try:
+            characters = self._character_profiles_for_ai(novel_id)
+            events = self.scanner.list_candidate_events(novel_id)
+        except Exception as exc:
+            logger.warning("准备宏观断点分类输入失败，沿用规则判定: %s", exc)
+            return
+        if not events:
+            return
+        if not characters:
+            # H-06 子项 A：没有角色档案 ⇒ 这个判断做不了
+            # （问题本身就是「是不是偏离了**角色的人设**」），
+            # 而且角色白名单为空会让 AI 的归属信息**静默**丢失
+            # ⇒ 判为未评估，回落规则判定（来源可分辨）。
+            logger.info(
+                "宏观断点分类未评估：没有角色档案，沿用规则判定"
+            )
+            return
+
+        from application.audit.services.macro_breakpoint_classifier import (
+            MacroBreakpointClassifier,
+        )
+
+        classification = await MacroBreakpointClassifier(
+            self.llm_service
+        ).classify(characters=characters, events=events)
+        if not classification.is_usable:
+            logger.info(
+                "宏观断点分类未评估（来源：%s），沿用规则判定",
+                classification.source or "unassessed",
+            )
+            return
+        self._apply_ai_classification(result, classification, events)
+
+    def _character_profiles_for_ai(self, novel_id: str) -> List[Dict]:
+        """角色档案 = Bible 角色（人设）+ 人物状态（伤疤 / 执念 / 当前状态）。
+
+        缺 Bible 仓储时**只**给人物状态（可能为空）⇒ AI 看不到角色，
+        这时要如实反映：分类通道拿不到角色就让 AI 判不了（⇒ 未评估），
+        而不是拿空角色表去凑一个「看起来判过了」的结论。
+        """
+        profiles: Dict[str, Dict[str, Any]] = {}
+
+        if self.bible_repository is not None:
+            try:
+                bible = self.bible_repository.get_by_novel_id(NovelId(novel_id))
+            except Exception as exc:
+                logger.warning("读取 Bible 失败，AI 诊断将缺少角色人设: %s", exc)
+                bible = None
+            for char in (getattr(bible, "characters", None) or []):
+                raw_id = getattr(char, "character_id", None)
+                cid = str(getattr(raw_id, "value", raw_id) or "")
+                if not cid:
+                    continue
+                profiles[cid] = {
+                    "character_id": cid,
+                    "name": str(getattr(char, "name", "") or ""),
+                    "personality": str(getattr(char, "personality", "") or ""),
+                    "description": str(getattr(char, "description", "") or ""),
+                    "core_belief": str(getattr(char, "core_belief", "") or ""),
+                    "traits": [],
+                    "scars": [],
+                    "motivations": [],
+                    "state_summary": "",
+                }
+
+        for state_profile in self.scanner.list_character_profiles(novel_id):
+            cid = state_profile["character_id"]
+            target = profiles.setdefault(
+                cid,
+                {
+                    "character_id": cid,
+                    "name": "",
+                    "personality": "",
+                    "description": "",
+                    "core_belief": "",
+                    "traits": [],
+                    "scars": [],
+                    "motivations": [],
+                    "state_summary": "",
+                },
+            )
+            target["traits"] = state_profile["traits"]
+            target["scars"] = state_profile["scars"]
+            target["motivations"] = state_profile["motivations"]
+            target["state_summary"] = state_profile["state_summary"]
+
+        return list(profiles.values())
+
+    @staticmethod
+    def _apply_ai_classification(
+        result: MacroDiagnosisResult,
+        classification,
+        events: List[Dict],
+    ) -> None:
+        """把 AI 的判定写进断点。
+
+        合并规则：
+
+        1. AI **判过**的事件 ⇒ 以 AI 为准（判成偏离就改类型；
+           判成「不偏离 / 判不出来」就**不是**断点，丢掉）；
+        2. AI **没看到**的事件（候选窗口之外）⇒ 保留规则判定；
+        3. AI 判出来、规则没找到的偏离 ⇒ 补一条新断点。
+        """
+        judged = classification.verdicts
+        by_event = {bp.event_id: bp for bp in result.breakpoints}
+        events_by_id = {str(e.get("event_id") or ""): e for e in events}
+        merged: List[LogicBreakpoint] = []
+
+        for bp in result.breakpoints:
+            verdict = judged.get(bp.event_id)
+            if verdict is None:
+                # AI 没看到这条（候选窗口之外）⇒ 保留规则判定
+                merged.append(bp)
+                continue
+            if not verdict.is_deviation:
+                # AI 判过了，且说不是偏离 ⇒ 不是断点
+                continue
+            bp.breakpoint_type = VERDICT_TO_BREAKPOINT_TYPE[verdict.verdict]
+            bp.breakpoint_source = SOURCE_AI
+            merged.append(bp)
+
+        for event_id, verdict in judged.items():
+            if not verdict.is_deviation or event_id in by_event:
+                continue
+            event = events_by_id.get(event_id) or {}
+            merged.append(
+                LogicBreakpoint(
+                    event_id=event_id,
+                    chapter=int(event.get("chapter") or 0),
+                    reason=verdict.reason,
+                    tags=list(event.get("tags") or []),
+                    breakpoint_type=VERDICT_TO_BREAKPOINT_TYPE[verdict.verdict],
+                    breakout_reason=verdict.reason,
+                    character_id=verdict.character_id or None,
+                    event_summary=str(event.get("summary") or ""),
+                    breakpoint_source=SOURCE_AI,
+                )
+            )
+
+        result.breakpoints = merged
+        logger.info(
+            "宏观断点已由 AI 分类：判定 %s 条，保留断点 %s 条",
+            len(judged),
+            len(merged),
+        )
+
     def _scan_full(
         self,
         novel_id: str,
@@ -153,13 +333,23 @@ class MacroDiagnosisService:
 
         try:
             # 对每个人设标签执行扫描
+            # H-06 子项 A：同一条事件可能同时撞上**多个人设标签**
+            # （「行为:鲁莽」既在「冷酷」表里也在「谨慎」表里；
+            #  「情绪:激动」同时在「冷酷」「理性」「温和」三张表里）
+            # ⇒ 旧实现会把同一事件重复报 2~3 次，breakpoint_count 虚高，
+            # 而且 AI 的逐事件判定对不上。断点是**按事件**的 ⇒ 只留第一条。
+            seen_event_ids: set = set()
             for trait in scan_traits:
                 breakpoints = self.scanner.scan_breakpoints(
                     novel_id=novel_id,
                     trait=trait,
                     conflict_tags=None  # 使用内置规则
                 )
-                all_breakpoints.extend(breakpoints)
+                for bp in breakpoints:
+                    if bp.event_id in seen_event_ids:
+                        continue
+                    seen_event_ids.add(bp.event_id)
+                    all_breakpoints.append(bp)
 
             # 创建结果对象
             result = MacroDiagnosisResult(

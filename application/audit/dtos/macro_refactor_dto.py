@@ -3,6 +3,14 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from domain.novel.value_objects.character_state import BreakpointType
 
+#: 断点分类的来源标记（H-06）
+#: - ``ai``：AI 判的（macro_breakpoint_classifier）
+#: - ``rule``：代码规则判的（命中伤疤 / 执念）
+#: - ``""``：**未评估** —— 谁都没判出来（规则判不出，AI 也没答）
+SOURCE_AI = "ai"
+SOURCE_RULE = "rule"
+SOURCE_NONE = ""
+
 
 @dataclass
 class LogicBreakpoint:
@@ -35,6 +43,11 @@ class LogicBreakpoint:
     # 默认空串 ⇒ 旧库里的 breakpoints JSON 仍可读。
     event_summary: str = ""
 
+    # H-06：这条断点的**分类是谁给的**（SOURCE_AI / SOURCE_RULE / SOURCE_NONE）。
+    # 默认「未评估」：调用方必须显式写明来源，
+    # 不许让「谁都没判」看起来像有结论。
+    breakpoint_source: str = SOURCE_NONE
+
     def to_dict(self) -> dict:
         """序列化为字典"""
         return {
@@ -47,6 +60,7 @@ class LogicBreakpoint:
             "breakout_reason": self.breakout_reason,
             "character_id": self.character_id,
             "event_summary": self.event_summary,
+            "breakpoint_source": self.breakpoint_source,
         }
 
 

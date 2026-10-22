@@ -253,10 +253,20 @@ class BreakpointType(str, Enum):
     - OOC: 真正的人设崩塌（无合理原因的偏离）
     - BREAKOUT: 人物突破/高光时刻（有触发原因的偏离，不应阻断）
     - SCAR_TRIGGERED: 伤疤触发后的应激反应（应延续情绪而非阻断）
+
+    H-06：新增 UNASSESSED —— **「判不出」不等于「判成崩塌」**。
+    此前扫描器在「没有人物状态仓储 / 提不出角色 / 没有角色状态 /
+    没找到任何触发原因」这四种**信息不足**的情形下一律落 OOC
+    ⇒ 数据库里写着「人设崩塌」，而代码其实什么都没判断出来。
+    「模型说没有」与「没评估」必须可分辨（登记表三态红线），
+    所以这四种情形改落 UNASSESSED —— 交给 AI 去判（见
+    ``application/audit/services/macro_breakpoint_classifier.py``）。
     """
     OOC = "ooc"
     CHARACTER_BREAKOUT = "breakout"
     SCAR_TRIGGERED = "scar_triggered"
+    #: **未评估**：信息不足，代码下不了结论（≠ 崩塌）
+    UNASSESSED = "unassessed"
 
 
 @dataclass
@@ -340,8 +350,9 @@ class CharacterState:
         if high_intensity_motivations:
             return BreakpointType.CHARACTER_BREAKOUT
 
-        # 3. 无合理原因的偏离
-        return BreakpointType.OOC
+        # 3. H-06：scars / 执念都没命中 ⇒ **代码判不出**有没有正当理由
+        #    ⇒ 落「未评估」，不落 OOC（「没证据」不是「崩塌」）。
+        return BreakpointType.UNASSESSED
 
     def to_dict(self) -> dict:
         return {

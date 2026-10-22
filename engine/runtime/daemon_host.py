@@ -1724,6 +1724,7 @@ class DaemonHostMixin:
             from infrastructure.persistence.database.connection import get_database
             from infrastructure.persistence.database.sqlite_narrative_event_repository import SqliteNarrativeEventRepository
             from infrastructure.persistence.database.sqlite_character_state_repository import SqliteCharacterStateRepository
+            from infrastructure.persistence.database.sqlite_bible_repository import SqliteBibleRepository
             from application.audit.services.macro_refactor_scanner import MacroRefactorScanner
             from application.audit.services.macro_diagnosis_service import MacroDiagnosisService
             
@@ -1738,8 +1739,13 @@ class DaemonHostMixin:
                 narrative_event_repo,
                 character_state_repository=character_state_repo,
             )
+            # H-06 子项 A：AI 语义诊断需要本书角色的人设（只有 character_states 不够 ——
+            # 那张表只有带伤疤/执念的角色才有行，角色表为空 ⇒ 分类通道等于白做）。
             diagnosis_service = MacroDiagnosisService(
-                db, scanner, llm_service=self.llm_service
+                db,
+                scanner,
+                llm_service=self.llm_service,
+                bible_repository=SqliteBibleRepository(db),
             )
             
             result = await diagnosis_service.run_full_diagnosis_with_calibration(

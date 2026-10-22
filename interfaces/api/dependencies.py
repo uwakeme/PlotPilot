@@ -1138,7 +1138,13 @@ def get_macro_diagnosis_service():
         narrative_event_repo,
         character_state_repository=SqliteCharacterStateRepository(db),
     )
-    return MacroDiagnosisService(db, scanner, llm_service=get_llm_service())
+    # H-06 子项 A：AI 语义诊断需要本书角色的人设（只有 character_states 不够）
+    return MacroDiagnosisService(
+        db,
+        scanner,
+        llm_service=get_llm_service(),
+        bible_repository=get_bible_repository(),
+    )
 
 
 def get_tension_analyzer():
