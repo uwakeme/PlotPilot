@@ -1374,7 +1374,16 @@ class BaseStoryPipeline(ABC):
 
         if ctx.voice_drift_service is not None:
             try:
-                if getattr(ctx.voice_drift_service, "use_llm_mode", False):
+                # X-02：声音分析的 LLM 模式也在总闸管辖内
+                # （总闸关闭 ⇒ 回到统计口径 = 改造前行为）。
+                from application.engine.services.ai_participation_settings import (
+                    ai_participation_enabled,
+                )
+
+                if (
+                    getattr(ctx.voice_drift_service, "use_llm_mode", False)
+                    and ai_participation_enabled("voice_llm_mode")
+                ):
                     vr = await ctx.voice_drift_service.score_chapter_async(
                         novel_id=ctx.novel_id,
                         chapter_number=ctx.chapter_number,
@@ -1757,6 +1766,15 @@ class BaseStoryPipeline(ABC):
             ContinuationStrategy,
             SOURCE_NONE,
         )
+
+        # X-02：总闸关闭 ⇒ 不发起续写策略判定（回到 D-08 之前的行为：
+        # 不注入底稿，按全新生成处理）。
+        from application.engine.services.ai_participation_settings import (
+            ai_participation_enabled,
+        )
+
+        if not ai_participation_enabled("continuation_strategy"):
+            return ContinuationStrategy(None, "", "", SOURCE_NONE)
 
         if ctx.llm_service is None:
             return ContinuationStrategy(None, "", "", SOURCE_NONE)

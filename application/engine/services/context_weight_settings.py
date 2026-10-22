@@ -32,10 +32,16 @@ class ContextWeightRuntimeSettings:
 def get_context_weight_runtime_settings() -> ContextWeightRuntimeSettings:
     section = getattr(get_config(), "context_weights", None)
     defaults = ContextWeightRuntimeSettings()
+    # X-02：总闸优先于逐条开关（总闸关闭 ⇒ 一律不发起规划调用）。
+    from application.engine.services.ai_participation_settings import (
+        ai_participation_enabled,
+    )
+
     return ContextWeightRuntimeSettings(
         enabled=bool(
             section_value(section, "enabled", defaults.enabled)
-        ),
+        )
+        and ai_participation_enabled("context_weights"),
         shadow=bool(
             section_value(section, "shadow", defaults.shadow)
         ),

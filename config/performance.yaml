@@ -237,6 +237,23 @@ daemon:
 # ─── AI 参与度开关（默认全部关闭 = 行为与改造前逐位一致）────────────────────
 # 打开顺序建议：先只开一个、观察 shadow 日志，再关 shadow 真正施加。
 
+# X-02：AI 参与能力的**总闸**（模型异常 / 成本失控时的回退路径）。
+#
+# 此前只有少数几项 AI 参与能力各自带开关（chapter_mode / chapter_target /
+# context_weights / 声音分析的 LLM 模式），上一批新增的 AI 调用点一个开关都没有
+# ⇒ 出问题只能回滚代码。
+#
+# ⚠ 默认 master_enabled: true —— **默认行为与今天逐位一致**（总闸不是新功能，
+# 是回退路径）。置 false ⇒ 登记在册的 AI 参与能力全部回到改造前行为
+# （不发起模型调用），逐条开关也被强制关闭。
+# disabled_features 可逐条点名（总闸开着时也能单独关某一项）。
+#
+# 登记在册的能力见 application/engine/services/ai_participation_settings.py
+# 的 AI_PARTICIPATION_FEATURES（新增能力必须登记，否则总闸管不到）。
+ai_participation:
+  master_enabled: true
+  disabled_features: []
+
 # D-02：上下文槽位权重。由 AI 判断本章最需要哪几类记忆并给出权重(0-1)，
 # 代码在 tier 预算内换算成 token。**只开 enabled 不会生效** ——
 # shadow 默认 true，权重只记录不施加。两条都要改才对。

@@ -26,8 +26,14 @@ class ChapterModeRuntimeSettings:
 def get_chapter_mode_runtime_settings() -> ChapterModeRuntimeSettings:
     section = getattr(get_config(), "chapter_mode", None)
     defaults = ChapterModeRuntimeSettings()
+    # X-02：总闸优先于逐条开关（总闸关闭 ⇒ 一律不发起调用）。
+    from application.engine.services.ai_participation_settings import (
+        ai_participation_enabled,
+    )
+
     return ChapterModeRuntimeSettings(
-        enabled=bool(section_value(section, "enabled", defaults.enabled)),
+        enabled=bool(section_value(section, "enabled", defaults.enabled))
+        and ai_participation_enabled("chapter_mode"),
         apply=bool(section_value(section, "apply", defaults.apply)),
     )
 

@@ -30,8 +30,14 @@ class ChapterTargetRuntimeSettings:
 def get_chapter_target_runtime_settings() -> ChapterTargetRuntimeSettings:
     section = getattr(get_config(), "chapter_target", None)
     defaults = ChapterTargetRuntimeSettings()
+    # X-02：总闸优先于逐条开关（总闸关闭 ⇒ 一律不发起调用）。
+    from application.engine.services.ai_participation_settings import (
+        ai_participation_enabled,
+    )
+
     return ChapterTargetRuntimeSettings(
-        enabled=bool(section_value(section, "enabled", defaults.enabled)),
+        enabled=bool(section_value(section, "enabled", defaults.enabled))
+        and ai_participation_enabled("chapter_target"),
         max_deviation_ratio=non_negative_float(
             section_value(
                 section, "max_deviation_ratio", defaults.max_deviation_ratio
