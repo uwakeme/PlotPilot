@@ -158,14 +158,17 @@ class ContextAssembler:
 
     @staticmethod
     def _strip_internal_premise_prefix(premise: str) -> str:
-        """去掉 create_novel 写入的系统内部体量前缀，保留作者梗概正文。"""
-        if not premise:
-            return ""
-        if "【系统内部·叙事结构规划" in premise:
-            idx = premise.find("\n\n")
-            if idx != -1:
-                premise = premise[idx + 2 :].strip()
-        return premise.strip()
+        """去掉 create_novel 写入的系统内部体量前缀，保留作者梗概正文。
+
+        A-07：本方法原先是**手写的第二份** strip 逻辑（只认
+        「【系统内部·叙事结构规划」，漏了「【类型：…】/「世界观基调：…】」）
+        ⇒ 与 ``application/core/v1_length_tiers.py`` 的
+        ``strip_generated_premise_prefixes`` 行为不一致。
+        ⇒ 现在**统一走共享实现**（同一逻辑只写一份）。
+        """
+        from application.core.v1_length_tiers import strip_generated_premise_prefixes
+
+        return strip_generated_premise_prefixes(premise)
 
     def build_scars_and_motivations(self, novel_id: str) -> str:
         """构建 T0: 角色伤疤与执念

@@ -29,6 +29,16 @@ from application.blueprint.services.subline_contract import (  # noqa: E402
 
 DEFAULT_TARGET_CHAPTERS = 100
 
+#: 主线候选的**数量**由 AI 定（登记表 A-03）。
+#:
+#: 改造前是「恰好 3 条」（prompt 写死 + 代码 ``normalized[:3]`` 静默截断）。
+#: 现在：代码只保留下限与上限，中间交给 AI。
+#:
+#: - 下限：少于 3 条就没有「让作者挑」的意义 ⇒ 判合同不满足；
+#: - 上限：防止模型一口气给 20 条把选择面板撑爆（纯工程护栏，不是创作判断）。
+MIN_MAIN_PLOT_OPTIONS = 3
+MAX_MAIN_PLOT_OPTIONS = 6
+
 
 def _ctx_target_chapters(ctx: Any) -> int:
     """从 ctx 取目标章数。
@@ -82,11 +92,40 @@ def normalize_main_plot_options_data(raw_data: Any, ctx: Dict[str, Any]) -> List
         raw_list, target_chapters=_ctx_target_chapters(ctx)
     )
     normalized = SetupMainPlotSuggestionService._complete_option_architecture(ctx, normalized)
-    if len(normalized) >= 3:
-        return normalized[:3]
-    raise MainPlotSuggestionContractError("主线候选数量不足：需要至少 3 条有效方案")
-
-
+    # A-03：候选**数量**由 AI 定（改造前被硬编码成「恰好 3 条」）。
+    #
+    # 代码保留的不变量（登记表 A-03）：**候选数下限** —— 少于 MIN 条
+    # 就没有「让作者挑」的意义，仍判合同不满足。
+    #
+    # ⚠ 改造前这里是 ``normalized[:3]`` —— 模型给 4~5 条时，
+    #   多出来的**被静默丢弃**（无告警、无来源标记）。
+    #   ⇒ 现在：超过上限的部分**记下来**（``options_truncated``），
+    #     不装作没发生过。
+    #
+    # ⚠ 丢弃数必须在**截断之前**算 —— 否则差值会变成负数
+    #   （这是第一版实现里的真 bug，被变异验证逼出来了）。
+    if len(normalized) < MIN_MAIN_PLOT_OPTIONS:
+        raise MainPlotSuggestionContractError(
+            f"主线候选数量不足：需要至少 {MIN_MAIN_PLOT_OPTIONS} 条有效方案，"
+            f"实得 {len(normalized)} 条"
+        )
+    truncated = 0
+    # ⚠ 比较与截断**必须用同一个上限** —— 否则丢弃数会算成负数
+    #   （第一版实现踩过：比较用 3、截断用 6 ⇒ 4 条 ⇒ 丢弃数 = 4 - 6 = -2）。
+    cap = MAX_MAIN_PLOT_OPTIONS
+    if len(normalized) > cap:
+        truncated = len(normalized) - cap
+        logger.warning(
+            "主线候选超出上限：模型给 %s 条，按上限保留 %s 条（其余 %s 条被丢弃）",
+            len(normalized),
+            cap,
+            truncated,
+        )
+        normalized = normalized[:cap]
+    if truncated:
+        for item in normalized:
+            item["options_truncated"] = truncated
+    return normalized
 class SetupMainPlotSuggestionService:
     def __init__(
         self,
@@ -121,7 +160,11 @@ class SetupMainPlotSuggestionService:
         target_chapters: int,
     ) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
-        for i, item in enumerate(raw_list[:5]):
+        # A-03：改造前是 ``raw_list[:5]`` —— 模型给 6 条以上会被**静默截断**
+        # （多出来的候选直接消失，用户与数据都看不出来）。
+        # ⇒ 现在按模型给的**全量**处理（数量上限由下游的 MIN/MAX 决定），
+        #   截断信息由调用方如实记下（``options_truncated``）。
+        for i, item in enumerate(raw_list):
             if not isinstance(item, dict):
                 continue
             raw_sublines = item.get("sublines") or item.get("supporting_storylines") or []
@@ -172,18 +215,34 @@ class SetupMainPlotSuggestionService:
             for x in (axis.get("taboos") or [])
             if str(x).strip()
         ]
+        # A-03：原型类型**不再**按下标硬映射。
+        #
+        # 改造前：``mode = "survival" if idx == 0 else "conspiracy" if idx == 1 else "anomaly"``
+        # ⇒ 候选的第 1/2/3 条永远被贴成「生存求证线 / 黑箱揭露线 / 规则变数线」，
+        #   哪怕模型给的 ``type`` 完全不是这三类。
+        #
+        # 现在：优先用模型自报的 ``type``（`_normalize_options` 已保留）；
+        # 模型没给才按位置兜底。
         mode_titles = {
             "survival": "生存求证线",
             "conspiracy": "黑箱揭露线",
             "anomaly": "规则变数线",
         }
+        positional_modes = ("survival", "conspiracy", "anomaly")
         completed: List[Dict[str, Any]] = []
         for idx, item in enumerate(options):
-            mode = "survival" if idx == 0 else "conspiracy" if idx == 1 else "anomaly"
+            declared_type = str(item.get("type") or "").strip()
+            if declared_type:
+                mode = declared_type
+            else:
+                mode = positional_modes[idx] if idx < len(positional_modes) else ""
+            # A-03：兜底文案里出现的原型名，**必须**是这条候选自己的 type
+            #（模型没给才用位置兜底，且那三个名字是中性的兜底标签）。
+            mode_label = mode_titles.get(mode, mode)
             if not item.get("main_axis"):
                 if core_promise or central_conflict:
                     parts = [
-                        f"{mode_titles[mode]}必须服务融合题材主轴锁。",
+                        f"（{mode_label or '本条主线'}）必须服务融合题材主轴锁。",
                     ]
                     if core_promise:
                         parts.append(f"核心承诺：{core_promise}")
@@ -192,7 +251,8 @@ class SetupMainPlotSuggestionService:
                     item["main_axis"] = " ".join(parts)
                 else:
                     item["main_axis"] = (
-                        f"第一主线围绕「{item.get('core_conflict') or item.get('logline') or '核心冲突'}」持续推进，"
+                        f"第一主线（{mode_label or '本条主线'}）围绕"
+                        f"「{item.get('core_conflict') or item.get('logline') or '核心冲突'}」持续推进，"
                         "所有支线都必须回到这个承诺。"
                     )
             if not item.get("opening_pressure"):

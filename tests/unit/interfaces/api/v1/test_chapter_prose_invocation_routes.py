@@ -5,7 +5,7 @@ import time
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from application.core.v1_length_tiers import build_v1_structure_black_box_hint
+from tests.unit.legacy_premise_fixtures import LEGACY_STRUCTURE_BLACK_BOX_PREFIX
 from domain.ai.services.llm_service import GenerationConfig, GenerationResult
 from domain.ai.value_objects.prompt import Prompt
 from domain.ai.value_objects.token_usage import TokenUsage
@@ -200,7 +200,7 @@ def test_bible_setup_invocation_materializes_inputs_and_get_refreshes_snapshot(t
     app = FastAPI()
     app.include_router(ai_invocation_routes.router)
     client = TestClient(app)
-    internal_hint = build_v1_structure_black_box_hint("standard", 500, 2000)
+    internal_hint = LEGACY_STRUCTURE_BLACK_BOX_PREFIX
     author_premise = "旧设定：少年在海底城觉醒"
 
     created = client.post(

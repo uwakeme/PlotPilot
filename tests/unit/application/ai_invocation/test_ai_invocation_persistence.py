@@ -14,7 +14,7 @@ from application.ai_invocation.dtos import (
     VariablePlan,
 )
 from application.ai_invocation.variable_hub import VariableWrite
-from application.core.v1_length_tiers import build_v1_structure_black_box_hint
+from tests.unit.legacy_premise_fixtures import LEGACY_STRUCTURE_BLACK_BOX_PREFIX
 from domain.ai.value_objects.prompt import Prompt
 from domain.ai.value_objects.token_usage import TokenUsage
 from infrastructure.persistence.database.sqlite_ai_invocation_repository import (
@@ -479,7 +479,7 @@ def test_sqlite_variable_hub_repository_can_compose_worldbuilding_from_dimension
 def test_sqlite_variable_hub_repository_sanitizes_premise_internal_hint():
     db = _Db()
     repo = SqliteVariableHubRepository(db)
-    internal_hint = build_v1_structure_black_box_hint("standard", 500, 2000)
+    internal_hint = LEGACY_STRUCTURE_BLACK_BOX_PREFIX
 
     repo.set_value(
         VariableWrite(

@@ -607,15 +607,20 @@ class ContinuousPlanningService:
             else:
                 if structure_preference is None:
                     # B-05：网格由 **AI 提案**（判不出来 ⇒ 回落代码兜底 3×3×3）。
-                    structure_preference = await self._propose_structure_grid(
+                    # A-07：**同一次**提案顺带给出卷内节奏建议（不额外打一次 LLM）。
+                    grid_proposal = await self._propose_structure_grid(
                         novel_id=novel_id,
                         target_chapters=target_chapters,
                     )
+                    structure_preference = grid_proposal.as_preference()
+                else:
+                    grid_proposal = None
                 structure = await self._generate_precise_macro_plan(
                     novel_id=novel_id,
                     bible_context=bible_context,
                     target_chapters=target_chapters,
                     structure_preference=structure_preference,
+                    volume_pacing=grid_proposal,
                 )
 
             if isinstance(structure, list):
@@ -680,12 +685,15 @@ class ContinuousPlanningService:
         *,
         novel_id: str,
         target_chapters: int,
-    ) -> Dict[str, int]:
+    ):
         """B-05：让 **AI 提案**结构网格（部数 / 每部卷数 / 每卷幕数）。
 
         判不出来 ⇒ **未评估** ⇒ 回落**代码兜底** 3×3×3
         （= 改造前 ``StructurePreference`` 的默认值 ⇒ **逐位一致**）；
         提案被代码夹紧 ⇒ 写进日志（**不许静默**）。
+
+        A-07：**同一次**提案顺带给出卷内节奏建议（每卷几个高潮节点、
+        卷末留什么钩子）⇒ 不额外打一次 LLM（省 token，也不打断既有调用序列）。
         """
         from application.blueprint.services.structure_proposal import (
             FALLBACK_GRID,
@@ -719,11 +727,7 @@ class ContinuousPlanningService:
                 FALLBACK_GRID[1],
                 FALLBACK_GRID[2],
             )
-            return {
-                "parts": FALLBACK_GRID[0],
-                "volumes_per_part": FALLBACK_GRID[1],
-                "acts_per_volume": FALLBACK_GRID[2],
-            }
+            return proposal
         if proposal.clamped:
             logger.warning(
                 "[MacroPlan] 结构网格提案被代码夹紧：%s×%s×%s（依据：%s）",
@@ -740,14 +744,21 @@ class ContinuousPlanningService:
                 proposal.acts_per_volume,
                 proposal.reason or "（模型没写依据）",
             )
-        return proposal.as_preference()
+        # A-07：卷内节奏建议（与网格同一次提案）。
+        if proposal.pacing_clamped:
+            logger.warning(
+                "[MacroPlan] 卷内节奏提案被代码夹紧：每卷 %s 个高潮节点",
+                proposal.climaxes_per_volume,
+            )
+        return proposal
 
     async def _generate_precise_macro_plan(
         self,
         novel_id: str,
         bible_context: Dict,
         target_chapters: int,
-        structure_preference: Dict[str, int]
+        structure_preference: Dict[str, int],
+        volume_pacing: Optional[Any] = None,
     ) -> Dict:
         """精密模式：系统先搭固定骨架，整版生成后再定向补全缺失字段。"""
         skeleton = self._build_precise_structure_skeleton(target_chapters, structure_preference)
@@ -765,6 +776,7 @@ class ContinuousPlanningService:
             target_chapters=target_chapters,
             structure_preference=structure_preference,
             skeleton=skeleton,
+            volume_pacing=volume_pacing,
         )
         config = generation_config_from_profile(
             "planning_macro",
@@ -2884,6 +2896,7 @@ class ContinuousPlanningService:
         target_chapters: int,
         structure_preference: Dict,
         skeleton: Dict,
+        volume_pacing: Optional[Any] = None,
     ) -> Prompt:
         """精密模式：固定网格由代码计算，文案由 CPMS 契约渲染。"""
         parts = structure_preference.get("parts", 3)
@@ -2915,6 +2928,13 @@ class ContinuousPlanningService:
             "- 上面只是章数预算。每一部分承担什么戏剧功能、整体节奏怎么分配，"
             "由你依据剧情自行判断并写进对应节点的 description / narrative_goal。",
         ])
+        # A-07：卷内节奏建议（每卷几个高潮节点、卷末留什么钩子）由 **AI 提案**。
+        # 改造前这段结构论写死在 ``build_v1_structure_black_box_hint`` 里
+        # （拼进用户梗概前缀，用户看不见也改不了）。
+        if volume_pacing is not None:
+            pacing_lines.append(
+                "- " + volume_pacing.as_pacing_guide().replace("\n", "\n  ")
+            )
         pacing_lines.append("</PACING_GUIDE>")
 
         skeleton_lines = ["【固定结构骨架】"]

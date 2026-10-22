@@ -42,5 +42,9 @@ variables:
   desc: 每卷幕数上限
   type: string
   required: true
+- name: max_climaxes_per_volume
+  desc: 每卷高潮节点数上限（A-07：卷内节奏建议）
+  type: string
+  required: true
 id: planning-structure-proposal
 sort_order: 123

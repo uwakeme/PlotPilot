@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from application.core.v1_length_tiers import build_v1_structure_black_box_hint
+from tests.unit.legacy_premise_fixtures import LEGACY_STRUCTURE_BLACK_BOX_PREFIX
 from application.ai_invocation.variable_backfill import VariableHubBackfillService
 from application.ai_invocation.variable_hub import InMemoryVariableHubRepository, VariableWrite
 from domain.novel.value_objects.novel_id import NovelId
@@ -38,7 +38,7 @@ class _WorldbuildingRepo:
 
 def test_variable_hub_backfill_writes_missing_historical_facts():
     repo = InMemoryVariableHubRepository()
-    internal_hint = build_v1_structure_black_box_hint("standard", 500, 2000)
+    internal_hint = LEGACY_STRUCTURE_BLACK_BOX_PREFIX
     novel = SimpleNamespace(
         novel_id=NovelId("novel-1"),
         title="旧书",

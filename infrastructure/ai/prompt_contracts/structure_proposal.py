@@ -21,6 +21,9 @@ class StructureProposalVariables(BaseModel):
     max_parts: str = Field(default="10", description="部数上限（代码保留的不变量）")
     max_volumes_per_part: str = Field(default="10", description="每部卷数上限")
     max_acts_per_volume: str = Field(default="10", description="每卷幕数上限")
+    max_climaxes_per_volume: str = Field(
+        default="6", description="每卷高潮节点数上限（A-07：卷内节奏建议）"
+    )
 
 
 STRUCTURE_PROPOSAL_CONTRACT = PromptContract(

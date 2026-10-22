@@ -1,9 +1,10 @@
-"""V1 体量档推导与黑盒文案"""
+"""V1 体量档推导与历史前缀清理"""
 from application.core.v1_length_tiers import (
-    build_v1_structure_black_box_hint,
     resolve_v1_length_params,
+    strip_generated_premise_prefixes,
     V1_LENGTH_TIERS,
 )
+from tests.unit.legacy_premise_fixtures import LEGACY_STRUCTURE_BLACK_BOX_PREFIX
 
 
 def test_resolve_standard_tier_default_words():
@@ -27,10 +28,12 @@ def test_resolve_without_tier_uses_chapters():
     assert wpc == 3000
 
 
-def test_black_box_contains_volume_hint():
-    text = build_v1_structure_black_box_hint("standard", 500, 2000)
-    assert "规划目标体量" in text
-    assert "勿向读者展示" in text
+def test_legacy_black_box_prefix_is_stripped():
+    """历史前缀必须被读侧清理掉（存量库兼容）。"""
+    text = strip_generated_premise_prefixes(
+        f"{LEGACY_STRUCTURE_BLACK_BOX_PREFIX}\n\n作者真正的梗概"
+    )
+    assert text == "作者真正的梗概"
 
 
 def test_tier_meta_present():

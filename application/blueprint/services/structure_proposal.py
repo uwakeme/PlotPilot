@@ -58,6 +58,12 @@ MAX_ACTS_PER_VOLUME = 10
 #: 代码兜底网格（= 改造前 ``StructurePreference`` 的默认值 3×3×3）
 FALLBACK_GRID = (3, 3, 3)
 
+# ── A-07：卷内节奏建议（与网格同一次提案） ───────────────────────────
+#: 每卷高潮节点数上限（代码保留的不变量）
+MAX_CLIMAXES_PER_VOLUME = 6
+#: 代码兜底：每卷 3 个高潮节点（与改造前写死的那句「2~3 个」的中间值）
+FALLBACK_CLIMAXES_PER_VOLUME = 3
+
 
 @dataclass(frozen=True)
 class StructureGridProposal:
@@ -72,6 +78,18 @@ class StructureGridProposal:
     clamped: bool = False
     #: AI 给的依据
     reason: str = ""
+    # ── A-07：卷内节奏建议（与网格**同一次**提案给出） ─────────────────
+    #: 每卷高潮节点数（代码夹过 ⇒ 落在 [1, MAX_CLIMAXES_PER_VOLUME]）
+    climaxes_per_volume: int = FALLBACK_CLIMAXES_PER_VOLUME
+    #: 卷末钩子的具体形态（模型写的；空串 = 模型没写）
+    hook_style: str = ""
+    #: 卷内节奏是否被代码夹过（**不许静默**）
+    pacing_clamped: bool = False
+    #: 卷内节奏的来源：``ai`` / ``fallback``
+    #: ⚠ 与 ``source``（**网格**的来源）**分开** ——
+    #: 网格是 AI 给的、卷内节奏判不出来，是完全可能的（模型只答了三个数字）。
+    #: ⇒ 两者合成一个 source 会让「卷内节奏其实是兜底」这件事被淹没。
+    pacing_source: str = SOURCE_FALLBACK
 
     @property
     def total_acts(self) -> int:
@@ -84,6 +102,30 @@ class StructureGridProposal:
             "volumes_per_part": self.volumes_per_part,
             "acts_per_volume": self.acts_per_volume,
         }
+
+    def as_pacing_guide(self) -> str:
+        """给 ``<PACING_GUIDE>`` 用的卷内节奏建议文本。
+
+        A-07：这段原先由代码写死（「每卷宜安排 2~3 个大高潮节点」「卷末留强钩子」，
+        拼在用户梗概前缀里、用户看不见也改不了）⇒ 现在由 AI 给出。
+
+        ⚠ 兜底时**明说**是代码兜底 ⇒ 不把兜底冒充成 AI 的判断。
+        """
+        if self.pacing_source == SOURCE_AI:
+            head = f"每卷安排约 {self.climaxes_per_volume} 个高潮节点"
+        else:
+            head = (
+                f"每卷安排约 {self.climaxes_per_volume} 个高潮节点"
+                "（代码兜底，AI 未给出可用的卷内节奏建议）"
+            )
+        lines = [head]
+        if self.hook_style:
+            lines.append(f"卷末钩子：{self.hook_style}")
+        else:
+            lines.append("卷末钩子：（未指定）")
+        if self.reason:
+            lines.append(f"依据：{self.reason}")
+        return "\n".join(lines)
 
 
 def _coerce_int(value: Any) -> Optional[int]:
@@ -167,6 +209,21 @@ def clamp_structure_grid(
         clamped = True
 
     reason = raw.get("reason")
+    # ── A-07：卷内节奏（与网格同一次提案，省一次 LLM 调用） ───────────
+    climaxes = _coerce_int(raw.get("climaxes_per_volume"))
+    pacing_clamped = False
+    if climaxes is None:
+        # 判不出来 ⇒ 用兜底值，但**来源标记如实**：
+        # 网格可能是 AI 给的、卷内节奏却是兜底 ⇒ 两个来源**分开记**。
+        climaxes = FALLBACK_CLIMAXES_PER_VOLUME
+        pacing_source = SOURCE_FALLBACK
+    else:
+        pacing_source = SOURCE_AI
+        if climaxes < 1:
+            climaxes, pacing_clamped = 1, True
+        if climaxes > MAX_CLIMAXES_PER_VOLUME:
+            climaxes, pacing_clamped = MAX_CLIMAXES_PER_VOLUME, True
+
     return StructureGridProposal(
         parts=parts,
         volumes_per_part=volumes,
@@ -174,6 +231,10 @@ def clamp_structure_grid(
         source=SOURCE_AI,
         clamped=clamped,
         reason=str(reason).strip()[:400] if isinstance(reason, str) else "",
+        climaxes_per_volume=climaxes,
+        hook_style=str(raw.get("hook_style") or "").strip()[:400],
+        pacing_clamped=pacing_clamped,
+        pacing_source=pacing_source,
     )
 
 
@@ -208,6 +269,8 @@ class StructureProposalService:
                     "max_parts": str(MAX_PARTS),
                     "max_volumes_per_part": str(MAX_VOLUMES_PER_PART),
                     "max_acts_per_volume": str(MAX_ACTS_PER_VOLUME),
+                    # A-07：卷内节奏的上限也告诉模型。
+                    "max_climaxes_per_volume": str(MAX_CLIMAXES_PER_VOLUME),
                 },
             )
             config = generation_config_from_profile("structure_proposal")
@@ -216,10 +279,25 @@ class StructureProposalService:
             logger.warning("结构网格提案调用失败，按未评估处理 novel=%s: %s", novel_id, exc)
             return StructureGridProposal(*FALLBACK_GRID, source=SOURCE_NONE)
 
-        data = self._parse(result.content)
+        data = self._parse(self._extract_text(result))
         if data is None:
             return StructureGridProposal(*FALLBACK_GRID, source=SOURCE_NONE)
         return clamp_structure_grid(data, target_chapters=target_chapters)
+
+    @staticmethod
+    def _extract_text(result: Any) -> str:
+        """从 LLM 返回值里取文本。
+
+        ⚠ ``LLMService.generate`` 的契约是返回 ``GenerationResult``，
+        但**既有 stub / 部分 provider** 会直接返回字符串。
+        ⇒ 这里两种都认，**不因为形态差异就崩**。
+        """
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            return result
+        content = getattr(result, "content", None)
+        return content if isinstance(content, str) else ""
 
     @staticmethod
     def _parse(raw_text: str) -> Optional[Dict[str, Any]]:

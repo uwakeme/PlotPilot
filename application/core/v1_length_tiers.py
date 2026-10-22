@@ -56,30 +56,21 @@ def resolve_v1_length_params(
     return tc, tw, None
 
 
-def build_v1_structure_black_box_hint(
-    tier_key: Optional[str],
-    target_chapters: int,
-    words_per_chapter: int,
-) -> str:
-    """写入梗概前缀的黑盒说明：供 Bible/规划/生成链路消费，界面不单独展示。"""
-    approx_book = target_chapters * words_per_chapter
-    # 卷数：最多 5 卷，按约每卷 100 章切分（与「商业五卷」叙事习惯对齐，仅为节奏提示）
-    vol_cap = 5
-    vols = min(vol_cap, max(1, (target_chapters + 99) // 100))
-    ch_per_vol = max(1, math.ceil(target_chapters / vols))
-    tier_label = ""
-    if tier_key and tier_key in V1_LENGTH_TIERS:
-        tier_label = f"（体量档：{V1_LENGTH_TIERS[tier_key]['label_zh']}）"
-
-    return f"""【系统内部·叙事结构规划{tier_label}（勿向读者展示本段标题与标签）】
-规划目标体量：约 {approx_book:,} 字；目标分章约 {target_chapters} 章；每章写作目标约 {words_per_chapter} 字。
-宏观节奏：建议按约 {vols} 卷推进，每卷大致 {ch_per_vol} 章量级；每卷宜安排 2～3 个大高潮节点（幕级转折），卷末留强钩子。
-骨架：采用「目标—阻力—转折—结果」的动态节奏在章内落地；长篇层面按作者梗概、题材赛道和世界规则自然推进，不预设固定神话旅程。
-写作约束：避免用空话凑字；每章应完成可指认的情节推进或人物关系变化，环境/对白需服务于冲突与信息增量。"""
-
-
 def strip_generated_premise_prefixes(premise: str) -> str:
-    """Remove server-generated prefixes from user premise text."""
+    """Remove server-generated prefixes from user premise text.
+
+    A-07：``build_v1_structure_black_box_hint`` 此前**在这里**拼出一整段
+    结构论（卷数公式 + 「每卷宜安排 2~3 个大高潮节点」+ 「卷末留强钩子」）
+    并拼进用户梗概前缀。
+
+    但它的**写路径**早已删除（``novel_service`` 现在只存作者原文）⇒
+    该函数是**零生产调用方的死函数**，而那段结构论也从未真正进过模型。
+    ⇒ 现在**卷内节奏建议由 AI 提案**（见
+    ``application/blueprint/services/volume_pacing_proposal.py``），
+    本模块只保留**读侧**的历史数据清理（存量库里仍有旧前缀）。
+
+    ⚠ ``strip_*`` 必须留着：存量库的 ``novels.premise`` 仍可能含旧前缀。
+    """
     text = str(premise or "").strip()
     if "【系统内部·叙事结构规划" in text:
         idx = text.find("\n\n")

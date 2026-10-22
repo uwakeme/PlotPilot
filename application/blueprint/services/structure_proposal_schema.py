@@ -28,8 +28,17 @@ class StructureProposalLlmPayload(BaseModel):
         default=None, description="每卷幕数（正整数）；判不出来时必须为 null"
     )
     reason: str = Field(default="", description="为什么这样切分（一句话）")
+    # ── A-07：卷内节奏建议（并入同一个节点，省一次 LLM 调用） ─────────
+    climaxes_per_volume: Optional[int] = Field(
+        default=None,
+        description="每卷高潮节点数（正整数）；判不出来时必须为 null",
+    )
+    hook_style: str = Field(
+        default="",
+        description="卷末钩子的具体形态（读者会问的那个问题或那个场面）",
+    )
 
-    @field_validator("parts", "volumes_per_part", "acts_per_volume", mode="before")
+    @field_validator("parts", "volumes_per_part", "acts_per_volume", "climaxes_per_volume", mode="before")
     @classmethod
     def _only_int_or_none(cls, v: Any) -> Optional[int]:
         """只接受**真正的**整数（或纯数字字符串）或 null。
