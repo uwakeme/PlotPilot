@@ -14,6 +14,28 @@ from application.world.worldbuilding_merge import WORLD_BUILDING_DIMENSION_KEYS
 MIN_WORLDBUILDING_FIELD_CHARS = 20
 MAX_WORLDBUILDING_FIELD_CHARS = 500
 
+#: A-06：字段粒度的**提示文案**（单一来源）。
+#:
+#: 改造前这条文案是**写死**的「只写2-3句、80-160字、单段」——
+#: 既在 ``bible-worldbuilding/user.md`` 里写了一遍，又在
+#: ``build_fields_desc_for_prompt`` 逐字段注入了一遍（**两个来源**，
+#: 改 prompt 改不掉 Python 生成的那份）。
+#:
+#: 登记表 A-06 要求「AI 自定字段粒度」⇒ 固定字数区间是代答。
+#: ⇒ 现在只保留**真正的不变量**：
+#: - 单段（不得换行）—— 这是 JSON 解析与前端渲染的要求；
+#: - 不得嵌套 JSON / 英文键 —— 同上；
+#: - 不少于 ``MIN_WORLDBUILDING_FIELD_CHARS`` 字、不多于
+#:   ``MAX_WORLDBUILDING_FIELD_CHARS`` 字 —— **上下限**是护栏（防撑爆上下文、
+#:   防交白卷），由代码夹逼强制，不该由提示词代答。
+#:
+#: 具体写几句、每句多长 ⇒ **由 AI 按这个字段实际要说的内容量自定**。
+WORLDBUILDING_FIELD_FORMAT_HINT = (
+    "单段、不得换行；勿嵌套JSON或英文键；"
+    f"字数按该字段实际要说的内容量自定，"
+    f"不少于{MIN_WORLDBUILDING_FIELD_CHARS}字、不多于{MAX_WORLDBUILDING_FIELD_CHARS}字"
+)
+
 _WORLDBUILDING_CONTRACT = get_worldbuilding_contract()
 
 # 与 AutoBibleGenerator / CPMS fields_desc 一致，由共享配置资产驱动。
@@ -117,7 +139,7 @@ def build_fields_desc_for_prompt(dimension_keys: Any = None) -> str:
             scope = WORLDBUILDING_FIELD_SCOPE_HINTS.get(dim_key, {}).get(fk, "")
             scope_text = f"{scope}；" if scope else ""
             lines.append(
-                f'      "{fk}": "（{desc}。{scope_text}只写2-3句、80-160字、单段；不得换行；勿嵌套JSON或英文键）"{comma}'
+                f'      "{fk}": "（{desc}。{scope_text}{WORLDBUILDING_FIELD_FORMAT_HINT}）"{comma}'
             )
         dim_comma = "," if dim_key != keys[-1] else ""
         lines.append(f"    }}{dim_comma}")

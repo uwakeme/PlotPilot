@@ -264,23 +264,6 @@ def _target_chapters(context: ContinuationContext) -> int:
     return resolve_target_chapters(value)
 
 
-def _chapter_ranges(target_chapters: int) -> list[tuple[int, int]]:
-    ratios = [0.15, 0.40, 0.70, 0.90, 1.0]
-    ends = []
-    previous = 0
-    for index, ratio in enumerate(ratios):
-        if index == len(ratios) - 1:
-            end = target_chapters
-        else:
-            end = max(previous + 1, round(target_chapters * ratio))
-            remaining_min = len(ratios) - index - 1
-            end = min(end, target_chapters - remaining_min)
-        ends.append(end)
-        previous = end
-    starts = [1, *(end + 1 for end in ends[:-1])]
-    return list(zip(starts, ends))
-
-
 def _coerce_chapter_number(value: Any) -> int | None:
     if value in (None, ""):
         return None
