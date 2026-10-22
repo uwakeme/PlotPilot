@@ -99,6 +99,8 @@ PLANNING_MACRO_CALIBRATION = "planning-macro-calibration"
 PLANNING_MACRO_BREAKPOINT = "planning-macro-breakpoint"
 # H-01：死亡角色在大纲里的出场方式（AI 判「活跃登场 vs 回忆/遗物/传闻」）
 PLANNING_DEAD_CHARACTER_CHECK = "evolution-dead-character-check"
+# E-04：武侠题材的战斗逻辑 / 现代口语判定（由 LLM 审，取代代码的两条正则 + 7 项词表）
+PLANNING_WUXIA_STYLE_AUDIT = "wuxia-style-audit"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
 BEAT_COT_BRIDGE = "beat-cot-bridge"
@@ -207,6 +209,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_MACRO_CALIBRATION,
     PLANNING_MACRO_BREAKPOINT,
     PLANNING_DEAD_CHARACTER_CHECK,
+    PLANNING_WUXIA_STYLE_AUDIT,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
     # Style

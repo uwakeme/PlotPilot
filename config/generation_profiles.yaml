@@ -118,6 +118,12 @@ evolution_dead_character_check:
   max_tokens: 2000
   temperature: 0.2
 
+# E-04：武侠风格审。判读题 ⇒ 温度低（要稳）。
+wuxia_style_audit:
+  extends: base_generation_profile
+  max_tokens: 2000
+  temperature: 0.2
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

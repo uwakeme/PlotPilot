@@ -1,0 +1,19 @@
+name: 武侠风格审
+category: review
+source: application/audit/services/wuxia_style_audit.py
+description: 由 AI 审「战斗逻辑是否被违反」「有没有现代口语」（取代代码的两条正则 + 7 项词表）
+builtin: true
+tags:
+- 武侠
+- 题材
+- 审阅
+- 一致性
+- JSON输出
+output_format: json
+variables:
+- name: content
+  desc: 本章正文
+  type: string
+  required: true
+id: wuxia-style-audit
+sort_order: 118

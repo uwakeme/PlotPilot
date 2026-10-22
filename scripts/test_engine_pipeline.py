@@ -48,8 +48,10 @@ print(f'PASS: target={short.DEFAULT_TARGET_WORDS}')
 # Test 8: WuxiaPipeline
 print('\n=== Test 8: WuxiaPipeline ===')
 wuxia = WuxiaPipeline()
-assert wuxia.DEFAULT_TARGET_WORDS == 3000
-print(f'PASS: target={wuxia.DEFAULT_TARGET_WORDS}')
+# E-04：武侠管线不再声明 DEFAULT_TARGET_WORDS —— 它从未生效
+# （生产的章节目标字数取自 StoryPipelineRunner，即基类的 2500）。
+assert not hasattr(wuxia, 'DEFAULT_TARGET_WORDS')
+print('PASS: wuxia 不再声明从未生效的目标字数')
 
 # Test 9: PolicyValidator
 print('\n=== Test 9: PolicyValidator ===')
