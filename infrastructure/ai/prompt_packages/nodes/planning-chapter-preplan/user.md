@@ -22,13 +22,13 @@
 
 1. 输出一个 JSON 对象，包含 detail_title、key_plot_points、chapter_characters 与 chapter_plan。
 2. chapter_plan 会由系统渲染成七段细纲；禁止输出“故事单元检查”“情绪变化节点”等分析型额外段落。
-3. key_plot_points 从剧情事件链中抽取 5-10 个本章正文绝不能遗漏的关键情节点，必须是具体事件，不要写抽象主题。
+3. key_plot_points 从剧情事件链中抽取本章正文绝不能遗漏的关键情节点，通常是 5-10 个，**按本章实际分量给，不必凑数**（本章事件本来就少就少给）；必须是具体事件，不要写抽象主题。
 4. chapter_characters 只列本章实际出场或群体围观角色，名称优先用中文名；没有中文名时使用人物ID。
-5. chapter_plan 必须且只能覆盖七段字段：
+5. chapter_plan 必须且只能覆盖七段字段（**这一条是硬的**，其余数量与用词都是建议）：
    - opening_entry：开篇切入点，一句话说明从哪个场景的哪个动作、冲突或信息差切入。
    - scene_transitions：场景转换列表，每项包含 scene、location、cast、purpose。
-   - key_dialogues：关键对话 4-8 组，每项包含 speaker、line、reply、purpose。
-   - event_chain：剧情事件链 6-10 个事件，每项包含 phase 和 content；phase 只能用 触发、升级、爆发、收束。
+   - key_dialogues：关键对话，通常是 4-8 组，**按本章实际分量给，不必凑数**；每项包含 speaker、line、reply、purpose。
+   - event_chain：剧情事件链，通常是 6-10 个事件，**按本章实际分量给，不必凑数**；每项包含 phase 和 content；phase 表达该事件所处的节奏阶段，**建议**用 触发 / 升级 / 爆发 / 收束，更贴切的说法也可以 —— 不要为了凑枚举硬套。
    - character_decisions：角色关键决策，至少包含主角主动选择、目的和后果。
    - payoff_reversals：爽点/反转设计，说明预期、反转、读者正反馈。
    - protagonist_state_change：主角状态变化，包含位置、实力、新获得、身体状况、重大变化。
