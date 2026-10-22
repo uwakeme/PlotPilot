@@ -102,15 +102,142 @@ def _wired_feature_ids(tree: ast.AST) -> set[str]:
     return out
 
 
+def _negated_gate_ids(node: ast.AST) -> set[str]:
+    """表达式里「**取反**」的 ``ai_participation_enabled("x")`` 的 id 集合。
+
+    只认取反的形状（``not ai_participation_enabled("x")``）——
+    闸门的语义是「关掉 ⇒ 走这个分支 ⇒ 提前返回」。
+    """
+    out: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.UnaryOp) or not isinstance(child.op, ast.Not):
+            continue
+        call = child.operand
+        if not isinstance(call, ast.Call):
+            continue
+        name = getattr(call.func, "id", None) or getattr(call.func, "attr", None)
+        if name != "ai_participation_enabled":
+            continue
+        if (
+            call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            out.add(call.args[0].value)
+    return out
+
+
+def _all_gate_ids(node: ast.AST) -> set[str]:
+    """表达式里出现的**全部** ``ai_participation_enabled("x")`` 的 id。"""
+    out: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        name = getattr(child.func, "id", None) or getattr(child.func, "attr", None)
+        if name != "ai_participation_enabled":
+            continue
+        if (
+            child.args
+            and isinstance(child.args[0], ast.Constant)
+            and isinstance(child.args[0].value, str)
+        ):
+            out.add(child.args[0].value)
+    return out
+
+
+def _has_model_call(node: ast.AST) -> bool:
+    """这段代码里有没有「真的发起模型调用」。
+
+    判据：属性调用 ``xxx.generate(...)``，或调用一个**名字里带 llm**的方法
+    （如 ``self._score_chapter_llm(...)``）—— 后者是**传递调用**的直接形态。
+    """
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        attr = func.attr
+        if attr == "generate":
+            return True
+        if "llm" in attr.lower():
+            return True
+    return False
+
+
+def _short_circuiting_gate_ids(tree: ast.AST) -> set[str]:
+    """**闸门真的挡住了模型调用**的 feature id。
+
+    第 3 批二次复审 N1：闸门只写了一句日志、**没有 return** ⇒
+    总闸关掉后照样打模型，而日志说「按未评估处理」⇒ **日志在撒谎**。
+    ⇒ 「文件里出现过 ``ai_participation_enabled(...)``」这种**存在性**检查
+    抓不住它。
+
+    闸门有两种**形状**，都要认：
+      - **短路型**：``if not enabled("x"): return <兜底>``（模型调用在 return 之后）
+      - **准入型**：``if ... and enabled("x"): <模型调用>``（模型调用在闸门分支内）
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        negated = _negated_gate_ids(node.test)
+        if not _all_gate_ids(node.test):
+            continue
+        # 形状 A：取反的闸门 + body 里有 return
+        if any(isinstance(child, ast.Return) for child in ast.walk(node)):
+            out |= negated
+        # 形状 B：准入的闸门 + body 里有模型调用
+        if _has_model_call(node):
+            out |= (_all_gate_ids(node.test) - negated)
+    return out
+
+
+def _capability_class_names() -> set[str]:
+    """能力模块里定义的**类名**集合（用于识别传递调用）。"""
+    names: set[str] = set()
+    for rel in AI_PARTICIPATION_CAPABILITY_MODULES:
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                names.add(node.name)
+    return names
+
+
+def _transitively_model_calling(tree: ast.AST, capability_classes: set[str]) -> bool:
+    """这个模块**间接**能不能打到模型？
+
+    第 3 批二次复审 S3：探测器原先只认**直接** ``llm*.generate(...)``
+    ⇒ 「本模块不调模型、但调的另一个模块调」的**传递调用**逃过了分类
+    （复审的 N3 就是这么漏掉的：``voice_drift_service`` 调
+    ``llm_voice_analysis_service``）。
+
+    ⇒ 现在：模块里**引用了任一能力类** ⇒ 视为「传递调用模型」。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in capability_classes:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in capability_classes:
+            return True
+    return False
+
+
 def _model_calling_modules() -> dict[str, Path]:
-    """会打模型的生产模块 → 路径。"""
+    """（直接或传递）会打模型的生产模块 → 路径。"""
+    capability_classes = _capability_class_names()
     out: dict[str, Path] = {}
     for path in _iter_production_modules():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        if _calls_model(tree):
+        if _calls_model(tree) or _transitively_model_calling(tree, capability_classes):
             out[_rel(path)] = path
     return out
 
@@ -173,24 +300,40 @@ def test_every_capability_module_has_a_gate():
     """「AI 参与能力」类的每个模块都必须接闸。
 
     这是 B1 的核心：新增一个 AI 能力却忘了登记/接线时，这条守卫必须报红。
+
+    ⚠ 第 3 批二次复审 S1/N1：这条**曾经只是存在性检查**
+    （文件里出现过 ``ai_participation_enabled("x")`` 就算过）
+    ⇒ 放行了「只打日志、没有 return」的闸门（N1：闸门关掉仍每章打模型）。
+    ⇒ 现在要求**闸门后面真的 return**（见 ``_short_circuiting_gate_ids``）。
     """
     mediated = {caller for caller, _holder, _feature in AI_PARTICIPATION_SETTINGS_MEDIATED}
     ungated: list[str] = []
+    log_only: list[str] = []
 
     for rel in sorted(AI_PARTICIPATION_CAPABILITY_MODULES):
-        path = REPO_ROOT / rel
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        if _wired_feature_ids(tree):
-            continue
         if rel in mediated:
             continue
-        ungated.append(rel)
+        path = REPO_ROOT / rel
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        wired = _wired_feature_ids(tree)
+        if not wired:
+            ungated.append(rel)
+            continue
+        short_circuit = _short_circuiting_gate_ids(tree)
+        if not (wired & short_circuit):
+            log_only.append(rel)
 
     assert not ungated, (
         "这些「AI 参与能力」模块没接 X-02 总闸 ⇒ 总闸关不掉它们：\n"
         + "\n".join(f"  - {rel}" for rel in ungated)
         + "\n修法：在模块入口加 ai_participation_enabled(\"<feature_id>\")，"
         "并把 feature id 登记进 AI_PARTICIPATION_FEATURES。"
+    )
+    assert not log_only, (
+        "这些模块的闸门**只写了日志、没有 return** ⇒ 总闸关掉后照样打模型"
+        "（而日志却说「按未评估处理」⇒ 日志在撒谎）：\n"
+        + "\n".join(f"  - {rel}" for rel in log_only)
+        + "\n修法：闸门的 if 分支里必须 return。"
     )
 
 
@@ -217,16 +360,29 @@ def test_every_mediated_entry_is_registered_and_really_read():
 
 
 def test_no_feature_is_mediated_and_directly_gated_at_the_same_time():
-    """同一个 id 不许既直接接闸又走中介（否则「关闸」有两条路径，容易只改一条）。"""
-    direct: set[str] = set()
-    for rel in AI_PARTICIPATION_CAPABILITY_MODULES:
+    """同一个 feature 不许既**直接接闸**又**走中介**（两条路径容易只改一条）。
+
+    ⚠ 例外：中介三元组里的**持闸模块本身**直接接这个 feature 是正常的
+    （那就是同一道闸，不是两条路）—— 第 3 批二次复审 N3 把
+    ``voice_llm_mode`` 的闸从 ``base.py`` 收进 ``voice_drift_service.py``
+    后就属于这种情况。
+    """
+    holders = {feature: holder for _caller, holder, feature in AI_PARTICIPATION_SETTINGS_MEDIATED}
+    conflicts: list[str] = []
+    for rel in sorted(AI_PARTICIPATION_CAPABILITY_MODULES):
         path = REPO_ROOT / rel
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        direct |= _wired_feature_ids(tree)
+        for feature in _short_circuiting_gate_ids(tree):
+            holder = holders.get(feature)
+            if holder is None:
+                continue
+            if holder == rel:
+                continue  # 同一道闸
+            conflicts.append(f"{feature}: {rel} 与中介持闸方 {holder}")
 
-    mediated_features = {feature for _, _, feature in AI_PARTICIPATION_SETTINGS_MEDIATED}
-    assert not (direct & mediated_features), (
-        f"这些 feature 既直接接闸又走中介：{sorted(direct & mediated_features)}"
+    assert not conflicts, (
+        "这些 feature 既在别处直接接闸、又走中介 ⇒ 关闸有两条路径：\n"
+        + "\n".join(f"  - {item}" for item in conflicts)
     )
 
 
@@ -257,6 +413,31 @@ class _SpyLLM:
 
 #: (module, class, method, 真实入参) —— 入参必须是**能让它真的走到模型**的形状，
 #: 否则正对照会失败（那就变成「探针无效」而不是「能力没接线」）。
+def _emotion_ledger():
+    from engine.core.value_objects.emotion_ledger import EmotionLedger
+
+    return EmotionLedger()
+
+
+def _foreshadow_candidates():
+    from application.world.services.foreshadow_selection_schema import ForeshadowCandidate
+
+    return [
+        ForeshadowCandidate(id="f1", description="那把剑是谁的", planted_in_chapter=1),
+    ]
+
+
+def _refactor_request():
+    from application.audit.dtos.macro_refactor_dto import RefactorProposalRequest
+
+    return RefactorProposalRequest(
+        event_id="e1",
+        author_intent="想让主角面对选择",
+        current_event_summary="主角在城里遇到追兵",
+        current_tags=["追兵"],
+    )
+
+
 BEHAVIOUR_CASES = [
     ("application.blueprint.services.structure_proposal", "StructureProposalService", "propose",
      {"novel_id": "n-1", "target_chapters": 300}),
@@ -291,12 +472,39 @@ BEHAVIOUR_CASES = [
     ("application.audit.services.macro_breakpoint_classifier", "MacroBreakpointClassifier", "classify",
      {"characters": [{"character_id": "c1", "name": "甲"}],
       "events": [{"event_id": "e1", "summary": "遇袭"}]}),
+    # ── 二次复审 S2：下面几个此前**没有**行为覆盖 ⇒
+    #   N1（只打日志的闸）、N2（空选择覆盖兜底）本可被抓到。
+    ("engine.infrastructure.memory.emotion_ledger_extractor", "EmotionLedgerExtractor", "extract_deltas",
+     # ⚠ 正文必须 ≥100 字（少于则服务**提前返回**，压根不打模型 ⇒ 正对照会失效）
+     {"chapter_content": (
+         "甲在城里走了一整章，路上遇见了乙，两人站在巷口说了很久的话，风很大，"
+         "甲把手插在袖子里，想着昨夜没有说出口的那句话，又想着明天要不要真的走进"
+         "那扇门，脚步慢了下来。乙说城东的桥要拆了，甲说拆了也没关系，反正他"
+         "本来就不打算过河。两人又聊起了去年冬天的事，谁也没提自己为什么在这里。"
+     ),
+      "chapter_number": 3, "current_ledger": _emotion_ledger()}),
+    ("application.world.services.foreshadow_selection", "ForeshadowSelectionPlanner", "select",
+     {"chapter_number": 3, "candidates": _foreshadow_candidates()}),
+    ("application.audit.services.macro_refactor_proposal_service", "MacroRefactorProposalService",
+     "generate_proposal",
+     {"request": _refactor_request()}),
 ]
 
 
 async def _run_service(monkeypatch, module_path: str, class_name: str, method_name: str, kwargs: dict):
     module = importlib.import_module(module_path)
     monkeypatch.setattr(module, "get_prompt_gateway", lambda: _FakeGateway(), raising=False)
+    # ⚠ 有的能力走**直连** CPMS 的 ``render_required_prompt``（不是网关）⇒ 也要打桩，
+    #    否则渲染会因缺 DB 模板而抛错 ⇒ 探针压根到不了模型调用 ⇒ 正对照失效。
+    if hasattr(module, "render_required_prompt"):
+        monkeypatch.setattr(
+            module,
+            "render_required_prompt",
+            lambda contract, variables: SimpleNamespace(
+                system="sys", user="usr", node_key=getattr(contract, "node_key", "")
+            ),
+            raising=False,
+        )
     # ⚠ 有的能力还有**自己的逐条开关**（如 E-06 的 `rhythm_quota.enabled`，
     #   管「配额文本送不送进正文提示词」）。它关着时规划器**不会打模型**
     #   （第 3 批复审 S13 的修法）⇒ 正对照要把它打开，否则探针无效。
@@ -366,6 +574,69 @@ async def test_master_switch_off_does_not_block_unrelated_features(monkeypatch):
     assert ai_participation_enabled("chapter_mode") is False
     # 未登记的 id 一律拒绝（这是设计，不是副作用）
     assert ai_participation_enabled("根本不存在的特征") is False
+
+
+# ───────────────── 介户型能力：行为落在「effective enabled」上 ─────────────────
+
+#: (settings 模块, feature id) —— 这几项的闸折进各自的 ``enabled`` 字段，
+#: 调用方看 ``enabled`` 决定要不要打模型 ⇒ 行为断言落在**开关**上。
+SETTINGS_MEDIATED_FEATURES = [
+    ("application.engine.services.chapter_mode_settings", "chapter_mode"),
+    ("application.engine.services.chapter_target_settings", "chapter_target"),
+    ("application.engine.services.context_weight_settings", "context_weights"),
+]
+
+
+@pytest.mark.parametrize("settings_module,feature", SETTINGS_MEDIATED_FEATURES)
+def test_the_settings_mediated_features_respect_the_master_switch(
+    monkeypatch, settings_module, feature
+):
+    """介户型能力：总闸关 ⇒ 它们的**有效开关**必须是 False。
+
+    第 3 批二次复审 S2：这几项此前**没有**行为覆盖 ⇒
+    「总闸关掉却照样打模型」这类问题抓不到。
+
+    ⚠ 正对照：逐条开关本身开着时，总闸**开着** ⇒ 有效开关必须是 True
+    （否则这条断言会恒真）。
+    """
+    import importlib
+
+    module = importlib.import_module(settings_module)
+    getter = next(
+        name for name in dir(module)
+        if name.startswith("get_") and name.endswith("_runtime_settings")
+    )
+    section_name = feature
+
+    # 正对照：逐条开关开 + 总闸开 ⇒ 有效开关 True
+    monkeypatch.setattr(
+        module, "get_config",
+        lambda: SimpleNamespace(
+            **{section_name: {"enabled": True}},
+            ai_participation={"master_enabled": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "application.engine.services.ai_participation_settings.get_config",
+        lambda: SimpleNamespace(ai_participation={"master_enabled": True}),
+    )
+    assert getattr(module, getter)().enabled is True, "正对照失败：逐条开关本身没生效"
+
+    # 总闸关 ⇒ 有效开关必须 False
+    monkeypatch.setattr(
+        module, "get_config",
+        lambda: SimpleNamespace(
+            **{section_name: {"enabled": True}},
+            ai_participation={"master_enabled": False},
+        ),
+    )
+    monkeypatch.setattr(
+        "application.engine.services.ai_participation_settings.get_config",
+        lambda: SimpleNamespace(ai_participation={"master_enabled": False}),
+    )
+    assert getattr(module, getter)().enabled is False, (
+        f"{feature} 的有效开关没受总闸约束 ⇒ 总闸关掉它照样打模型"
+    )
 
 
 def test_the_feature_table_has_no_duplicates():

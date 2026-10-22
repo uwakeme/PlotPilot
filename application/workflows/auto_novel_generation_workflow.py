@@ -522,7 +522,7 @@ class AutoNovelGenerationWorkflow:
         outline: str,
         *,
         scene_director: Optional[SceneDirectorAnalysis] = None,
-        max_tokens: int = 20000,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
         slot_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """prepare_chapter_generation 失败时的降级：仍用三层洋葱 + 同段名拼接；叙事/文风各步独立容错。

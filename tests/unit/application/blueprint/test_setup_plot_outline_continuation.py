@@ -264,7 +264,10 @@ def test_normalize_plot_outline_preserves_manual_chapter_ranges():
         "core_conflict": "主角试图守住重要关系与核心目标，但结构性压力不断逼他支付超出预期的代价。",
     }
 
-    normalized = normalize_setup_plot_outline_payload(outline, target_chapters=100)
+    # ⚠ 第 3 批二次复审 Q4：I3 收紧为「末段终点 == 目标章数」⇒ 目标必须
+    #   与计划一致（此前是「目标 100、计划到 500」⇒ 越界 ⇒ 被拒）。
+    #   百分比断言的值不变（百分比本来就相对**计划自身跨度**算）。
+    normalized = normalize_setup_plot_outline_payload(outline, target_chapters=500)
 
     assert normalized["stage_plan"][0]["chapter_end"] == 20
     assert normalized["stage_plan"][0]["range_percent"] == "1-4%"

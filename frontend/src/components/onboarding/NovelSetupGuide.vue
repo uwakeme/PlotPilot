@@ -1389,15 +1389,21 @@ function applyPlotOutlineFromResult(
 
 async function handlePlotOutlineInvocationUpdate(payload: InvocationResponseDTO) {
   updatePlotOutlineStatusFromInvocation(payload)
-  const result = payload.commit?.result
-  if (result && applyPlotOutlineFromResult(result, payload.session?.output_bindings || [])) {
-    return
-  }
 
+  // ⚠ **先判失败，再应用结果**（第 3 批二次复审 S7）：
+  //   此前是先 `applyPlotOutlineFromResult`、后判失败 ⇒ 失败 commit 若仍带
+  //   result，就会弹「AI 审阅已完成，剧情总纲已回填」的**假成功提示**，
+  //   并把界面置成「已提交」⇒ 作者以为存好了，实际存进去的是一份
+  //   无法通过保存校验的形状（错误信息还是「请检查起止章节」，一头雾水）。
   const commitStatus = String(payload.commit?.status || '')
   const sessionStatus = String(payload.session?.status || '')
   if (commitStatus === 'failed' || sessionStatus === 'failed' || sessionStatus === 'cancelled' || sessionStatus === 'blocked') {
     failPlotOutlineInvocation(payload.commit?.error || '剧情总纲生成失败，请重试')
+    return
+  }
+
+  const result = payload.commit?.result
+  if (result && applyPlotOutlineFromResult(result, payload.session?.output_bindings || [])) {
     return
   }
 

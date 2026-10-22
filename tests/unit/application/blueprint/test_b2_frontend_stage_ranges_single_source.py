@@ -125,16 +125,58 @@ def test_frontend_has_no_chapter_range_algorithm():
 def test_frontend_does_not_fabricate_ranges_when_missing():
     """阶段**没带**区间时，前端不许替它编一个。
 
-    判据：``chapter_start`` 的取值只允许来自 ``rawStart``（原始值），
-    不允许来自任何「算出来的」变量。
+    ⚠ 第 3 批二次复审 S6：上一版只查「有没有出现某个字符串」，
+    而**把同一份错误公式换个写法再塞回去，守卫照样全绿**
+    （复审用 M2c 变异证明：编译后确实复现了越界区间）。
+    ⇒ 现在改成**结构式**：枚举前端里**每一处** ``chapter_start`` /
+    ``chapter_end`` 的赋值，逐条要求落在允许清单里 ——
+    新增任何一处「从别处算出来的」赋值都会被抓。
+    """
+    import re
+
+    code = _frontend_code()
+    # ⚠ 只认**行首的属性赋值**（``chapter_start: ...``）——
+    #   宽松的 `\bchapter_start\s*:` 会把三元表达式里的 ``? x : 0`` 也算进去。
+    assignments = [
+        line.strip()
+        for line in code.splitlines()
+        if re.match(r"^\s*chapter_(start|end)\s*:", line)
+    ]
+    assert assignments, "没找到 chapter_start/chapter_end 的赋值（判据失效了？）"
+
+    allowed = (
+        # 只允许三种来源：AI/后端给的值、留空、或整个 stage 的透传
+        r"^chapter_start:\s*keepManualRange\s*\?\s*rawStart\s*:\s*undefined,?$",
+        r"^chapter_end:\s*keepManualRange\s*\?\s*rawEnd\s*:\s*undefined,?$",
+        r"^chapter_start:\s*typeof\s+stage\.chapter_start\s*===\s*'number'\s*\?.*$",
+        r"^chapter_end:\s*typeof\s+stage\.chapter_end\s*===\s*'number'\s*\?.*$",
+    )
+    unexpected = [
+        line for line in assignments
+        if not any(re.match(pattern, line) for pattern in allowed)
+    ]
+    assert not unexpected, (
+        "这些 chapter_start/chapter_end 的赋值不在允许清单里 —— "
+        "前端可能又自己算区间了：\n"
+        + "\n".join(f"  - {line}" for line in unexpected)
+    )
+
+
+def test_the_save_gate_tolerates_empty_ranges():
+    """保存门禁必须**放行「区间为空」**（由后端补齐），只拦「有值但非法」。
+
+    ⚠ 第 3 批二次复审 N4：前端不再产出区间（AI 不给、前端不自算），
+    而保存门禁仍要求「每段都得有数字区间」⇒ 请求根本发不出去
+    ⇒ **向导第 4 步过不去**，后端那份补齐逻辑永远用不上。
+    ⇒ 现在：两端都为空 ⇒ 放行；只有一端有值 / 倒挂 / 小于 1 ⇒ 拦。
     """
     code = _frontend_code()
 
-    assert "chapter_start: keepManualRange ? rawStart : undefined" in code, (
-        "前端必须「有就用、没有就留空」，不许回填算出来的区间"
+    assert "if (start === undefined && end === undefined) return false" in code, (
+        "保存门禁必须放行「两端都为空」的区间（后端会补齐）"
     )
-    assert "chapter_start: keepManualRange ? rawStart : fallback" not in code, (
-        "前端不许在区间缺失时回填兜底区间"
+    assert "if (start === undefined || end === undefined) return true" in code, (
+        "只填了一端 ⇒ 区间非法 ⇒ 必须拦"
     )
 
 

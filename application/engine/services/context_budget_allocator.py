@@ -27,6 +27,7 @@ from application.world.services.foreshadow_selection_schema import (
 )
 from domain.novel.value_objects.chapter_id import ChapterId
 from engine.core.entities.story import StoryPhase
+from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
 from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepository
 from domain.novel.repositories.chapter_repository import ChapterRepository
 from domain.bible.repositories.bible_repository import BibleRepository
@@ -241,7 +242,7 @@ class ContextBudgetAllocator:
         novel_id: str,
         chapter_number: int,
         outline: str,
-        total_budget: int = 35000,
+        total_budget: int = DEFAULT_CONTEXT_MAX_TOKENS,
         scene_director: SceneDirectorInput = None,
         current_beat_index: int = 0,
         character_context_selection: Optional[Dict[str, Any]] = None,

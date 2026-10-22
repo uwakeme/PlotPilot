@@ -82,12 +82,18 @@ def validate_stage_plan_shape(
 
     I1 阶段数 ∈ [3, 8]
     I2 断点单调递增且首尾相接（第 i 段起点 = 第 i-1 段终点 + 1，无空洞无重叠）
-    I3 首段起点 = 1；且末段终点 ≥ 目标章数（计划必须覆盖到目标）
+    I3 首段起点 = 1；且末段终点 **==** 目标章数（计划必须**正好**覆盖这本书）
 
-    注意 I3 **不是**「末段终点必须等于目标章数」—— 既有行为允许计划覆盖到
-    比目标更大的章数（见 ``test_normalize_plot_outline_uses_explicit_chapter_ranges``：
-    目标 100 章，阶段区间显式给到 500）。等值约束会与该行为冲突且不必要 ——
-    真正要保证的是「计划不许比目标短」。
+    ⚠ 第 3 批二次复审 S5/Q4：此前 I3 是「末段终点 **≥** 目标」，
+    那是我在 A-02 实现时**自己放宽**的（为了迁就一条「目标 100 章、
+    阶段区间显式给到 500」的历史测试）⇒ 于是**显式越界区间仍然合法**
+    （复审实测 `(1,20)(21,40)(41,100)(101,101)(102,102)` 被接受落库）。
+
+    ⇒ 现在收紧回**登记表 A-02 的原文**（「末段 = 目标章数」）：
+    计划必须正好覆盖这本书，不多不少。
+
+    影响面：存量已存库的阶段计划**不会**被重新校验（只在保存时校验）
+    ⇒ 只有「新保存 / 重新保存」会受影响；而「计划比目标短」今天本来就被拒。
     """
     errors: list[str] = []
     if not isinstance(stage_plan, list) or not stage_plan:
@@ -119,10 +125,16 @@ def validate_stage_plan_shape(
         errors.append(f"stage_plan 首段起点应为第 1 章，实际 {first_start}")
 
     last_end = int(stage_plan[-1].get("chapter_end") or 0)
-    if target_chapters and last_end < int(target_chapters):
-        errors.append(
-            f"stage_plan 末段终点 {last_end} 小于目标章数 {target_chapters}"
-            f"（计划必须覆盖到目标）"
-        )
+    if target_chapters:
+        if last_end < int(target_chapters):
+            errors.append(
+                f"stage_plan 末段终点 {last_end} 小于目标章数 {target_chapters}"
+                "（计划必须覆盖到目标）"
+            )
+        elif last_end > int(target_chapters):
+            errors.append(
+                f"stage_plan 末段终点 {last_end} 超过目标章数 {target_chapters}"
+                "（计划必须正好覆盖这本书，不许超出）"
+            )
 
     return errors

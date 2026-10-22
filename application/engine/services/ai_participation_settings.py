@@ -60,6 +60,7 @@ AI_PARTICIPATION_FEATURES: tuple[str, ...] = (
     "dead_character_check",  # H-01 死亡角色出场方式判定
     "wuxia_style_audit",  # E-04 武侠风格审
     "macro_breakpoint",  # H-06A 宏观断点语义分类
+    "macro_refactor_proposal",  # H-06B 宏观重构提案
     "emotion_ledger",  # G-04 情绪账本抽取
 )
 
@@ -91,7 +92,7 @@ AI_PARTICIPATION_SETTINGS_MEDIATED: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "application/analyst/services/llm_voice_analysis_service.py",
-        "engine/pipeline/base.py",
+        "application/analyst/services/voice_drift_service.py",
         "voice_llm_mode",
     ),
 )
@@ -101,17 +102,16 @@ AI_PARTICIPATION_SETTINGS_MEDIATED: tuple[tuple[str, str, str], ...] = (
 #:
 #: ⚠ 这张表是**归类声明**，不是名单式的「豁免」——
 #: 守卫会要求表里每个模块都真的接了闸（直接调或走中介）。
-# #: 「AI 参与能力」模块 —— **可选的判断类**模型调用。
-# #: 总闸关闭 ⇒ 回到改造前行为（代码兜底 / 未评估）。
-# #:
-# #: ⚠ 这张表是**归类声明**，不是豁免名单 ——
-# #: 守卫会要求表里每个模块都真的接了闸（直接调或走中介）。
 AI_PARTICIPATION_CAPABILITY_MODULES: frozenset[str] = frozenset(
     {
         "application/analyst/services/llm_voice_analysis_service.py",
+        # 闸门收在**分派点**（`use_llm_mode` 有 4 个生产调用点，
+        # 收在服务层才一次全覆盖）⇒ 它自己也是会打模型的模块。
+        "application/analyst/services/voice_drift_service.py",
         "application/audit/services/anti_ai_pattern_induction.py",
         "application/audit/services/conflict_action_extraction.py",
         "application/audit/services/macro_breakpoint_classifier.py",
+        "application/audit/services/macro_refactor_proposal_service.py",
         "application/audit/services/wuxia_style_audit.py",
         "application/blueprint/services/act_volume_placement_service.py",
         "application/blueprint/services/finale_intent_service.py",
@@ -152,6 +152,22 @@ AI_PARTICIPATION_CORE_PIPELINE_MODULES: frozenset[str] = frozenset(
         "application/audit/services/chapter_ai_review_service.py",
         "application/audit/services/chapter_review_service.py",
         "application/audit/services/macro_calibration.py",
+        # ── 第 3 批二次复审 S3 新增的 13 个「**传递调用**」模块 ──
+        # 它们**自己不打模型**，但调用了某个已接闸的能力模块
+        # （⇒ 关闸对它们天然生效）⇒ 归核心链路，不要求自己接闸。
+        "application/audit/services/anti_ai_learning.py",
+        "application/audit/services/macro_diagnosis_service.py",
+        "application/evolution/services/gate_service.py",
+        "engine/infrastructure/memory/memory_orchestrator_impl.py",
+        "engine/pipeline/base.py",
+        "engine/pipelines/wuxia_pipeline.py",
+        "engine/runtime/macro_planning_delegate.py",
+        "engine/runtime/runner.py",
+        "interfaces/api/dependencies.py",
+        "interfaces/api/v1/audit/macro_refactor.py",
+        "interfaces/api/v1/core/novels.py",
+        "interfaces/api/v1/engine/checkpoint_routes.py",
+        "interfaces/api/v1/world/cast.py",
         "application/blueprint/services/beat_sheet_service.py",
         "application/blueprint/services/chapter_preplanning_service.py",
         "application/blueprint/services/continuous_planning_service.py",
@@ -187,11 +203,10 @@ AI_PARTICIPATION_CORE_PIPELINE_MODULES: frozenset[str] = frozenset(
 #: 「为什么现在不接、什么时候接」。守卫会要求「会打模型的模块」
 #: 必须被三张表之一覆盖 ⇒ 新模块漏归类会报红。
 AI_PARTICIPATION_UNGOVERNED_MODULES: dict[str, str] = {
-    "application/audit/services/macro_refactor_proposal_service.py": (
-        "H-06B 提案生成 —— 开关关闭时正确行为是「返回空提案」，"
-        "而现在异常路径会 re-raise ⇒ 需要 API 层一起改，单行接闸做不到。"
-        "已记入 ledger 的下一批待办。"
-    ),
+    # ⚠ 第 3 批二次复审 S8：上一轮记在这里的
+    #   ``macro_refactor_proposal_service`` 已**修好**（闸门放在 service 内、
+    #   try/except 之前 ⇒ 关闸返回空提案）⇒ 这张表现在是**空的**。
+    #   ⇒ 它会**继续变空**（每修一个就少一个），只许变短不许变长。
 }
 
 @dataclass(frozen=True)

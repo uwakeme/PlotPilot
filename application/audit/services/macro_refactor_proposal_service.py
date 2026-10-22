@@ -4,6 +4,9 @@ from typing import Dict, Any
 from application.audit.dtos.macro_refactor_dto import RefactorProposalRequest, RefactorProposal
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from application.ai.trace_context import ensure_trace
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 from domain.ai.services.llm_service import LLMService, GenerationConfig
 from domain.ai.value_objects.prompt import Prompt
 from infrastructure.ai.llm_environment import LLMEnvironmentSettings
@@ -37,6 +40,14 @@ class MacroRefactorProposalService:
         Returns:
             RefactorProposal: 重构提案
         """
+        # ⚠ **总闸**（第 3 批二次复审 S8）：
+        #   关闸 ⇒ 不打模型，返回**空提案**（普通 dataclass ⇒ 构造即可）。
+        #   ⚠ 上一轮我把它记成「需 API 层一起改，单行接闸做不到」——**那是不准确的**：
+        #   `RefactorProposal` 是普通 dataclass，API 的 response_model 接受空提案
+        #   ⇒ 其实在 service 内、try/except **之前**就能返回。
+        if not ai_participation_enabled("macro_refactor_proposal"):
+            logger.info("AI 参与总闸关闭：宏观重构提案按空提案处理（不打模型）")
+            return RefactorProposal("", [], [], "")
         try:
             # 构建 LLM prompt
             prompt = self._build_prompt(request)

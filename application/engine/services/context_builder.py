@@ -39,21 +39,24 @@ from application.engine.dag.plan.schema import ChapterExecutionPlan
 
 logger = logging.getLogger(__name__)
 
-#: 上下文构建的**全局** token 上限（**预算口径的唯一定义点**）。
+#: 上下文构建的**全局** token 上限 —— 预算口径的**唯一定义点**。
 #:
 #: ⚠ D-06：此前全仓有**两个**硬编码预算 ——
 #: 主路径 35000、降级路径 20000（`engine/pipeline/base.py` 的 builder 兜底、
 #: `engine/runtime/legacy_writing_delegate.py` 的两处兜底）
 #: ⇒ 降级发生时上下文被**静默削薄 43%**，而调用方只看到一条 warning。
-#: ⇒ 现在所有调用点都引用这一个常量：预算是多少只由这一处决定。
 #:
-#: ⚠ 第 3 批复审 S3：35000 这个**字面量**在本仓还有若干处（DTO 默认值、
-#: 预算分配器的参数默认值、记忆编排器的默认总额…）——
-#: 它们是**各自模块的默认参数**，不是「另一份预算定义」；
-#: 主路径实际走的是本常量（``build_context(max_tokens=…)`` → ``allocate(total_budget=…)``）。
-#: 那几处若要改，本常量也要一起改 ⇒ 见
-#: ``tests/unit/application/engine/test_context_budget_single_source.py``。
-DEFAULT_CONTEXT_MAX_TOKENS = 35000
+#: ⚠ 第 3 批二次复审 S10：35000 这个字面量此前散落在 **6** 处
+#: （allocator ×2 / models / builder / memory_orchestrator / scene_director_dto），
+#: 而这里却写着「唯一定义点」⇒ **注释是假的**。
+#: ⇒ 现在常量下沉到 `engine/core/services/context_budget_limits.py`
+#: （application 与 engine.core 都能引用的唯一一层），
+#: 那 6 处默认参数**全部引用它** ⇒ 字面量只剩定义处一处。
+from engine.core.services.context_budget_limits import (
+    DEFAULT_CONTEXT_MAX_TOKENS,
+)
+
+__all__ = ["DEFAULT_CONTEXT_MAX_TOKENS"]
 
 
 class ContextBuilder:
@@ -365,7 +368,7 @@ class ContextBuilder:
         novel_id: str,
         chapter_number: int,
         outline: str,
-        budget: int = 35000,
+        budget: int = DEFAULT_CONTEXT_MAX_TOKENS,
         scene_director: Optional[Any] = None,
     ) -> str:
         """构建轻量 Bible 切片，补足预算分配器之外的兼容入口。

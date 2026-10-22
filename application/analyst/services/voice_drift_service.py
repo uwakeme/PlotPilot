@@ -16,6 +16,9 @@ from application.analyst.services.voice_analysis_settings import (
     VoiceAnalysisRuntimeSettings,
     get_voice_analysis_runtime_settings,
 )
+from application.engine.services.ai_participation_settings import (
+    ai_participation_enabled,
+)
 
 if TYPE_CHECKING:
     from application.analyst.services.llm_voice_analysis_service import LLMVoiceAnalysisService
@@ -85,7 +88,19 @@ class VoiceDriftService:
         Returns:
             包含 chapter_number, similarity_score, drift_alert 的字典
         """
-        if self.use_llm_mode and self.llm_voice_service:
+        # ⚠ **总闸在服务层收口**（第 3 批二次复审 N3）：
+        #   `use_llm_mode` 有 **4 个生产调用点**（`engine/pipeline/base.py`、
+        #   `engine/runtime/daemon_host.py`、`application/engine/services/
+        #   chapter_aftermath_pipeline.py`、`application/engine/dag/nodes/
+        #   validation_nodes.py`）——此前只有 base.py 那处接了总闸，
+        #   另外 3 处只判 `use_llm_mode` ⇒ 总闸关掉它们照样打模型。
+        #   ⇒ 现在**闸门收在这一处**（分派点）⇒ 4 个调用点一次全覆盖，
+        #   且「同一逻辑写两份」也消掉了（base.py 那处可以撤）。
+        if (
+            self.use_llm_mode
+            and self.llm_voice_service
+            and ai_participation_enabled("voice_llm_mode")
+        ):
             return await self._score_chapter_llm(novel_id, chapter_number, content)
         else:
             return self.score_chapter(novel_id, chapter_number, content, pov_character_id)

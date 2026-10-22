@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from domain.novel.value_objects.action_transition_graph import (
     ActionTransitionGraph as ActionTransitionGraphVO,
 )
+from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
 
 
 class SceneNodePayload(BaseModel):
@@ -168,7 +169,9 @@ class ContextRetrieveRequest(BaseModel):
     chapter_number: int = Field(ge=1)
     outline: str = Field(min_length=1)
     scene_director_result: Optional[Dict[str, Any]] = None
-    max_tokens: int = Field(default=35000, ge=4096, le=120000)
+    max_tokens: int = Field(
+        default=DEFAULT_CONTEXT_MAX_TOKENS, ge=4096, le=120000
+    )
 
     @field_validator("outline", mode="before")
     @classmethod

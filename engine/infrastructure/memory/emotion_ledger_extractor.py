@@ -50,8 +50,14 @@ class EmotionLedgerExtractor:
 
         if not ai_participation_enabled("emotion_ledger"):
             logger.info(
-                "AI 参与总闸关闭：情绪账本抽取按未评估处理", 
+                "AI 参与总闸关闭：情绪账本抽取按未评估处理",
             )
+            # ⚠ **必须 return**（第 3 批二次复审 N1）：
+            #   这里此前只有一行日志 ⇒ 总闸关掉后**照样打模型**，
+            #   而日志说「按未评估处理」⇒ **日志在撒谎**。
+            #   而且这是**每章**都跑的（`memory_orchestrator_impl.py` 接线），
+            #   正是总闸要控制的那类成本。
+            return _empty_deltas()
         if self._llm is None:
             logger.debug("EmotionLedgerExtractor: llm_service 未配置，跳过提取")
             return _empty_deltas()

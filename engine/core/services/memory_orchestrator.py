@@ -19,13 +19,14 @@ from typing import List, Optional, Dict, Any
 
 from engine.core.entities.story import StoryId
 from engine.core.value_objects.emotion_ledger import EmotionLedger
+from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
 from engine.core.entities.foreshadow import ForeshadowStatus
 
 
 @dataclass
 class TokenBudget:
     """Token预算"""
-    total: int = 35000
+    total: int = DEFAULT_CONTEXT_MAX_TOKENS
     t0_max: int = 7000    # 语义记忆 ~20%
     t1_max: int = 10500   # 情景记忆 ~30%
     t2_max: int = 12250   # 工作记忆 ~35%

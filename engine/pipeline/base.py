@@ -1389,14 +1389,12 @@ class BaseStoryPipeline(ABC):
             try:
                 # X-02：声音分析的 LLM 模式也在总闸管辖内
                 # （总闸关闭 ⇒ 回到统计口径 = 改造前行为）。
-                from application.engine.services.ai_participation_settings import (
-                    ai_participation_enabled,
-                )
-
-                if (
-                    getattr(ctx.voice_drift_service, "use_llm_mode", False)
-                    and ai_participation_enabled("voice_llm_mode")
-                ):
+                # ⚠ 第 3 批二次复审 N3：总闸**收在服务层**
+                #   （`voice_drift_service.score_chapter_async` 的分派点）——
+                #   `use_llm_mode` 有 4 个生产调用点，此前只有这里接了闸，
+                #   另外 3 处只判 `use_llm_mode` ⇒ 总闸关掉它们照样打模型。
+                #   ⇒ 这里不再重复判总闸（同一逻辑写两份 ⇒ 合并）。
+                if getattr(ctx.voice_drift_service, "use_llm_mode", False):
                     vr = await ctx.voice_drift_service.score_chapter_async(
                         novel_id=ctx.novel_id,
                         chapter_number=ctx.chapter_number,
@@ -1715,12 +1713,26 @@ class BaseStoryPipeline(ABC):
                     ForeshadowSelectionPlanner,
                 )
 
-                selection = await ForeshadowSelectionPlanner(ctx.llm_service).select(
+                ai_selection = await ForeshadowSelectionPlanner(ctx.llm_service).select(
                     chapter_number=ctx.chapter_number,
                     candidates=candidates,
                     chapter_outline=ctx.outline or "",
                     novel_title=str(getattr(ctx.chapter_node, "title", "") or ""),
                 )
+                # ⚠ **只有 AI 真的选过才替换兜底**（第 3 批二次复审 N2）：
+                #   总闸关闭 / AI 说不出 ⇒ planner 返回 `source=""`（未评估）的
+                #   **空选择**，而它**不抛异常** ⇒ 原先的赋值会把上面的代码兜底
+                #   **整个覆盖掉** ⇒ 本章「待回收伏笔」整块消失
+                #   ⇒ 关闸后的结果**比改造前更差**，而不是「回到改造前行为」。
+                #   ⇒ 现在：不可用就沿用兜底 ⇒「AI 帮不上」只有**一条路**。
+                if ai_selection.is_usable:
+                    selection = ai_selection
+                else:
+                    logger.info(
+                        "[%s] 伏笔取材未评估（AI 不可用/总闸关闭），沿用代码兜底 ch=%s",
+                        ctx.novel_id,
+                        ctx.chapter_number,
+                    )
             except Exception as exc:
                 logger.warning(
                     "[%s] 伏笔取材失败，回落合格集 ch=%s: %s",

@@ -285,10 +285,18 @@ export function validateEditablePlotOutline(outline: PlotOutlineDTO): string {
   )
   if (!hasTopContent) return '请至少保留一项总纲内容'
   if (!outline.stage_plan.length) return '请保留并填写阶段规划'
+  // ⚠ **区分「区间为空」与「区间非法」**（第 3 批二次复审 N4）：
+  //   B2 之后前端**不再编造**区间（AI 不给区间、前端不自算）⇒ 未保存前
+  //   区间本来就是空的；而后端在保存时用 `chapter_ranges` 补齐。
+  //   ⇒ 若这里继续要求「每段都得有数字区间」，请求**根本发不出去**
+  //   ⇒ 向导第 4 步过不去，后端那份补齐逻辑永远用不上。
+  //   ⇒ 现在：**为空 = 交给后端补**（不拦）；**有值但非法**（<1 或倒挂）才拦。
   const invalidStageRange = outline.stage_plan.find((stage) => {
     const start = stage.chapter_start
     const end = stage.chapter_end
-    return typeof start !== 'number' || typeof end !== 'number' || start < 1 || end < 1 || start > end
+    if (start === undefined && end === undefined) return false
+    if (start === undefined || end === undefined) return true
+    return start < 1 || end < 1 || start > end
   })
   if (invalidStageRange) return `请检查${invalidStageRange.label || '阶段'}的起止章节`
   const emptyStage = outline.stage_plan.find(stage => stageContentFieldKeys(stage).every(key => !plotFieldText(stage, key).trim()))

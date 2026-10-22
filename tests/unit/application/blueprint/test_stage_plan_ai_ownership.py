@@ -107,11 +107,41 @@ def test_plan_shorter_than_target_is_rejected():
         normalize_setup_plot_outline_payload(_outline(stages), target_chapters=100)
 
 
-def test_plan_longer_than_target_is_allowed():
-    """既有行为：计划可覆盖到比目标更大的章数（不算违规）。"""
-    stages = [_stage(1, 20), _stage(21, 120), _stage(121, 500)]
+def test_explicit_ranges_within_the_book_are_preserved():
+    """**显式**给的区间（落在书内）不被代码改写 —— 断点由 AI/作者决定。
+
+    ⚠ 第 3 批二次复审 S5/Q4：这条原本是「计划可覆盖到比目标更大的章数
+    （目标 100、显式给到 500）」—— 那个宽容是我在 A-02 实现时**自己放宽**的
+    ⇒ 于是**显式越界区间**也合法（复审实测 `(41,100)(101,101)(102,102)`
+    被接受落库）⇒ 「越界不可能再产生」这句话是**过度声称**。
+    ⇒ 现在 I3 收紧为「末段终点 == 目标章数」（登记表 A-02 原文），
+    本条改为钉住**真正要保住的性质**：显式区间不被改写。
+    """
+    stages = [_stage(1, 20), _stage(21, 60), _stage(61, 100)]
     out = normalize_setup_plot_outline_payload(_outline(stages), target_chapters=100)
-    assert out["stage_plan"][-1]["chapter_end"] == 500
+    assert [(s["chapter_start"], s["chapter_end"]) for s in out["stage_plan"]] == [
+        (1, 20),
+        (21, 60),
+        (61, 100),
+    ]
+
+
+def test_plan_longer_than_target_is_rejected():
+    """计划**超出**目标章数 ⇒ 拒绝（I3 收紧后的新行为）。
+
+    这正是复审实测能被静默落库的那一类
+    （`(1,20)(21,40)(41,100)(101,101)(102,102)`，目标 100 章）。
+    """
+    stages = [_stage(1, 20), _stage(21, 120), _stage(121, 500)]
+    with pytest.raises(ValueError, match="超过目标章数"):
+        normalize_setup_plot_outline_payload(_outline(stages), target_chapters=100)
+
+
+def test_plan_with_a_stage_outside_the_book_is_rejected():
+    """有一段完全落在书外 ⇒ 拒绝（复审实测能被接受的那个形状）。"""
+    stages = [_stage(1, 20), _stage(21, 40), _stage(41, 100), _stage(101, 101), _stage(102, 102)]
+    with pytest.raises(ValueError, match="超过目标章数"):
+        normalize_setup_plot_outline_payload(_outline(stages), target_chapters=100)
 
 
 # ── AI 的 phase / label 不再被按下标改写 ─────────────────────────────────

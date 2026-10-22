@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from engine.core.entities.story import StoryPhase
+from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
 
 
 class PriorityTier(str, Enum):
@@ -40,7 +41,7 @@ class BudgetAllocation:
     """预算分配结果"""
 
     slots: Dict[str, ContextSlot] = field(default_factory=dict)
-    total_budget: int = 35000
+    total_budget: int = DEFAULT_CONTEXT_MAX_TOKENS
     used_tokens: int = 0
     remaining_tokens: int = 0
 

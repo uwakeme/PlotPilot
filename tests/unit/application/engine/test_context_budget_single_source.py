@@ -136,14 +136,72 @@ def test_legacy_fallbacks_use_the_constant():
         )
 
 
+def test_the_global_budget_literal_lives_in_exactly_one_place():
+    """``35000`` 这个字面量**全仓只剩定义处一处**。
+
+    ⚠ 第 3 批二次复审 S10：此前 35000 散落在 **6** 处
+    （allocator ×2 / models / builder / memory_orchestrator / scene_director_dto），
+    而 `context_builder.py` 的注释却写着「唯一定义点」⇒ **注释是假的**。
+    ⇒ 现在常量下沉到 `engine/core/services/context_budget_limits.py`
+    （application 与 engine.core 都能引用的唯一一层），那 6 处默认参数
+    **全部引用它** ⇒ 字面量只剩一处。
+
+    判据扫**三种形状**：普通常量 / 位置参数默认值 / 关键字专用参数默认值。
+    """
+    offenders = []
+    for dirname in SCAN_DIRS:
+        for path in (REPO_ROOT / dirname).rglob("*.py"):
+            if path.name == "context_budget_limits.py":
+                continue  # 定义处本身
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            for node in ast.walk(tree):
+                # 形状 1：普通常量赋值
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Name)
+                            and target.id == "DEFAULT_CONTEXT_MAX_TOKENS"
+                        ):
+                            if isinstance(node.value, ast.Constant) and node.value.value == 35000:
+                                offenders.append(f"{rel}:{node.lineno} (常量赋值)")
+                # 形状 2/3：参数默认值
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = node.args
+                    positional = list(args.posonlyargs) + list(args.args)
+                    defaults = list(args.defaults)
+                    pairs = (
+                        list(zip(positional[-len(defaults):], defaults))
+                        if defaults
+                        else []
+                    )
+                    pairs += [
+                        (arg, default)
+                        for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+                        if default is not None
+                    ]
+                    for _arg, default in pairs:
+                        if isinstance(default, ast.Constant) and default.value == 35000:
+                            offenders.append(f"{rel}:{node.lineno} (参数默认值)")
+    assert not offenders, (
+        "35000 这个字面量又出现在别处（应当只有 context_budget_limits.py 一处）："
+        f"{offenders}"
+    )
+
+
 def test_no_degraded_budget_literal_remains():
     """全仓不再有 `max_tokens=20000` 这个**降级**预算字面量。
 
     ⚠ 第 3 批复审 S2：这条原先**只扫 `ast.Call` 的 keyword**，
     扫不到**函数参数默认值**（`def f(..., max_tokens: int = 20000)`）
-    ⇒ 而 D-06 的 bug 本身就是这个形状（`auto_novel_generation_workflow.py`
-    有一处 `max_tokens: int = 20000` 的默认值）。
-    ⇒ 现在**两种形状都扫**。
+    ⇒ 而 D-06 的 bug 本身就是这个形状。
+    ⚠ **二次复审 N5**：补上「位置参数默认值」之后**仍然漏**——
+    那条残留恰好是**关键字专用参数**（`*, max_tokens=20000`）
+    ⇒ 还必须扫 ``args.kwonlyargs`` / ``args.kw_defaults``。
+    ⇒ 现在**三种形状都扫**：call keyword / 位置参数默认值 / 关键字专用参数默认值。
     """
     offenders = []
     for dirname in SCAN_DIRS:
@@ -167,9 +225,22 @@ def test_no_degraded_budget_literal_remains():
                 # ⚠ 函数/方法的**参数默认值**（D-06 的 bug 就是这个形状）
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     args = node.args
+                    # 位置参数默认值（``def f(a, b=1)``）
                     positional = list(args.posonlyargs) + list(args.args)
                     defaults = list(args.defaults)
-                    for arg, default in zip(positional[-len(defaults):], defaults) if defaults else []:
+                    pairs = (
+                        list(zip(positional[-len(defaults):], defaults))
+                        if defaults
+                        else []
+                    )
+                    # ⚠ **关键字专用参数**默认值（``def f(*, a=1)``）——
+                    #   二次复审 N5：这条残留恰好在这里，前一版只扫位置参数 ⇒ 漏。
+                    pairs += [
+                        (arg, default)
+                        for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+                        if default is not None
+                    ]
+                    for arg, default in pairs:
                         if arg.arg != "max_tokens":
                             continue
                         if isinstance(default, ast.Constant) and default.value == 20000:
