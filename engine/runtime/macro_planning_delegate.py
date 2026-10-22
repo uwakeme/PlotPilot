@@ -104,6 +104,28 @@ def _pause_for_invocation(host: "DaemonHostProtocol", novel: Novel, outcome) -> 
     host._flush_novel(novel)
 
 
+async def _assess_planning_depth(
+    host: "DaemonHostProtocol", novel: Novel, target_chapters: int
+) -> Optional[str]:
+    """AI 自评规划深度；判不出来 ⇒ ``None``（调用方回落章数阈值）。"""
+    llm_service = getattr(host, "llm_service", None)
+    if llm_service is None:
+        return None
+    try:
+        from application.engine.services.planning_depth_assessor import (
+            PlanningDepthAssessor,
+        )
+
+        return await PlanningDepthAssessor(llm_service).assess(
+            genre=str(getattr(novel, "genre", "") or ""),
+            premise=str(getattr(novel, "premise", "") or ""),
+            target_chapters=target_chapters,
+        )
+    except Exception as exc:
+        logger.warning("规划深度自评失败，回落章数阈值: %s", exc)
+        return None
+
+
 async def _request_macro_invocation(host: "DaemonHostProtocol", novel: Novel, *, target_chapters: int) -> Any:
     from application.ai_invocation.autopilot.factory import get_or_create_autopilot_orchestrator
     from application.ai_invocation.autopilot.intents import AutopilotInvocationIntent
@@ -114,7 +136,11 @@ async def _request_macro_invocation(host: "DaemonHostProtocol", novel: Novel, *,
     from infrastructure.persistence.database.connection import get_database
 
     bible_context = host.planning_service._get_bible_context(novel.novel_id.value)
-    variables = host.planning_service.build_quick_macro_variables(bible_context, target_chapters)
+    # B-06：AI 自评「这本书的结构要铺到多细」（判不出来 ⇒ 章数阈值兜底）。
+    ai_depth = await _assess_planning_depth(host, novel, target_chapters)
+    variables = host.planning_service.build_quick_macro_variables(
+        bible_context, target_chapters, ai_depth=ai_depth
+    )
     runtime_variables = {
         alias: variables[alias]
         for alias in (

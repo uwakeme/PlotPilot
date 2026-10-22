@@ -2620,7 +2620,12 @@ class ContinuousPlanningService:
             self.build_quick_macro_variables(bible_context, target_chapters),
         )
 
-    def build_quick_macro_variables(self, bible_context: Dict, target_chapters: int) -> Dict:
+    def build_quick_macro_variables(
+        self,
+        bible_context: Dict,
+        target_chapters: int,
+        ai_depth: Optional[str] = None,
+    ) -> Dict:
         """构建 planning-quick-macro 的运行变量。
 
         AI Invocation 需要变量快照，旧宏观规划提示词也复用同一份变量构造，避免两套规则漂移。
@@ -2630,18 +2635,23 @@ class ContinuousPlanningService:
         ``estimated_chapters`` 之和等于 ``target_chapters``（由 user.md 强制）。
         引擎侧的封顶改走 ``structure_budget.resolve_act_ceiling``，不依赖公式预测。
         """
-        if target_chapters > 500:
-            planning_depth = "framework"
-        elif target_chapters > 100:
-            planning_depth = "partial"
-        else:
-            planning_depth = "full"
+        # B-06：档位由 **AI 自评**（ai_depth）；章数给出的是**上限**，
+        # 不许选比上限更细的档（防 schema 过大撑爆上下文）。
+        # AI 没给 / 给的不合法 ⇒ 用章数阈值那档（与改造前逐位一致）。
+        from application.blueprint.services.planning_depth import (
+            resolve_planning_depth,
+        )
+
+        resolved_depth = resolve_planning_depth(target_chapters, ai_depth)
+        planning_depth = resolved_depth.depth
 
         logger.info(
-            "[QuickPrompt] target=%s → 结构层数由 LLM 按剧情容量自定（planning_depth=%s），"
-            "引擎只封顶总章数",
+            "[QuickPrompt] target=%s → 结构层数由 LLM 按剧情容量自定（planning_depth=%s，"
+            "来源=%s%s），引擎只封顶总章数",
             target_chapters,
             planning_depth,
+            resolved_depth.source,
+            "，已被章数上限夹紧" if resolved_depth.clamped else "",
         )
 
         story_context = _format_bible_context_budgeted(

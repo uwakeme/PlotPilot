@@ -130,6 +130,12 @@ rhythm_quota:
   max_tokens: 1200
   temperature: 0.3
 
+# B-06：规划深度自评。判读题 ⇒ 温度低（要稳）。
+planning_depth:
+  extends: base_generation_profile
+  max_tokens: 800
+  temperature: 0.2
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

@@ -1,0 +1,26 @@
+name: 规划深度自评
+category: planning
+source: application/engine/services/planning_depth_assessor.py
+description: 由 AI 自评「这本书的结构要铺到多细」（取代按目标章数硬切档位；章数上限仍由代码夹紧）
+builtin: true
+tags:
+- 规划
+- 深度
+- 结构
+- JSON输出
+output_format: json
+variables:
+- name: genre
+  desc: 题材
+  type: string
+  required: true
+- name: premise
+  desc: 一句话梗概
+  type: string
+  required: true
+- name: target_chapters
+  desc: 目标总章数
+  type: string
+  required: true
+id: planning-depth-assessment
+sort_order: 121

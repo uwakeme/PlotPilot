@@ -101,6 +101,8 @@ PLANNING_MACRO_BREAKPOINT = "planning-macro-breakpoint"
 PLANNING_DEAD_CHARACTER_CHECK = "evolution-dead-character-check"
 # E-06：题材节奏配额（AI 依题材/前章张力定「本章该多紧、怎么写」）
 PLANNING_RHYTHM_QUOTA = "planning-rhythm-quota"
+# B-06：规划深度自评（AI 判断「这本书的结构要铺到多细」）
+PLANNING_DEPTH_ASSESSMENT = "planning-depth-assessment"
 # E-04：武侠题材的战斗逻辑 / 现代口语判定（由 LLM 审，取代代码的两条正则 + 7 项词表）
 PLANNING_WUXIA_STYLE_AUDIT = "wuxia-style-audit"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
@@ -212,6 +214,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_MACRO_BREAKPOINT,
     PLANNING_DEAD_CHARACTER_CHECK,
     PLANNING_RHYTHM_QUOTA,
+    PLANNING_DEPTH_ASSESSMENT,
     PLANNING_WUXIA_STYLE_AUDIT,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,
