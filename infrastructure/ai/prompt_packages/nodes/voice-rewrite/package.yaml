@@ -1,7 +1,7 @@
 name: Voice rewrite (style alignment)
 category: generation
 source: application/engine/services/autopilot_daemon.py::_build_voice_rewrite_prompt()
-description: Rewrite chapter content to align with established narrative voice and style
+description: 定向改写正文以对齐既有文风；并返回本轮诊断与「下一轮换什么手法」（E-03）
 builtin: true
 tags:
 - voice
@@ -40,5 +40,13 @@ variables:
   desc: Current chapter content to rewrite
   type: string
   required: true
+- name: previous_diagnosis
+  desc: 上一轮模型自评的「为什么没达标」（首轮为空）
+  type: string
+  required: false
+- name: previous_next_technique
+  desc: 上一轮模型建议的「下一轮换什么手法」（首轮为空）
+  type: string
+  required: false
 id: voice-rewrite
 sort_order: 21

@@ -1426,8 +1426,13 @@ class DaemonHostMixin:
         content: str,
         similarity_score: float,
         attempt: int,
+        previous_diagnosis: str = "",
+        previous_next_technique: str = "",
     ) -> Dict[str, Any]:
-        """构建定向修正文风的变量快照。"""
+        """构建定向修正文风的变量快照。
+
+        E-03：带上一轮的诊断与「下一轮换什么手法」。
+        """
         style_summary = ""
         voice_anchors = ""
         voice_service = self._get_voice_service()
@@ -1460,6 +1465,8 @@ class DaemonHostMixin:
             "threshold": f"{VOICE_REWRITE_THRESHOLD:.2f}",
             "outline": outline,
             "content": content,
+            "previous_diagnosis": previous_diagnosis or "",
+            "previous_next_technique": previous_next_technique or "",
         }
 
     def _build_voice_rewrite_prompt(
@@ -1486,8 +1493,10 @@ class DaemonHostMixin:
         content: str,
         similarity_score: float,
         attempt: int,
-    ) -> Optional[str]:
-        """执行一次定向修文。"""
+        previous_diagnosis: str = "",
+        previous_next_technique: str = "",
+    ) -> Optional[Any]:
+        """执行一次定向修文（E-03：返回改写产出，含本轮诊断与下一轮手法）。"""
         if not self.llm_service:
             return None
 
@@ -1497,6 +1506,8 @@ class DaemonHostMixin:
             content,
             similarity_score,
             attempt,
+            previous_diagnosis,
+            previous_next_technique,
         )
         config = GenerationConfig(
             max_tokens=max(4096, min(8192, int(len(content) * 1.5))),
@@ -1523,6 +1534,8 @@ class DaemonHostMixin:
                         "threshold": variables["threshold"],
                         "outline": variables["outline"],
                         "content": variables["content"],
+                        "previous_diagnosis": variables["previous_diagnosis"],
+                        "previous_next_technique": variables["previous_next_technique"],
                     },
                     context={
                         "novel_id": str(getattr(novel.novel_id, "value", novel.novel_id)),
@@ -1536,9 +1549,21 @@ class DaemonHostMixin:
             logger.warning("[%s] 文风定向修文失败（attempt=%d）：%s", novel.novel_id, attempt, e)
             return None
 
-        rewritten = strip_reasoning_artifacts((rewritten_text or "").strip())
+        from application.engine.services.voice_rewrite_result import (
+            VoiceRewriteOutcome,
+            parse_voice_rewrite,
+        )
+
+        outcome = parse_voice_rewrite(rewritten_text or "")
+        rewritten = strip_reasoning_artifacts(outcome.rewritten or "").strip()
         if not rewritten:
             return None
+        return VoiceRewriteOutcome(
+            rewritten=rewritten,
+            diagnosis=outcome.diagnosis,
+            next_technique=outcome.next_technique,
+            structured=outcome.structured,
+        )
         return rewritten
 
     async def _apply_voice_rewrite_loop(
@@ -1552,6 +1577,9 @@ class DaemonHostMixin:
         current_content = content
         current_result = initial_drift_result or {"drift_alert": False, "similarity_score": None}
 
+        # E-03：把**上一轮的诊断与「下一轮换什么手法」**回传给下一轮
+        previous_diagnosis = ""
+        previous_next_technique = ""
         for attempt in range(1, VOICE_REWRITE_MAX_ATTEMPTS + 1):
             if not self._should_attempt_voice_rewrite(current_result):
                 break
@@ -1568,18 +1596,25 @@ class DaemonHostMixin:
                 attempt,
                 VOICE_REWRITE_MAX_ATTEMPTS,
             )
-            rewritten = await self._rewrite_chapter_for_voice(
+            outcome = await self._rewrite_chapter_for_voice(
                 novel,
                 chapter,
                 current_content,
                 float(similarity),
                 attempt,
+                previous_diagnosis=previous_diagnosis,
+                previous_next_technique=previous_next_technique,
             )
+            rewritten = outcome.rewritten if outcome else ""
             if not rewritten or rewritten.strip() == current_content.strip():
                 logger.warning("[%s] 定向修文未产生有效变化，停止继续重试", novel.novel_id)
                 break
 
             current_content = rewritten
+            # E-03：记下本轮诊断与建议，供下一轮使用
+            if outcome is not None:
+                previous_diagnosis = outcome.diagnosis
+                previous_next_technique = outcome.next_technique
             # 🔥 核心修复：使用独立短连接写入，避免持有长连接写锁阻塞 API 进程
             self._save_chapter_ephemeral(
                 novel.novel_id.value, chapter.number,

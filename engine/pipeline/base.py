@@ -2128,6 +2128,10 @@ class BaseStoryPipeline(ABC):
         outline = (ctx.outline or "").strip() or "无单独大纲，必须严格保留现有剧情事实。"
 
         # 首轮由调用方保证 drift_alert 且 similarity < 阈值；后续轮看复评结果
+        # E-03：把**上一轮的诊断与「下一轮换什么手法」**回传给下一轮
+        # （改造前模型不知道上一轮为什么没达标 ⇒ 只能盲改）。
+        previous_diagnosis = ""
+        previous_next_technique = ""
         for attempt in range(1, self.VOICE_REWRITE_MAX_ATTEMPTS + 1):
             variables = {
                 "style_fingerprint": style_block,
@@ -2138,8 +2142,11 @@ class BaseStoryPipeline(ABC):
                 "threshold": f"{self.VOICE_REWRITE_THRESHOLD:.2f}",
                 "outline": outline,
                 "content": ctx.chapter_content,
+                "previous_diagnosis": previous_diagnosis,
+                "previous_next_technique": previous_next_technique,
             }
-            rewritten_text = await self._invoke_voice_rewrite(ctx, variables)
+            outcome = await self._invoke_voice_rewrite(ctx, variables)
+            rewritten_text = outcome.rewritten if outcome else None
             ctx.rewrite_attempts = attempt
             if not rewritten_text or rewritten_text.strip() == ctx.chapter_content.strip():
                 logger.warning(
@@ -2150,6 +2157,10 @@ class BaseStoryPipeline(ABC):
 
             ctx.chapter_content = rewritten_text
             ctx.rewrite_applied = True
+            # E-03：记下本轮诊断与建议，供下一轮使用
+            if outcome is not None:
+                previous_diagnosis = outcome.diagnosis
+                previous_next_technique = outcome.next_technique
             # 即时复评：达标则停止循环
             try:
                 vr = ctx.voice_drift_service.score_chapter(
@@ -2168,11 +2179,20 @@ class BaseStoryPipeline(ABC):
             ):
                 break
 
-    async def _invoke_voice_rewrite(self, ctx: PipelineContext, variables: dict) -> Optional[str]:
-        """执行一次 VOICE_REWRITE 调用，返回改写后正文（失败返回 None）。"""
+    async def _invoke_voice_rewrite(
+        self, ctx: PipelineContext, variables: dict
+    ) -> Optional["VoiceRewriteOutcome"]:
+        """执行一次 VOICE_REWRITE 调用，返回改写产出（失败返回 None）。
+
+        E-03：返回的不只是正文，还有**本轮诊断**与**下一轮换什么手法**。
+        """
         from application.ai_invocation.autopilot.factory import get_or_create_autopilot_helper_invoker
         from application.ai_invocation.autopilot.helper_invoker import AutopilotHelperRequest
         from application.ai.llm_output_sanitize import strip_reasoning_artifacts
+        from application.engine.services.voice_rewrite_result import (
+            VoiceRewriteOutcome,
+            parse_voice_rewrite,
+        )
         from infrastructure.ai.prompt_keys import VOICE_REWRITE
 
         content = variables.get("content", "")
@@ -2197,7 +2217,16 @@ class BaseStoryPipeline(ABC):
         except Exception as e:
             logger.warning("[%s] 文风定向修文调用失败: %s", ctx.novel_id, e)
             return None
-        return strip_reasoning_artifacts((rewritten_text or "").strip()) or None
+        outcome = parse_voice_rewrite(rewritten_text or "")
+        cleaned = strip_reasoning_artifacts(outcome.rewritten or "").strip()
+        if not cleaned:
+            return None
+        return VoiceRewriteOutcome(
+            rewritten=cleaned,
+            diagnosis=outcome.diagnosis,
+            next_technique=outcome.next_technique,
+            structured=outcome.structured,
+        )
 
     async def _score_tension_via_llm(self, ctx: PipelineContext) -> Optional[int]:
         """通过 AI Invocation 评分。

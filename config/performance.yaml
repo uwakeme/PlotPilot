@@ -2,11 +2,9 @@
 
 # ─── 自动驾驶配置 ───
 autopilot:
-  voice_rewrite:
-    max_attempts: 3
-    threshold: 0.68
-    warning_threshold: 0.75
-
+  # ⚠ E-03：原来的 voice_rewrite 段（max_attempts / threshold / warning_threshold）
+  # **全仓无人读取** ⇒ 删掉。它的三个值在代码里有**真**来源
+  # （BaseStoryPipeline 的类属性，支持子类覆盖）。
   poll_interval: 5  # 轮询间隔（秒）
   max_auto_chapters: 9999  # 保护上限
   consecutive_error_limit: 3  # 连续错误上限

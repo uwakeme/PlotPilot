@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from application.engine.services.voice_rewrite_result import VoiceRewriteOutcome
 from engine.pipeline.base import BaseStoryPipeline
 from engine.pipeline.context import PipelineContext
 
@@ -38,7 +39,8 @@ async def test_rewrite_loop_rewrites_content_and_stops_when_score_recovers(monke
     pipeline = _Pipeline.__new__(_Pipeline)  # 绕过 __init__ 的重依赖
 
     async def _fake_invoke(p, c, variables):
-        return "改写后的正文" * 20
+        # E-03：桩跟着接口改（返回改写产出，不只是正文）
+        return VoiceRewriteOutcome(rewritten="改写后的正文" * 20)
 
     monkeypatch.setattr(_Pipeline, "_invoke_voice_rewrite", _fake_invoke)
 
@@ -76,7 +78,7 @@ async def test_rewrite_loop_gives_up_when_output_unchanged(monkeypatch):
     pipeline = _Pipeline.__new__(_Pipeline)
 
     async def _same_invoke(p, c, variables):
-        return ctx.chapter_content
+        return VoiceRewriteOutcome(rewritten=ctx.chapter_content)
 
     monkeypatch.setattr(_Pipeline, "_invoke_voice_rewrite", _same_invoke)
 
