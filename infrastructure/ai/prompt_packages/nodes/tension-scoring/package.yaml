@@ -1,6 +1,6 @@
 name: 多维张力评分
 category: extraction
-source: infrastructure/ai/prompts/prompts_defaults.json
+source: application/analyst/services/tension_scoring_service.py
 description: 引入戏剧冲突理论，量化评估文本的情节、情绪与节奏张力（0-100）
 builtin: true
 tags:

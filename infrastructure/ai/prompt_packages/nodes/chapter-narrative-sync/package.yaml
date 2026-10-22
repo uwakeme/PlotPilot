@@ -1,6 +1,6 @@
 name: 章节叙事同步提取
 category: extraction
-source: infrastructure/ai/prompts/prompts_defaults.json
+source: application/world/services/chapter_narrative_sync.py
 description: 增强版叙事提取：为后续大纲修正提供极其精准的"状态机"快照
 builtin: true
 tags:

@@ -1,6 +1,6 @@
 name: 世界观与文风生成
 category: world
-source: infrastructure/ai/prompts/prompts_defaults.json
+source: application/world/services/auto_bible_generator.py
 description: 沿用 Plotpilot_writer 五维基础字段契约生成世界观
 builtin: true
 tags:

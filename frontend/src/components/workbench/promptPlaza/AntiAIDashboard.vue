@@ -337,7 +337,7 @@
               <strong>L6 Token 级拦截</strong>：AC 自动机流式扫描 + Logit Bias 抑制，实时拦截 AI 味输出。
             </div>
             <div class="tl-item">
-              <strong>L7 章后审计</strong>：35+ 模式检测、指标趋势追踪、自适应学习新模式。
+              <strong>L7 章后审计</strong>：50+ 模式检测、指标趋势追踪、自适应学习新模式。
             </div>
           </div>
         </section>
@@ -356,8 +356,8 @@
         </section>
 
         <section class="tutorial-section">
-          <h4>35+ 检测模式一览</h4>
-          <p>系统内置 35+ 种 AI 味检测模式，覆盖以下分类：</p>
+          <h4>50+ 检测模式一览</h4>
+          <p>系统内置 50+ 种 AI 味检测模式，覆盖以下分类：</p>
           <div class="pattern-categories">
             <div class="pc-item"><strong>微表情</strong>：嘴角上扬、眼里闪过、指尖泛白、一丝系列、下意识等</div>
             <div class="pc-item"><strong>声线</strong>：带语气前缀、声线变化、字字带X、不容置疑等</div>
@@ -474,7 +474,7 @@ const defenseLayers = computed(() => {
     {
       key: 'L7',
       name: 'L7 章后审计',
-      desc: '35+模式检测 + 指标趋势 + 自适应学习',
+      desc: '50+模式检测 + 指标趋势 + 自适应学习',
       icon: '',
       color: '#ef4444',
       active: layers?.L7_audit === 'active',
