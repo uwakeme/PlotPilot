@@ -69,7 +69,15 @@ def test_rejects_analysis_sections_mixed_into_execution_script():
     assert not has_rendered_chapter_execution_plan(outline)
 
 
-def test_rejects_incomplete_execution_script_even_with_five_markers():
+def test_a_partial_plan_is_no_longer_rejected_by_the_seven_section_shape():
+    """⚠ E-01b：判据从「**七段齐**」改成「**有编号段落、递增**」。
+
+    此前缺段的七段剧本判否（会重新生成一遍）；现在段落结构由 **AI 选**
+    （七段降为可选契约之一）⇒ 一份只写三段的剧本**本身就是本章该有的样子**，
+    不该因为「不是七段」而被判成不是剧本。
+
+    仍被拒的两种：**顺序乱了**（见下）、**含禁段**（见上）。
+    """
     outline = "\n".join(
         [
             "一、开篇切入点：",
@@ -80,7 +88,26 @@ def test_rejects_incomplete_execution_script_even_with_five_markers():
         ]
     )
 
+    assert has_rendered_chapter_execution_plan(outline)
+
+
+def test_rejects_sections_that_are_out_of_order():
+    """段落序号必须递增（顺序就是本章的展开顺序）。"""
+    outline = "\n".join(
+        [
+            "二、场景转换列表：",
+            "一、开篇切入点：",
+        ]
+    )
+
     assert not has_rendered_chapter_execution_plan(outline)
+
+
+def test_rejects_a_text_without_numbered_sections():
+    """没有编号段落标题 ⇒ 不是剧本（轻量占位大纲就是这种）。"""
+    assert not has_rendered_chapter_execution_plan(
+        "主事件：推进主事件\n开篇入口：承接前章后果"
+    )
 
 
 def test_lightweight_outline_labels_first_chapter_as_opening_entry():

@@ -125,6 +125,13 @@ rhythm_quota:
   # 送进正文提示词的配额文本上限（字符）
   max_chars: 600
 
+# ─── 章前剧本结构（E-01b）───
+# 七段执行剧本降为「可选契约之一」：AI 可以自选段落结构。
+# ⚠ enabled 默认**关闭** ⇒ 渲染与章前剧本提示词**逐位一致**。
+#   打开后每一章的细纲形状与正文锚定方式都会变 ⇒ 必须灰度。
+chapter_plan_structure:
+  enabled: false
+
 # ─── 数据库配置 ───
 database:
   connection_pool:

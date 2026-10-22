@@ -11,11 +11,19 @@ from typing import Any, Optional
 
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from application.blueprint.services.chapter_continuity_ledger import ChapterContinuityLedgerService
-from application.blueprint.services.chapter_plan_renderer import render_chapter_execution_plan, stringify_plan_value
+from application.blueprint.services.chapter_plan_renderer import (
+    has_rendered_plan_content,
+    render_chapter_execution_plan,
+    stringify_plan_value,
+)
 from application.blueprint.services.chapter_planning_policy import (
     DEFAULT_CHAPTER_PLANNING_POLICY,
     ChapterPlanningPolicy,
     has_rendered_chapter_execution_plan,
+)
+from application.blueprint.services.chapter_plan_structure import (
+    chapter_plan_structure_enabled,
+    plan_structure_prompt_flag,
 )
 from domain.ai.services.llm_service import LLMService
 from domain.novel.entities.chapter import Chapter
@@ -88,8 +96,8 @@ class ChapterPreplanningService:
         legacy_plan = self._extract_legacy_chapter_plan(node)
         ledger = self.ledger_service.build_for_chapter(novel_id, chapter_number)
         continuity_context = ledger.to_planning_context_text()
-        if legacy_plan and has_rendered_chapter_execution_plan(render_chapter_execution_plan(legacy_plan)):
-            rendered = render_chapter_execution_plan(legacy_plan)
+        if legacy_plan and has_rendered_chapter_execution_plan(self._render_plan(legacy_plan)):
+            rendered = self._render_plan(legacy_plan)
             await self._persist_outline(
                 novel_id,
                 chapter_number,
@@ -117,6 +125,9 @@ class ChapterPreplanningService:
                 # D-03 P1：本章应推进的伏笔。空串时模板整段不渲染，
                 # 因此「本章没有待推进伏笔」与「有但没进剧本」在产物里可分辨。
                 "foreshadow_context": foreshadow_context or "",
+                # E-01b：结构开关。空串 = 关闭 ⇒ 模板里的 {% if plan_structure_enabled %}
+                # 整块不渲染 ⇒ 章前剧本提示词与改造前**逐位一致**。
+                "plan_structure_enabled": plan_structure_prompt_flag(),
             },
         ).prompt
         config = generation_config_from_profile("planning_chapter_preplan")
@@ -128,9 +139,15 @@ class ChapterPreplanningService:
         chapter_plan = data.get("chapter_plan")
         if not isinstance(chapter_plan, dict):
             raise ValueError("chapter_preplan_requires_chapter_plan_object")
-        rendered = render_chapter_execution_plan(chapter_plan)
+        rendered = self._render_plan(chapter_plan)
+        # E-01b：登记表 E-01 的不变量「大纲必须落地」——
+        # 渲染不出内容 ⇒ 不落空细纲（宁可这次生成失败，也不要一份空剧本进正文）。
+        # ⚠ **受结构开关控制**：关闭时沿用改造前的判定（占位符也算内容），
+        #   否则会把一条从未生效的硬约束突然激活 ⇒ 行为与改造前逐位一致。
+        if chapter_plan_structure_enabled() and not has_rendered_plan_content(rendered):
+            raise ValueError("chapter_preplan_requires_non_empty_execution_plan")
         if not has_rendered_chapter_execution_plan(rendered):
-            raise ValueError("chapter_preplan_requires_seven_section_execution_plan")
+            raise ValueError("chapter_preplan_requires_execution_plan")
 
         proposed_target_words = self._extract_proposed_target_words(data)
 
@@ -189,6 +206,19 @@ class ChapterPreplanningService:
         if inspect.isawaitable(result):
             result = await result
         return result.content if hasattr(result, "content") else str(result or "")
+
+    def _render_plan(self, chapter_plan: Any) -> str:
+        """按当前开关渲染章前执行剧本（E-01b：结构可以由 AI 选）。
+
+        开关关闭 ⇒ 标准七段 + 空段占位（**逐位一致**）；
+        开关打开 ⇒ 允许 ``chapter_plan.plan_sections`` 自选段落 + 空段不渲染。
+        """
+        enabled = chapter_plan_structure_enabled()
+        return render_chapter_execution_plan(
+            chapter_plan,
+            allow_custom_sections=enabled,
+            drop_empty_sections=enabled,
+        )
 
     def _extract_act_plan(self, node: Any, outline: str) -> dict[str, Any] | str:
         metadata = getattr(node, "metadata", {}) if node is not None else {}

@@ -98,6 +98,8 @@ class PlanningChapterPreplanVariables(BaseModel):
     # 是「这一章该怎么写」的指令，拼进 outline 会被本步骤的返回值覆盖。
     finale_directive: str = ""
     # D-03 P1：本章应推进的伏笔（与正文上下文同一份）。空串 = 不施加伏笔约束。
+    # E-01b：结构开关（AI 可否自选段落）。空串 = 关闭 ⇒ 提示词逐位一致。
+    plan_structure_enabled: str = ""
     foreshadow_context: str = ""
 
 

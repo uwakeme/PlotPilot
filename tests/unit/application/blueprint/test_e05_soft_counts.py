@@ -20,7 +20,11 @@
   （``format_event`` 只把它显示成「事件N（phase）」）⇒ 放宽安全。
 
 改造后：三处数量都改成「通常是 N 个，按本章实际分量给，不必凑数」，
-phase 改成建议用词；**七段结构契约仍然是硬的**（E-01 不变）。
+phase 改成建议用词；**七段结构契约在默认路径上仍然是硬的**。
+
+⚠ E-01b（2026-10-22）之后，七段降为「**可选契约之一**」（段落可由 AI 自选），
+结构开关默认**关闭** ⇒ 本文件守的「默认路径」仍然成立；
+开关打开时的行为由 ``test_e01b_chapter_plan_structure.py`` 守。
 """
 from __future__ import annotations
 
@@ -78,7 +82,12 @@ def test_the_prompt_marks_the_counts_as_soft():
 
 
 def test_the_prompt_keeps_the_seven_section_contract_hard():
-    """**七段结构契约仍然是硬的** —— 放宽的是数量与用词，不是结构。"""
+    """**七段结构契约仍然是硬的** —— 放宽的是数量与用词，不是结构。
+
+    ⚠ E-01b 之后这句话只对**关闭结构开关时**成立（开关打开时七段降为
+    「可选契约之一」，模型可以自选段落）⇒ 本条守的是**默认路径**：
+    关闭时提示词里必须仍有「必须且只能覆盖七段字段」这条硬契约。
+    """
     text = _read(PROMPT_REL)
 
     assert "必须且只能覆盖七段字段" in text
@@ -130,11 +139,19 @@ def test_the_code_does_not_validate_the_phase_enum():
     assert not offenders, "代码里又出现了硬编码的阶段枚举：" + "；".join(offenders)
 
 
-def test_the_seven_section_contract_is_still_enforced_in_code():
-    """七段契约仍由代码强制（软化的不是它）。"""
+def test_the_execution_plan_contract_is_still_enforced_in_code():
+    """⚠ E-01b：**结构**契约从「七段齐」改成「段落剧本 + 至少一段有内容」。
+
+    E-05 放宽的是**数量与用词**；E-01b 放宽的是**结构本身**
+    （七段降为可选契约之一，段落由 AI 选）⇒ 代码仍然强制的那条变成
+    「渲染结果必须是一份**有内容**的段落剧本」。
+
+    ⇒ 错误码随之改名（``..._seven_section_...`` 已名不副实）。
+    """
     constants = _string_constants(SERVICE_REL)
 
-    assert "chapter_preplan_requires_seven_section_execution_plan" in constants
+    assert "chapter_preplan_requires_execution_plan" in constants
+    assert "chapter_preplan_requires_non_empty_execution_plan" in constants
     assert "chapter_preplan_requires_chapter_plan_object" in constants
 
 

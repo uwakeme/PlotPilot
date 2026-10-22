@@ -1,8 +1,9 @@
 """Shared policy for act and chapter pre-planning."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from application.blueprint.services.foreshadow_pairing import (
     validate_foreshadow_pairing,
@@ -51,6 +52,44 @@ CHAPTER_EXECUTION_PLAN_FORBIDDEN_MARKERS = (
     "故事单元检查",
     "情绪变化节点",
 )
+
+#: **段落序号前缀**（「一、」/「11、」）—— 检测与重新编号**共用**这一条口径
+#: （同一逻辑写两份必然漂移）。
+SECTION_NUMBER_PREFIX_RE = re.compile(r"^(?:[一二三四五六七八九十]+|\d+)、")
+
+#: 中文数字 → 阿拉伯数字（只认 1..99，够段落序号用）。
+_CN_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def parse_section_number(text: str) -> Optional[int]:
+    """解析段落序号（中文数字或阿拉伯数字）；不是序号返回 ``None``。"""
+    value = (text or "").strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    if "十" in value:
+        head, _, tail = value.partition("十")
+        tens = _CN_DIGITS.get(head, 1) if head else 1
+        ones = _CN_DIGITS.get(tail, 0) if tail else 0
+        return tens * 10 + ones
+    total = 0
+    for char in value:
+        digit = _CN_DIGITS.get(char)
+        if digit is None:
+            return None
+        total = total * 10 + digit
+    return total or None
 
 
 def _is_blank(value: Any) -> bool:
@@ -102,17 +141,35 @@ def validate_lightweight_act_plan(
 
 
 def has_rendered_chapter_execution_plan(text: str | None) -> bool:
-    """Detect the seven-section execution script used by the prose pipeline."""
+    """这份文本是不是一份**章前执行剧本**？
+
+    ⚠ E-01b：此前判据是「**七段齐且有序**」（七个固定段标题全在且按序出现）。
+    现在段落结构由 **AI 选**（七段降为可选契约之一）⇒ 判据改成
+    「**有编号段落标题**、编号递增、且不含禁段」。
+
+    对代码自产的产物**判定等价**：细纲要么是齐七段（两种判据都真），
+    要么是轻量占位（无编号标题 ⇒ 两种判据都假）。
+    唯一改变的是「缺段的七段剧本」：此前判否（会重新生成），现在判真 ——
+    那正是「七段齐」这个契约被拆掉的后果。
+    """
     value = (text or "").strip()
     if not value:
         return False
     if any(marker in value for marker in CHAPTER_EXECUTION_PLAN_FORBIDDEN_MARKERS):
         return False
 
-    positions = [value.find(marker) for marker in CHAPTER_EXECUTION_PLAN_MARKERS]
-    if any(position < 0 for position in positions):
+    numbers: list[int] = []
+    # ⚠ **按行扫**：``^`` 只在行首生效，整段 finditer 只会看到第一行的标题。
+    for line in value.splitlines():
+        match = SECTION_NUMBER_PREFIX_RE.match(line)
+        if match is None:
+            continue
+        number = parse_section_number(match.group(0).rstrip("、"))
+        if number is not None:
+            numbers.append(number)
+    if not numbers:
         return False
-    return positions == sorted(positions) and len(set(positions)) == len(positions)
+    return all(later > earlier for earlier, later in zip(numbers, numbers[1:]))
 
 
 def truncate_text(text: str | None, limit: int) -> str:

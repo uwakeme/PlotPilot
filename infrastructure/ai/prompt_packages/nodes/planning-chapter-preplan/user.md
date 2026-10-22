@@ -21,10 +21,10 @@
 输出要求：
 
 1. 输出一个 JSON 对象，包含 detail_title、key_plot_points、chapter_characters 与 chapter_plan。
-2. chapter_plan 会由系统渲染成七段细纲；禁止输出“故事单元检查”“情绪变化节点”等分析型额外段落。
+2. {% if plan_structure_enabled %}chapter_plan 会由系统渲染成本章的段落细纲；禁止输出“故事单元检查”“情绪变化节点”等分析型额外段落。{% else %}chapter_plan 会由系统渲染成七段细纲；禁止输出“故事单元检查”“情绪变化节点”等分析型额外段落。{% endif %}
 3. key_plot_points 从剧情事件链中抽取本章正文绝不能遗漏的关键情节点，通常是 5-10 个，**按本章实际分量给，不必凑数**（本章事件本来就少就少给）；必须是具体事件，不要写抽象主题。
 4. chapter_characters 只列本章实际出场或群体围观角色，名称优先用中文名；没有中文名时使用人物ID。
-5. chapter_plan 必须且只能覆盖七段字段（**这一条是硬的**，其余数量与用词都是建议）：
+5. {% if plan_structure_enabled %}chapter_plan 可以有两种写法（**二选一**）：**写法一**是覆盖下面七个字段；**写法二**是本章的剧情结构用七段装不下时（纯对白章、闪回章、揭密章等）改用 chapter_plan.plan_sections 自选段落 —— plan_sections 是数组，每项 {"title": "段落标题", "items": ["该段的一条内容", ...]}；段落顺序就是本章的展开顺序；每段都要有内容，没内容的段不要写；给了 plan_sections 就不要再填下面那七个字段（两者互斥）。{% else %}chapter_plan 必须且只能覆盖七段字段（**这一条是硬的**，其余数量与用词都是建议）：{% endif %}
    - opening_entry：开篇切入点，一句话说明从哪个场景的哪个动作、冲突或信息差切入。
    - scene_transitions：场景转换列表，每项包含 scene、location、cast、purpose。
    - key_dialogues：关键对话，通常是 4-8 组，**按本章实际分量给，不必凑数**；每项包含 speaker、line、reply、purpose。
@@ -32,7 +32,7 @@
    - character_decisions：角色关键决策，至少包含主角主动选择、目的和后果。
    - payoff_reversals：爽点/反转设计，说明预期、反转、读者正反馈。
    - protagonist_state_change：主角状态变化，包含位置、实力、新获得、身体状况、重大变化。
-6. 正文模型会按 event_chain 顺序扩写，所以上下文交接、人物位置、关键动作、对话作用必须具体可执行。
+6. {% if plan_structure_enabled %}正文模型会按细纲里剧情事件的顺序扩写，所以上下文交接、人物位置、关键动作、对话作用必须具体可执行。{% else %}正文模型会按 event_chain 顺序扩写，所以上下文交接、人物位置、关键动作、对话作用必须具体可执行。{% endif %}
 7. target_words：本章正文的字数目标（整数）。按本章实际分量给出，
    可在全书基线上下浮动，但不要偏离过大。判不出来就写 null，不要编一个平均值。
 
