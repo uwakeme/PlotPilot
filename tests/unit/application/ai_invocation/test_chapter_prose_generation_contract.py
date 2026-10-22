@@ -313,6 +313,11 @@ def test_chapter_prose_input_bindings_stay_minimal_for_prose_prompt():
 
     ⇒ 硬事实独立成槽；「只吃这几项、不许再多」这条**意图不变**，
     所以断言从 3 项改成 4 项，并继续钉住每一项的 variable_key。
+
+    2026-10-22（E-06）新增第 5 项 ``rhythm_quota``（本章节奏配额）。
+    它**不**违背「只吃核心几项」：一段**有上限**的文本（默认 600 字符）、
+    **受开关控制**（``rhythm_quota.enabled`` 默认关闭 ⇒ 默认为空），
+    且是「本章的节奏目标」这一条**指令**，不是上下文包。
     """
     bindings = {binding.alias: binding for binding in _input_bindings()}
 
@@ -321,11 +326,14 @@ def test_chapter_prose_input_bindings_stay_minimal_for_prose_prompt():
         "chapter_outline",
         "continuity_context",
         "chapter_context",
+        # E-06：本章节奏配额（有上限 + 受开关控制，默认空）
+        "rhythm_quota",
     }
     assert bindings["target_words"].variable_key == "chapter.target_words"
     assert bindings["chapter_outline"].variable_key == "chapter.outline"
     assert bindings["continuity_context"].variable_key == "chapter.continuity_context"
     assert bindings["chapter_context"].variable_key == "chapter.context"
+    assert bindings["rhythm_quota"].variable_key == "chapter.rhythm_quota"
 
 
 class _FakeNode:

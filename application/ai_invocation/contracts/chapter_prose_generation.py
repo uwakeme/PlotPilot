@@ -29,6 +29,9 @@ def chapter_prose_input_bindings() -> list[VariableBinding]:
         # 而前者恒非空 ⇒ 后者永远进不了正文提示词 ⇒ 模型看不见角色状态锚点、
         # 叙事契约（死亡锁/白名单/身份锁）、伏笔槽位、幕摘要。
         VariableBinding("chapter_context", "chapter.context", False, "", scope="chapter", stage="writing", display_name="章节上下文包（T0–T3）"),
+        # E-06：本章节奏配额（AI 依题材/前章张力定）。
+        # ⚠ 受 config/performance.yaml 的 rhythm_quota.enabled 控制（默认关闭）。
+        VariableBinding("rhythm_quota", "chapter.rhythm_quota", False, "", scope="chapter", stage="writing", display_name="本章节奏配额"),
     ]
 
 

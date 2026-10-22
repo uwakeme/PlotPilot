@@ -87,6 +87,8 @@ class PipelineContext(_ValidationStateContract):
     # X1：正文提示词要用的「硬事实」小块（死亡锁 / 角色锚点 / 创作契约），
     # 槽位级、带上限。与 context_text（整包）分开。
     hard_facts: str = ""
+    # E-06：给正文提示词的「本章节奏配额」（**受开关控制**，默认空）。
+    rhythm_quota: str = ""
     bundle: Optional[Dict[str, Any]] = None      # chapter_workflow.prepare_chapter_generation() 的完整 bundle
     governance_budget: Optional[Dict[str, Any]] = None
     governance_context_request: Optional[Dict[str, Any]] = None

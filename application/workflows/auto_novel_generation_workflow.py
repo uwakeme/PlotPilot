@@ -372,6 +372,7 @@ class AutoNovelGenerationWorkflow:
         character_context_selection: Optional[Dict[str, Any]] = None,
         foreshadow_context: Optional[str] = None,
         dead_character_verdicts: Optional[Dict[str, str]] = None,
+        rhythm_quota: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
 
@@ -382,7 +383,13 @@ class AutoNovelGenerationWorkflow:
         没传 ⇒ 闸门走**规则兜底**（名字命中即拦，与改造前逐位一致）。
         """
         storyline_context = self._get_storyline_context(novel_id, chapter_number)
-        plot_tension = self._get_plot_tension(novel_id, chapter_number)
+        # E-06：本次生效的节奏配额（AI 优先，代码表回落）
+        effective_quota = self._resolve_rhythm_quota(
+            novel_id, chapter_number, rhythm_quota
+        )
+        plot_tension = self._get_plot_tension(
+            novel_id, chapter_number, effective_quota
+        )
         evolution_gate_report = None
         try:
             if self.evolution_gate_service:
@@ -459,12 +466,25 @@ class AutoNovelGenerationWorkflow:
             # 与 `context` 分开：context 是整包（给 legacy 路径的节拍提示词用），
             # hard_facts 是「不得违反的既成事实」那几块（给正文提示词用）。
             "hard_facts": str(payload.get("hard_facts") or ""),
+            # E-06：给正文提示词的「本章节奏配额」。
+            # ⚠ **受开关控制**（默认关闭）⇒ 那套配额从来没到过模型，
+            #   突然激活一个从未生效的硬约束会一次性改变全书节奏观。
+            "rhythm_quota": self._rhythm_quota_delivery_text(effective_quota),
             "evolution_gate": evolution_gate_report,
             "evolution_gate_blocked": bool(
                 evolution_gate_report
                 and any(v.get("level") == "blocking" for v in evolution_gate_report.get("violations", []))
             ),
         }
+
+    def _genre_hint(self, novel_id: str) -> str:
+        """本书题材（给 AI 判节奏配额用；取不到就空）。"""
+        try:
+            novel = self.context_builder.novel_repository.get_by_id(NovelId(novel_id))
+            return str(getattr(novel, 'genre', '') or '')
+        except Exception as e:
+            logger.debug("读取题材失败，节奏配额判定按空题材处理: %s", e)
+            return ""
 
     def _resolve_target_chapter_words(self, novel_id: str) -> int:
         """每章目标字数：与作品设置 target_words_per_chapter 一致（工作流 / API 单章生成）。"""
@@ -977,12 +997,93 @@ class AutoNovelGenerationWorkflow:
             logger.warning(f"Failed to get storyline context: {e}")
             return "Storyline context unavailable"
 
-    def _get_plot_tension(self, novel_id: str, chapter_number: int) -> str:
+    def _get_prev_actual_tension(
+        self, novel_id: str, chapter_number: int
+    ) -> Optional[Dict[str, Any]]:
+        """前章实际张力（多维）。未评估 / 查不到 ⇒ None。
+
+        E-06：抽出来是为了让「AI 判配额」与「代码表回落」共用**同一份**数据
+        （同一个真相源 ⇒ 两条路径不会各说各话）。
+        """
+        try:
+            from interfaces.api.dependencies import get_chapter_repository
+
+            chapter_repo = get_chapter_repository()
+            db = chapter_repo.db if hasattr(chapter_repo, 'db') else None
+            if db is not None and chapter_number > 1:
+                row = db.fetch_one(
+                    "SELECT tension_score, plot_tension, emotional_tension, pacing_tension "
+                    "FROM chapters WHERE novel_id = ? AND number = ?",
+                    (novel_id, chapter_number - 1)
+                )
+                if row and row['tension_score'] is not None and row['tension_score'] != -1:
+                    return {
+                        'tension': float(row['tension_score']),
+                        'plot': row['plot_tension'],
+                        'emotional': row['emotional_tension'],
+                        'pacing': row['pacing_tension'],
+                    }
+        except Exception as e:
+            logger.debug(f"Failed to get prev chapter tension: {e}")
+        return None
+
+    def _resolve_rhythm_quota(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        quota: Optional[Any] = None,
+    ) -> Any:
+        """本次生效的节奏配额：AI 给的优先；没有 ⇒ **代码表回落**。
+
+        E-06：AI 的判定是「题材相关」的，所以它优先；AI 不可用时
+        回落改造前那套（黄金三章配额表 + 四档分档），**逐位一致**。
+        """
+        if quota is not None and getattr(quota, 'is_usable', False):
+            return quota
+        from application.engine.services.rhythm_quota import code_fallback_quota
+
+        prev = self._get_prev_actual_tension(novel_id, chapter_number)
+        return code_fallback_quota(
+            chapter_number, prev['tension'] if prev else None
+        )
+
+    @staticmethod
+    def _rhythm_quota_delivery_text(quota: Any) -> str:
+        """给正文提示词的「本章节奏配额」文本（**受开关控制**）。
+
+        E-06：⚠ 默认**关闭** ⇒ 那套配额从来没到过模型；
+        突然激活一个从未生效的硬约束会一次性改变全书节奏观 ⇒ 必须开关 + 灰度。
+        """
+        from application.engine.services.rhythm_quota import (
+            rhythm_quota_delivery_enabled,
+            rhythm_quota_max_delivery_chars,
+        )
+
+        if not rhythm_quota_delivery_enabled():
+            return ""
+        text = str(getattr(quota, 'instruction', '') or '').strip()
+        if not text:
+            return ""
+        cap = rhythm_quota_max_delivery_chars()
+        if cap > 0 and len(text) > cap:
+            text = text[:cap].rstrip() + "\n（本章节奏配额已按上限截断）"
+        return text
+
+    def _get_plot_tension(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        quota: Optional[Any] = None,
+    ) -> str:
         """获取情节张力信息——融合预设锚点 + 前章实际张力评分，形成闭环反馈。
+
+        E-06：第 3 段「本章该多紧、怎么写」改由 **AI** 定（``quota``）；
+        没给 ⇒ 回落**代码表**（黄金三章配额表 + 四档分档，**逐位一致**）。
 
         Args:
             novel_id: 小说 ID
             chapter_number: 章节号
+            quota: 已解析的节奏配额（``RhythmQuota``）
 
         Returns:
             情节张力描述（含预设期望 + 前章实际 + 调整指令）
@@ -1006,81 +1107,22 @@ class AutoNovelGenerationWorkflow:
             logger.warning(f"Failed to get plot arc tension: {e}")
 
         # 2. 前章实际张力评分（闭环反馈的核心）
-        prev_actual_tension = None
-        try:
-            from interfaces.api.dependencies import get_chapter_repository
-            from domain.novel.value_objects.novel_id import NovelId as NId
-            chapter_repo = get_chapter_repository()
-            db = chapter_repo.db if hasattr(chapter_repo, 'db') else None
-            if db is not None and chapter_number > 1:
-                row = db.fetch_one(
-                    "SELECT tension_score, plot_tension, emotional_tension, pacing_tension "
-                    "FROM chapters WHERE novel_id = ? AND number = ?",
-                    (novel_id, chapter_number - 1)
-                )
-                if row and row['tension_score'] is not None and row['tension_score'] != -1:
-                    prev_actual_tension = float(row['tension_score'])
-                    parts.append(
-                        f"前章（第{chapter_number - 1}章）实际张力评分：{prev_actual_tension:.0f}/100"
-                        f"（情节={_format_tension_dim(row['plot_tension'])} "
-                        f"情绪={_format_tension_dim(row['emotional_tension'])} "
-                        f"节奏={_format_tension_dim(row['pacing_tension'])}）"
-                    )
-        except Exception as e:
-            logger.debug(f"Failed to get prev chapter tension: {e}")
+        prev = self._get_prev_actual_tension(novel_id, chapter_number)
+        prev_actual_tension = prev['tension'] if prev else None
+        if prev is not None:
+            parts.append(
+                f"前章（第{chapter_number - 1}章）实际张力评分：{prev_actual_tension:.0f}/100"
+                f"（情节={_format_tension_dim(prev['plot'])} "
+                f"情绪={_format_tension_dim(prev['emotional'])} "
+                f"节奏={_format_tension_dim(prev['pacing'])}）"
+            )
 
-        # 3. 张力调整指令（基于预设与实际的差距）
-        # ★ Phase 1: 前三章硬编码高张力指令（冷启动保护）
-        if chapter_number <= 3:
-            early_chapter_directives = {
-                1: (
-                    "🔥【首章铁律】本章是读者决定是否继续阅读的关键！"
-                    "综合张力目标：≥65。"
-                    "必须在第一个节拍就制造强烈冲突/悬念/反转——"
-                    "绝对禁止大段背景介绍、设定灌输、平淡日常！"
-                    "主角必须在被压制/轻视后展露底牌，给读者第一次爽感冲击！"
-                ),
-                2: (
-                    "⚡【次章加速】读者已被首章吸引，但不能松劲！"
-                    "综合张力目标：≥55。"
-                    "本章必须有至少一次实力验证/身份暗示/新冲突爆发。"
-                    "继续升温，扩大主角展现出的特殊之处引发的反响。"
-                ),
-                3: (
-                    "⚡【三章定乾坤】前三章决定了读者是否追读！"
-                    "综合张力目标：≥60。"
-                    "本章必须有一次真正的高潮场景——"
-                    "第一次正式对抗/博弈/危机中的大逆转！"
-                    "读者在这里应该获得明确的'这书好看'的正反馈！"
-                ),
-            }
-            early_directive = early_chapter_directives.get(chapter_number, "")
-            if early_directive:
-                parts.append(early_directive)
-        elif prev_actual_tension is not None:
-            if prev_actual_tension <= 30:
-                parts.append(
-                    "⚠ 紧急指令：前章张力严重不足！本章必须制造至少一次核心冲突/反转/悬念，"
-                    "将综合张力拉升到 55 以上。建议：引入新威胁、暴露隐藏信息、"
-                    "让角色做出痛苦选择。"
-                )
-            elif prev_actual_tension <= 45:
-                parts.append(
-                    "⚡ 调整指令：前章张力偏低，读者可能正在流失。"
-                    "本章应逐步升温——增加信息不对称、加深角色矛盾、"
-                    "让阻碍变得更加紧迫。目标张力：50-65。"
-                )
-            elif prev_actual_tension >= 80:
-                parts.append(
-                    "📊 缓冲指令：前章已是高潮，本章应给读者喘息空间。"
-                    "可以写角色消化冲击、盟友互动、新线索浮现，"
-                    "但结尾要留一个钩子暗示更大的风暴即将到来。目标张力：40-55。"
-                )
-            elif prev_actual_tension >= 65:
-                parts.append(
-                    "📊 维持指令：前章张力较高，本章可以保持高压推进，"
-                    "也可以适当喘息后再次攀升。避免连续高压导致读者疲劳。"
-                )
+        # 3. 本章节奏配额（E-06：AI 判；没给 ⇒ 代码表回落）
+        #   ★ 原「前三章硬编码高张力指令（冷启动保护）」与「按前章张力四档分档」
+        #     已移入 ``code_fallback_quota`` —— 同一份文案与目标数字，**逐位一致**。
+        effective = self._resolve_rhythm_quota(novel_id, chapter_number, quota)
+        if effective.instruction:
+            parts.append(effective.instruction)
 
         if not parts:
             return "No plot arc defined"
@@ -1130,7 +1172,10 @@ class AutoNovelGenerationWorkflow:
         character_context_selection: Optional[Dict[str, Any]] = None,
         foreshadow_context: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """异步版：先让 AI 判「死亡角色是回忆还是活跃登场」，再走同步实现。
+        """异步版：先让 AI 判两件事，再走同步实现。
+
+        ① 「死亡角色是回忆还是活跃登场」（写前连续性闸门）；
+        ② 「本章节奏配额」（E-06：题材该多紧、怎么写）。
 
         ⚠ ``EvolutionGateService.check()`` **必须**保持同步（有一个调用点在纯同步
         方法里）⇒ AI 判定放在**调用方**（async 处）算好后下传，
@@ -1150,6 +1195,28 @@ class AutoNovelGenerationWorkflow:
                     "死亡角色出场判定失败，闸门走规则兜底 novel=%s: %s", novel_id, exc
                 )
                 verdicts = {}
+        # E-06：AI 定本章节奏配额（不可用 ⇒ 同步实现里回落代码表）
+        quota = None
+        if self.llm_service is not None:
+            try:
+                from application.engine.services.rhythm_quota_planner import (
+                    RhythmQuotaPlanner,
+                )
+
+                prev = self._get_prev_actual_tension(novel_id, chapter_number)
+                quota = await RhythmQuotaPlanner(self.llm_service).plan(
+                    genre=self._genre_hint(novel_id),
+                    chapter_number=chapter_number,
+                    prev_tension=(prev['tension'] if prev else None),
+                    arc_tension=None,
+                )
+            except Exception as exc:
+                # 判不出来 ⇒ None ⇒ 回落代码表（与改造前逐位一致）
+                logger.warning(
+                    "节奏配额判定失败，回落代码表 novel=%s: %s", novel_id, exc
+                )
+                quota = None
+
         return self.prepare_chapter_generation(
             novel_id,
             chapter_number,
@@ -1161,6 +1228,7 @@ class AutoNovelGenerationWorkflow:
             character_context_selection=character_context_selection,
             foreshadow_context=foreshadow_context,
             dead_character_verdicts=verdicts,
+            rhythm_quota=quota,
         )
 
     def _build_prompt(

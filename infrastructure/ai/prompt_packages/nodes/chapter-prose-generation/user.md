@@ -6,6 +6,11 @@
 【硬事实（不得违反的既成事实）】
 {chapter_context}
 
+{% if rhythm_quota %}
+【本章节奏配额】
+{rhythm_quota}
+{% endif %}
+
 【正文细纲】
 {chapter_outline}
 

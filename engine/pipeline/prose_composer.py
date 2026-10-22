@@ -32,6 +32,8 @@ class ProseCompositionRequest:
     # X1：正文提示词要用的「硬事实」小块（槽位级、带上限）：
     # 死亡锁 / 角色锚点 / 创作契约。模型写正文时必须看见这些**不得违反的既成事实**。
     hard_facts: str = ""
+    # E-06：给正文提示词的「本章节奏配额」（受开关控制，默认空）。
+    rhythm_quota: str = ""
     style_guide: str = ""
     target_words: int = 2500
     auto_approve_mode: bool = False
@@ -91,6 +93,9 @@ class ChapterProseInvocationComposer:
             "chapter_outline": request.outline,
             "continuity_context": continuity_context,
             "chapter_context": chapter_context,
+            # E-06：节奏配额**独立成变量**（它不是「硬事实」，
+            # 是本章的节奏目标 ⇒ 不能塞进 chapter_context）。
+            "rhythm_quota": str(request.rhythm_quota or "").strip(),
         }
 
     @staticmethod

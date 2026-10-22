@@ -115,6 +115,16 @@ prose_sampling:
   temperature: 0.85
   top_p: 0.95
 
+# ─── 章节节奏配额（E-06）───
+# 「本章该多紧、怎么写」改由 AI 依题材/前章张力定。
+# ⚠ enabled 默认**关闭** ⇒ 配额文本**不送进**生产正文提示词
+#   ⇒ 行为与改造前逐位一致（突然激活一个从未生效的硬约束
+#   会一次性改变全书节奏观 ⇒ 必须开关 + 灰度）。
+rhythm_quota:
+  enabled: false
+  # 送进正文提示词的配额文本上限（字符）
+  max_chars: 600
+
 # ─── 数据库配置 ───
 database:
   connection_pool:

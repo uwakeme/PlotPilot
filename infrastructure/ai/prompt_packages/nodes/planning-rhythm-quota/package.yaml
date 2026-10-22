@@ -1,0 +1,31 @@
+name: 章节节奏配额
+category: planning
+source: application/engine/services/rhythm_quota_planner.py
+description: 由 AI 定「本章该多紧、什么节奏档、具体怎么写」（取代代码写死的黄金三章配额表与四档分档）
+builtin: true
+tags:
+- 节奏
+- 张力
+- 规划
+- 题材
+- JSON输出
+output_format: json
+variables:
+- name: genre
+  desc: 题材
+  type: string
+  required: true
+- name: chapter_number
+  desc: 本章章号
+  type: string
+  required: true
+- name: prev_tension
+  desc: 前章实际张力（未评估时写「未评估」）
+  type: string
+  required: true
+- name: arc_tension
+  desc: 预设期望张力（未评估时写「未评估」）
+  type: string
+  required: true
+id: planning-rhythm-quota
+sort_order: 119

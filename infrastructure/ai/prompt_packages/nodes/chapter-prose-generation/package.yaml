@@ -23,6 +23,10 @@ variables:
     type: string
     required: false
     default: ''
+  - name: rhythm_quota
+    desc: 本章节奏配额（目标张力 / 节奏档 / 具体指令）；为空则不注入
+    type: string
+    required: false
   - name: chapter_context
     desc: 硬事实块（死亡锁 / 角色锚点 / 创作契约等不得违反的既成事实）
     type: string

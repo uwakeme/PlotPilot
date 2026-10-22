@@ -788,6 +788,8 @@ class BaseStoryPipeline(ABC):
                 ctx.voice_anchors = bundle.get("voice_anchors", "")
                 # X1：正文提示词要用的「硬事实」小块（槽位级、带上限）。
                 ctx.hard_facts = bundle.get("hard_facts", "")
+                # E-06：节奏配额（受开关控制；默认空 ⇒ 不改变模型行为）。
+                ctx.rhythm_quota = bundle.get("rhythm_quota", "")
                 ctx.bundle = bundle
                 logger.info(
                     f"[{ctx.novel_id}] 上下文（workflow）: {len(ctx.context_text)} 字符, "
@@ -1070,6 +1072,8 @@ class BaseStoryPipeline(ABC):
             # X1：硬事实小块（死亡锁 / 角色锚点 / 创作契约）——
             # 正文提示词原本只有 3 个变量，模型看不见这些「不得违反的既成事实」。
             hard_facts=ctx.hard_facts,
+            # E-06：节奏配额 → 正文提示词的独立变量
+            rhythm_quota=ctx.rhythm_quota,
             style_guide=ctx.voice_anchors,
             target_words=ctx.target_word_count,
             auto_approve_mode=ctx.auto_approve_mode,

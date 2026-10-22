@@ -124,6 +124,12 @@ wuxia_style_audit:
   max_tokens: 2000
   temperature: 0.2
 
+# E-06：章节节奏配额。判读题 ⇒ 温度低（要稳）。
+rhythm_quota:
+  extends: base_generation_profile
+  max_tokens: 1200
+  temperature: 0.3
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

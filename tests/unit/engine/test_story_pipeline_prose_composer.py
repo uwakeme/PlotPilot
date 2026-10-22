@@ -58,6 +58,9 @@ def test_chapter_prose_composer_builds_only_core_prompt_variables():
         "chapter_outline",
         "continuity_context",
         "chapter_context",
+        # E-06：本章节奏配额（**有上限 + 受开关控制**，默认空 ⇒ 提示词不渲染）。
+        # 它不是「整包上下文倾倒」—— X1 禁的是那个。
+        "rhythm_quota",
     }
     assert variables["target_words"] == 2000
     assert variables["chapter_outline"] == "七段细纲"
@@ -66,6 +69,8 @@ def test_chapter_prose_composer_builds_only_core_prompt_variables():
     assert variables["continuity_context"] == ""
     # 硬事实走自己的变量
     assert variables["chapter_context"] == "=== 绝对事实边界(FACT_LOCK) ===\n陈小已死"
+    # E-06：节奏配额没给 ⇒ 空（提示词里整段不渲染）
+    assert variables["rhythm_quota"] == ""
     # metadata 里的其余键一个都不许漏进来
     assert "前3章规划" not in str(variables)
     for leaked in ("情节点1", "林渊", "不应进入 prompt", "unused"):
