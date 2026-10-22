@@ -71,7 +71,6 @@ async def test_run_story_pipeline_writing_success_updates_novel():
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = mock_ctx
-    mock_runner._get_novel_phase.return_value = "development"
 
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
@@ -114,7 +113,6 @@ async def test_run_story_pipeline_writing_all_chapters_done_transitions_act():
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=0)
-    mock_runner._get_novel_phase.return_value = "development"
 
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
@@ -149,7 +147,6 @@ async def test_run_story_pipeline_writing_all_chapters_done_without_full_act_rep
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=0)
-    mock_runner._get_novel_phase.return_value = "opening"
 
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
@@ -213,7 +210,6 @@ async def test_writing_failure_escalates_via_shared_counter(monkeypatch):
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=7)
-    mock_runner._get_novel_phase.return_value = "development"
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
         return_value=PipelineResult(success=False, chapter_number=7, error="LLM 端点 502")
@@ -244,7 +240,6 @@ async def test_writing_failure_third_time_suspends_novel(monkeypatch):
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=8)
-    mock_runner._get_novel_phase.return_value = "development"
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
         return_value=PipelineResult(success=False, chapter_number=8, error="empty content")
@@ -269,7 +264,6 @@ async def test_writing_success_clears_failure_summary(monkeypatch):
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=5)
-    mock_runner._get_novel_phase.return_value = "development"
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
         return_value=PipelineResult(success=True, chapter_number=5, word_count=2600, tension=70)
@@ -301,7 +295,6 @@ async def test_interrupted_writing_uses_interrupted_recovery_decision(monkeypatc
     mock_runner = MagicMock()
     mock_runner.DEFAULT_TARGET_WORDS = 2500
     mock_runner._make_context.return_value = MagicMock(chapter_number=9)
-    mock_runner._get_novel_phase.return_value = "development"
     mock_pipeline = MagicMock()
     mock_pipeline.run_chapter = AsyncMock(
         return_value=PipelineResult(success=False, chapter_number=9, error="interrupted")

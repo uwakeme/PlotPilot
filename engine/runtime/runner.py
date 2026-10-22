@@ -170,18 +170,9 @@ class StoryPipelineRunner(DaemonHostMixin, BaseStoryPipeline):
 
         await run_chapter_audit(self.host, novel)
 
-    def _get_novel_phase(self, novel: Any) -> str:
-        try:
-            stage = getattr(novel, "current_stage", None)
-            stage_value = stage.value if hasattr(stage, "value") else str(stage)
-            phase_map = {
-                "macro_planning": "opening",
-                "act_planning": "opening",
-                "writing": "development",
-                "auditing": "development",
-                "paused_for_review": "development",
-                "completed": "finale",
-            }
-            return phase_map.get(stage_value, "opening")
-        except Exception:
-            return "opening"
+    # ⚠ D-09：这里曾有一个 `_get_novel_phase()` —— 把写作阶段硬编码映射成
+    # "opening" / "development" / "finale"。它是**第二份** phase 口径：
+    #   · 真实的那份在 `context_budget_allocator`（按**进度**判 StoryPhase，
+    #     指令来自 CPMS `lifecycle-phase-directives`），**真的被消费**；
+    #   · 这份只喂给 `ctx.phase`，而那个字段全仓**无人消费**。
+    # ⇒ 留着会让人误以为「写作阶段决定 phase」。已删。

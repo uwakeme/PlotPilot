@@ -155,7 +155,10 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
     ctx = runner._make_context(
         novel_id=novel_id,
         target_word_count=target_words,
-        phase=runner._get_novel_phase(novel),
+        # ⚠ D-09：曾传 `phase=runner._get_novel_phase(novel)` ——
+        # 那是一条**死的**「阶段→phase」硬编码映射（ctx.phase 全仓无人消费），
+        # 且与真实口径（按进度判 StoryPhase + CPMS lifecycle-phase-directives）
+        # 平行 ⇒ 已删，避免「两个 phase 真相源」。
         auto_approve_mode=getattr(novel, "auto_approve_mode", False),
         genre=getattr(novel, "genre", ""),
         era=getattr(novel, "era", "ancient"),

@@ -57,7 +57,11 @@ class PipelineContext(_ValidationStateContract):
     # ═══ 输入数据 ═══
     outline: str = ""                            # 章节大纲
     target_word_count: int = 2500                # 目标字数
-    phase: str = "opening"                       # 当前故事阶段 (opening/development/convergence/finale)
+    # ⚠ D-09：这里曾有一个 `phase: str = "opening"`（由 runner 的「阶段→phase」
+    # 硬编码映射喂进来）。那是**第二份** phase 口径：真实的那份在
+    # `context_budget_allocator`（按**进度**判 StoryPhase + CPMS
+    # `lifecycle-phase-directives` 指令），而 ctx.phase 全仓**无人消费**
+    # ⇒ 留着只会让人误以为「阶段决定 phase」。已删。
     auto_approve_mode: bool = False              # 全自动模式
     genre: str = ""                              # 题材 (xuanhuan/xianxia/urban/mystery/short_drama)
     era: str = "ancient"                         # 时代背景
