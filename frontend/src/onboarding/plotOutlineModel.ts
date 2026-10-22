@@ -147,7 +147,6 @@ function normalizeStagePlanRanges(
     const fallbackStage = stageFallback(index)
     const rawStart = coerceChapterNumber(stage.chapter_start)
     const rawEnd = coerceChapterNumber(stage.chapter_end)
-    const keepManualRange = rawStart !== undefined && rawEnd !== undefined && rawStart <= rawEnd
     const next = {
       ...stage,
       // **不改写** —— 阶段名与阶段数由后端 / AI 决定
@@ -155,8 +154,13 @@ function normalizeStagePlanRanges(
       label: stage.label || fallbackStage.label,
       // **不编造区间** —— 断点由 AI / 后端决定；缺失就留空，
       // 由后端在保存时补齐（前端不持有第二份区间算法）。
-      chapter_start: keepManualRange ? rawStart : undefined,
-      chapter_end: keepManualRange ? rawEnd : undefined,
+      //
+      // ⚠ **R2**（第 3 批三次复审）：此前用 `keepManualRange`（要求**两端都有**
+      //   且 start ≤ end）⇒ 作者只填了「起始章」时**两端一起被丢掉**
+      //   ⇒ 刚敲的数字**静默消失**。现在**两端各自保留**
+      //   （非法组合交给保存门禁报错，不在这里悄悄丢弃）。
+      chapter_start: rawStart,
+      chapter_end: rawEnd,
     }
     return {
       ...next,
@@ -278,7 +282,7 @@ export function buildEditablePlotOutlinePayload(
   }
 }
 
-export function validateEditablePlotOutline(outline: PlotOutlineDTO): string {
+export function validateEditablePlotOutline(outline: PlotOutlineDTO, totalChapters = 0): string {
   const topRecord = outline as unknown as Record<string, unknown>
   const hasTopContent = Object.entries(topRecord).some(([key, value]) =>
     !PLOT_OUTLINE_META_KEYS.has(key) && String(value ?? '').trim().length > 0,
@@ -289,8 +293,23 @@ export function validateEditablePlotOutline(outline: PlotOutlineDTO): string {
   //   B2 之后前端**不再编造**区间（AI 不给区间、前端不自算）⇒ 未保存前
   //   区间本来就是空的；而后端在保存时用 `chapter_ranges` 补齐。
   //   ⇒ 若这里继续要求「每段都得有数字区间」，请求**根本发不出去**
-  //   ⇒ 向导第 4 步过不去，后端那份补齐逻辑永远用不上。
+  //   ⇒ **向导第 4 步过不去**，后端那份补齐逻辑永远用不上。
   //   ⇒ 现在：**为空 = 交给后端补**（不拦）；**有值但非法**（<1 或倒挂）才拦。
+  //
+  // ⚠ **R0**（第 3 批三次复审）：「两端都空」与「两端都填」是两种合法状态，
+  //   但**混用**（只填了第一段、其余留空）会让后端把「作者写的」与
+  //   「系统算的」**混着用** ⇒ 首尾不相接 ⇒ 报错信息不透明。
+  //   ⇒ 现在：**要么全部不填**（系统按目标章数分配），
+  //   **要么全部填**（自己掌控断点）⇒ 不许混用。
+  const stagesWithRange = outline.stage_plan.filter(
+    stage => stage.chapter_start !== undefined || stage.chapter_end !== undefined,
+  )
+  if (stagesWithRange.length > 0 && stagesWithRange.length !== outline.stage_plan.length) {
+    const missing = outline.stage_plan.find(
+      stage => stage.chapter_start === undefined && stage.chapter_end === undefined,
+    )
+    return `请为所有阶段填写起止章节，或全部留空由系统按章数分配（缺「${missing?.label || '阶段'}」）`
+  }
   const invalidStageRange = outline.stage_plan.find((stage) => {
     const start = stage.chapter_start
     const end = stage.chapter_end
@@ -299,6 +318,14 @@ export function validateEditablePlotOutline(outline: PlotOutlineDTO): string {
     return start < 1 || end < 1 || start > end
   })
   if (invalidStageRange) return `请检查${invalidStageRange.label || '阶段'}的起止章节`
+  // ⚠ **R3**（第 3 批三次复审）：手填路径要求**最后一段正好落在目标章数上**
+  //   （后端 I3 已收紧为「末段终点 == 目标章数」）⇒ 提前说清，别让作者
+  //   填完才看到后端的报错。
+  const lastStage = outline.stage_plan[outline.stage_plan.length - 1]
+  const lastEnd = lastStage?.chapter_end
+  if (lastEnd !== undefined && totalChapters > 0 && lastEnd !== totalChapters) {
+    return `最后一段的结束章应为 ${totalChapters}（当前 ${lastEnd}）`
+  }
   const emptyStage = outline.stage_plan.find(stage => stageContentFieldKeys(stage).every(key => !plotFieldText(stage, key).trim()))
   if (emptyStage) return `请填写${emptyStage.label || '阶段'}的规划内容`
   return ''

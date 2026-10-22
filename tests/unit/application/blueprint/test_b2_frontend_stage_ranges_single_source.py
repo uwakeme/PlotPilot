@@ -77,6 +77,29 @@ def _frontend_code() -> str:
     return without_line
 
 
+def _frontend_sources() -> list[tuple[str, str]]:
+    """前端**全部** .ts / .vue 文件的代码部分（路径, 代码）。
+
+    ⚠ 第 3 批三次复审（附注）：上一版守卫**只读一个文件**
+    （``plotOutlineModel.ts``）⇒ 在别的文件里算区间它看不见
+    ⇒ 声称被过度。
+    ⇒ 现在扫**整个 frontend/src**。
+    """
+    import re
+
+    frontend_src = ROOT / "frontend/src"
+    out: list[tuple[str, str]] = []
+    for path in sorted(frontend_src.rglob("*")):
+        if path.suffix not in {".ts", ".vue"} or not path.is_file():
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        source = path.read_text(encoding="utf-8")
+        without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        without_line = re.sub(r"//[^\n]*", "", without_block)
+        out.append((rel, without_line))
+    return out
+
+
 def _outline(stages):
     return {
         "main_story_overview": "概述",
@@ -128,37 +151,63 @@ def test_frontend_does_not_fabricate_ranges_when_missing():
     ⚠ 第 3 批二次复审 S6：上一版只查「有没有出现某个字符串」，
     而**把同一份错误公式换个写法再塞回去，守卫照样全绿**
     （复审用 M2c 变异证明：编译后确实复现了越界区间）。
-    ⇒ 现在改成**结构式**：枚举前端里**每一处** ``chapter_start`` /
-    ``chapter_end`` 的赋值，逐条要求落在允许清单里 ——
-    新增任何一处「从别处算出来的」赋值都会被抓。
+    ⚠ 第 3 批三次复审（附注）：再上一版改成「枚举**每一处**行首的属性赋值」，
+    但它**只读一个文件**、且正则只认「行首」⇒ 三种逃逸全绿：
+      ① 单行 ``Object.assign(next, { chapter_start: … })``
+      ② ``next['chapter_start'] = …``
+      ③ 在**别的前端文件**里算区间
+
+    ⇒ 现在：**扫整个 frontend/src**，并识别**四种赋值形态**：
+      - 行首/属性位置 ``chapter_start: …``
+      - 单行对象字面量里的 ``chapter_start: …``（同行）
+      - 括号/下标赋值 ``next['chapter_start'] = …``
+      - 点号赋值 ``next.chapter_start = …``
+    ⇒ 任何一处「从别处算出来的」赋值都会被抓。
     """
     import re
 
-    code = _frontend_code()
-    # ⚠ 只认**行首的属性赋值**（``chapter_start: ...``）——
-    #   宽松的 `\bchapter_start\s*:` 会把三元表达式里的 ``? x : 0`` 也算进去。
-    assignments = [
-        line.strip()
-        for line in code.splitlines()
-        if re.match(r"^\s*chapter_(start|end)\s*:", line)
-    ]
-    assert assignments, "没找到 chapter_start/chapter_end 的赋值（判据失效了？）"
-
-    allowed = (
-        # 只允许三种来源：AI/后端给的值、留空、或整个 stage 的透传
-        r"^chapter_start:\s*keepManualRange\s*\?\s*rawStart\s*:\s*undefined,?$",
-        r"^chapter_end:\s*keepManualRange\s*\?\s*rawEnd\s*:\s*undefined,?$",
-        r"^chapter_start:\s*typeof\s+stage\.chapter_start\s*===\s*'number'\s*\?.*$",
-        r"^chapter_end:\s*typeof\s+stage\.chapter_end\s*===\s*'number'\s*\?.*$",
+    # 允许的赋值形态（只允许「原样透传」与「留空」）
+    allowed_value = re.compile(
+        r"^(?:"
+        r"rawStart"          # 原样透传（AI/后端给的值）
+        r"|rawEnd"
+        r"|undefined"        # 留空（交给后端补）
+        r"|keepManualRange\s*\?\s*rawStart\s*:\s*undefined"
+        r"|keepManualRange\s*\?\s*rawEnd\s*:\s*undefined"
+        r"|typeof\s+stage\.chapter_start\s*===\s*'number'\s*\?.*"
+        r"|typeof\s+stage\.chapter_end\s*===\s*'number'\s*\?.*"
+        r"|number|string|boolean|any"  # TS **类型标注**（不是赋值）
+        r")$"
     )
-    unexpected = [
-        line for line in assignments
-        if not any(re.match(pattern, line) for pattern in allowed)
-    ]
-    assert not unexpected, (
-        "这些 chapter_start/chapter_end 的赋值不在允许清单里 —— "
-        "前端可能又自己算区间了：\n"
-        + "\n".join(f"  - {line}" for line in unexpected)
+
+    # 匹配「给 chapter_start/chapter_end 赋值」的各种形态。
+    # ⚠ 前置的负向断言 ⇒ ``estimated_chapter_start`` 这类**同后缀**名字不算。
+    assign_re = re.compile(
+        r"(?<![A-Za-z0-9_])chapter_(start|end)\s*[:=]\s*([^,;\n}]+)"
+    )
+
+    offenders: list[str] = []
+    for rel, code in _frontend_sources():
+        # 只看**处理阶段计划**的文件（其余文件的 chapter_start 是别的概念：
+        # 故事线的 estimated_chapter_start、审稿的 chapter_start …）
+        if "stage_plan" not in code:
+            continue
+        for line in code.splitlines():
+            stripped = line.strip()
+            if "chapter_start" not in stripped and "chapter_end" not in stripped:
+                continue
+            for match in assign_re.finditer(stripped):
+                value = match.group(2).strip().rstrip(",")
+                # 读（不是赋值）：``stage.chapter_start``
+                prefix = stripped[: match.start()]
+                if prefix.rstrip().endswith("."):
+                    continue
+                if not allowed_value.match(value):
+                    offenders.append(f"{rel}: {stripped}")
+
+    assert not offenders, (
+        "前端出现了「自己算章节区间」的赋值 —— 断点口径必须只有后端一处：\n"
+        + "\n".join(f"  - {line}" for line in offenders)
     )
 
 
@@ -181,12 +230,16 @@ def test_the_save_gate_tolerates_empty_ranges():
 
 
 def test_frontend_keeps_the_provided_ranges():
-    """AI / 后端给了区间 ⇒ 前端原样保留（不许改写）。"""
+    """AI / 后端给了区间 ⇒ 前端原样保留（不许改写）。
+
+    ⚠ R2（第 3 批三次复审）：此前用 ``keepManualRange``（要求两端都有且
+    start ≤ end）⇒ 作者只填了「起始章」时**两端一起被丢掉**
+    ⇒ 刚敲的数字**静默消失**。现在**两端各自保留**。
+    """
     code = _frontend_code()
 
-    assert "chapter_end: keepManualRange ? rawEnd : undefined" in code, (
-        "前端必须保留 AI / 后端给出的区间"
-    )
+    assert "chapter_start: rawStart," in code, "前端必须保留 AI / 后端给出的区间"
+    assert "chapter_end: rawEnd," in code, "前端必须保留 AI / 后端给出的区间"
 
 
 # ───────────────────────── 后端是唯一补齐方 ─────────────────────────

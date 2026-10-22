@@ -644,6 +644,35 @@ def test_the_feature_table_has_no_duplicates():
     assert len(ids) == len(set(ids)), f"AI_PARTICIPATION_FEATURES 有重复项：{ids}"
 
 
+def test_the_features_without_a_fallback_are_declared_and_documented():
+    """「关闸 ⇒ 回到改造前行为」这句话**对少数能力不成立** ⇒ 必须显式声明。
+
+    第 3 批三次复审 R4：``plot_point_classifier``（F-08）与
+    ``character_belief_check``（H-03）在改造时**刻意删掉了代码侧替代物**
+    （阈值表 / 关键词表）⇒ 没有可回落的东西 ⇒ 关闸 = 该能力**消失**。
+
+    ⇒ 这份名单必须：
+    1. 全部在册（不许写不存在的 id）；
+    2. 在总闸模块的 docstring 里被**点名**（否则下一个人读不到）。
+    """
+    from application.engine.services.ai_participation_settings import (
+        FEATURES_WITHOUT_CODE_FALLBACK,
+    )
+
+    for feature in FEATURES_WITHOUT_CODE_FALLBACK:
+        assert feature in AI_PARTICIPATION_FEATURES, (
+            f"{feature} 不在 AI_PARTICIPATION_FEATURES 里"
+        )
+
+    settings_source = (
+        REPO_ROOT / "application/engine/services/ai_participation_settings.py"
+    ).read_text(encoding="utf-8")
+    for feature in FEATURES_WITHOUT_CODE_FALLBACK:
+        assert feature in settings_source, (
+            f"{feature} 没在总闸模块里被点名 ⇒ 「关闸=回到改造前行为」的表述会误导"
+        )
+
+
 def test_the_feature_table_ids_are_snake_case():
     """id 命名约定：snake_case（配置里要手写，别让拼写错误混进来）。"""
     bad = [f for f in AI_PARTICIPATION_FEATURES if not re.fullmatch(r"[a-z][a-z0-9_]*", f)]

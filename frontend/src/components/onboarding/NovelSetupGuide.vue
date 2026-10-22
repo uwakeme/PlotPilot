@@ -2165,7 +2165,7 @@ async function saveLocationsEdits(): Promise<boolean> {
 async function savePlotOutlineEdits(): Promise<boolean> {
   try {
     const payload = buildEditablePlotOutlinePayload()
-    const validationError = validateEditablePlotOutline(payload)
+    const validationError = validateEditablePlotOutline(payload, plotOutlineTotalChapters.value)
     if (validationError) {
       message.error(validationError)
       return false

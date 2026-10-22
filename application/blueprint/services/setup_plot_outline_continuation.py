@@ -11,8 +11,12 @@ from application.blueprint.services.stage_plan_invariants import (  # noqa: E402
     validate_stage_plan_shape,
 )
 
+import logging
+
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from application.ai_invocation.continuation import ContinuationContext, register_continuation_handler
+
+logger = logging.getLogger(__name__)
 from application.ai_invocation.output_binding_resolution import (
     extract_bound_output_values,
     load_session_output_bindings,
@@ -316,6 +320,47 @@ def _normalize_stage_plan(raw_items: Any, *, target_chapters: int) -> list[dict[
         ),
     )
     ranges = chapter_ranges(target_chapters, count)
+    if len(ranges) < count:
+        # ⚠ **R1**（第 3 批三次复审）：阶段数 > 目标章数时 ``ranges`` 更短
+        #   ⇒ 此前 ``ranges[index]`` 直接 IndexError ⇒ 不被路由的
+        #   ``except ValueError`` 捕获 ⇒ **HTTP 500**。
+        #   （`planning-plot-outline` 的旧形状固定 5 个子阶段，
+        #   而 `target_chapters` 只要求 >0 ⇒ 1~4 章的书 + 5 段计划 = 必崩。）
+        #   ⇒ 现在：**夹到放得下的段数**（每阶段至少 1 章），并**记日志**
+        #   （不静默丢内容）；夹完仍不满足 I1（≥3 段）⇒ 下面会给出明确的 400。
+        logger.warning(
+            "plot_outline.stage_plan 阶段数 %d 超过目标章数 %d（每阶段至少 1 章）"
+            "⇒ 已夹到 %d 段",
+            count,
+            target_chapters,
+            len(ranges),
+        )
+        raw_items = list(raw_items)[: len(ranges)]
+        count = len(raw_items)
+
+    # ⚠ **R0**（第 3 批三次复审）：此前「显式值」与「算出来的值」**混用** ——
+    #   作者只填了第一段 ⇒ 第 1 段用作者写的 (1,20)、第 2 段用算出来的 (16,30)
+    #   ⇒ 首尾不相接 ⇒ 报一句不透明的「起点 16 与上一段终点 20 不相接」。
+    #   ⇒ 现在：**要么全部显式、要么全部默认**，不许混用 ⇒ 错误信息说清是哪一段。
+    explicit_flags = [
+        bool(
+            _coerce_chapter_number(raw.get("chapter_start"))
+            or _coerce_chapter_number(raw.get("chapter_end"))
+        )
+        for raw in raw_items
+        if isinstance(raw, Mapping)
+    ]
+    if any(explicit_flags) and not all(explicit_flags):
+        mixed_index = next(
+            index
+            for index, flag in enumerate(explicit_flags)
+            if not flag
+        )
+        raise ValueError(
+            "plot_outline.stage_plan 的章节区间必须**全部填写或全部不填**："
+            f"stage_plan[{mixed_index}] 没有区间，而前面的阶段有。"
+            "（全部不填时由系统按目标章数分配）"
+        )
 
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_items):
