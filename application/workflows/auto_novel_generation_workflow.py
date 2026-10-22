@@ -6,7 +6,10 @@ import asyncio
 import logging
 import re
 from typing import Tuple, Dict, Any, AsyncIterator, Optional, List, Callable, Awaitable
-from application.engine.services.context_builder import ContextBuilder
+from application.engine.services.context_builder import (
+    ContextBuilder,
+    DEFAULT_CONTEXT_MAX_TOKENS,
+)
 from application.analyst.services.state_extractor import StateExtractor
 from application.analyst.services.state_updater import StateUpdater
 from application.audit.services.conflict_detection_service import ConflictDetectionService
@@ -363,7 +366,7 @@ class AutoNovelGenerationWorkflow:
         outline: str,
         *,
         scene_director: Optional[SceneDirectorAnalysis] = None,
-        max_tokens: int = 35000,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
         allow_evolution_gate_bypass: bool = False,
         slot_weights: Optional[Dict[str, float]] = None,
         character_context_selection: Optional[Dict[str, Any]] = None,

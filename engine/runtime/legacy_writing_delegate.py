@@ -343,9 +343,16 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
                 host._flush_novel(novel)
                 return
             logger.warning(f"prepare_chapter_generation 失败，尝试降级：{e}")
+            # D-06：降级路径的预算与主路径**同一个值**
+            # （此前这里是 20000、主路径 35000 ⇒ 降级时上下文被静默削薄 43%）。
+            from application.engine.services.context_builder import (
+                DEFAULT_CONTEXT_MAX_TOKENS,
+            )
+
             try:
                 bundle = host.chapter_workflow.build_fallback_chapter_bundle(
-                    novel.novel_id.value, chapter_num, outline, scene_director=None, max_tokens=20000,
+                    novel.novel_id.value, chapter_num, outline, scene_director=None,
+                    max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
                 )
                 context = bundle["context"]
             except Exception as e2:
@@ -354,7 +361,8 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
     if bundle is None and host.context_builder:
         try:
             context = host.context_builder.build_context(
-                novel_id=novel.novel_id.value, chapter_number=chapter_num, outline=outline, max_tokens=20000,
+                novel_id=novel.novel_id.value, chapter_number=chapter_num, outline=outline,
+                max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
             )
         except Exception as e:
             logger.warning(f"ContextBuilder.build_context 失败：{e}")

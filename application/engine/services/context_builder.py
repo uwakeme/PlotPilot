@@ -39,6 +39,15 @@ from application.engine.dag.plan.schema import ChapterExecutionPlan
 
 logger = logging.getLogger(__name__)
 
+#: 上下文构建的**全局** token 上限（**唯一一处定义**）。
+#:
+#: ⚠ D-06：此前全仓有**两个**硬编码预算 ——
+#: 主路径 35000、降级路径 20000（`engine/pipeline/base.py` 的 builder 兜底、
+#: `engine/runtime/legacy_writing_delegate.py` 的两处兜底）
+#: ⇒ 降级发生时上下文被**静默削薄 43%**，而调用方只看到一条 warning。
+#: ⇒ 现在所有调用点都引用这一个常量：预算是多少只由这一处决定。
+DEFAULT_CONTEXT_MAX_TOKENS = 35000
+
 
 class ContextBuilder:
     """上下文构建器（双轨融合版）
@@ -179,7 +188,7 @@ class ContextBuilder:
         novel_id: str,
         chapter_number: int,
         outline: str,
-        max_tokens: int = 35000,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
         scene_director: SceneDirectorInput = None,
         slot_weights: Optional[Dict[str, float]] = None,
     ) -> str:
@@ -212,7 +221,7 @@ class ContextBuilder:
         novel_id: str,
         chapter_number: int,
         outline: str,
-        max_tokens: int = 35000,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
         scene_director: SceneDirectorInput = None,
         slot_weights: Optional[Dict[str, float]] = None,
         character_context_selection: Optional[Dict[str, Any]] = None,

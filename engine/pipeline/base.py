@@ -805,11 +805,17 @@ class BaseStoryPipeline(ABC):
                     ctx.novel_id, ctx.chapter_number,
                 )
             try:
+                # D-06：降级路径的预算与主路径**同一个值**
+                # （此前这里是 20000、主路径 35000 ⇒ 降级时上下文被静默削薄 43%）。
+                from application.engine.services.context_builder import (
+                    DEFAULT_CONTEXT_MAX_TOKENS,
+                )
+
                 ctx.context_text = ctx.context_builder.build_context(
                     novel_id=ctx.novel_id,
                     chapter_number=ctx.chapter_number,
                     outline=ctx.outline,
-                    max_tokens=20000,
+                    max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
                     slot_weights=slot_weights,
                 )
                 logger.info(f"[{ctx.novel_id}] 上下文（builder）: {len(ctx.context_text)} 字符")
