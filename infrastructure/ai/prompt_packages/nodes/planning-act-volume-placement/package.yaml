@@ -1,0 +1,50 @@
+name: 新一幕所属卷声明
+category: planning
+source: application/blueprint/services/act_volume_placement_service.py::declare
+description: 由 AI 声明即将创建的这一幕属于哪一卷（取代代码按幕数计数的换卷规则）
+builtin: true
+tags:
+- 规划
+- 幕级
+- 结构
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: title
+  desc: 书名
+  type: string
+  default: ''
+- name: genre
+  desc: 题材
+  type: string
+  default: ''
+- name: premise
+  desc: 一句话梗概
+  type: string
+  default: （未提供）
+- name: volume_overview
+  desc: 全书各卷清单（卷号/卷名/卷简介/已有幕）
+  type: string
+  default: （未提供）
+- name: last_act
+  desc: 上一幕（最新一幕）的标题与简介
+  type: string
+  default: （未提供）
+- name: anchor_note
+  desc: 锚点卷说明与不可回填的约束
+  type: string
+  default: （未提供）
+- name: allowed_volume_numbers
+  desc: 允许选择的卷号清单
+  type: string
+  required: true
+- name: observed_acts_per_volume
+  desc: 已观测到的每卷幕数
+  type: string
+  default: （未评估）
+id: planning-act-volume-placement
+sort_order: 122

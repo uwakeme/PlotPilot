@@ -1958,12 +1958,16 @@ class ContinuousPlanningService:
         novel_id: str,
         current_act_id: str,
         parent_volume_id: Optional[str] = None,
+        placement: Optional[Dict] = None,
     ) -> Dict:
         """自动创建下一幕
 
         parent_volume_id：显式指定新幕的父卷。守护进程按「只向前换卷」策略
         （daemon_host._find_parent_volume_for_new_act）选出后传入；
         不传时保持历史语义——挂在 current_act 的父卷下（手动「创建下一幕」入口）。
+
+        placement：本次挂载的留痕（B-08：AI 声明了哪一卷 / 还是回落了代码策略）。
+        原样写进幕节点的 metadata ⇒ 「这一幕为什么挂在这卷」在库里可查。
         """
         logger.info(f"Creating next act after {current_act_id}")
 
@@ -2008,6 +2012,7 @@ class ContinuousPlanningService:
                 # 章数是代码算的还是模型说的，落库时必须留痕
                 "metadata": {
                     "chapter_count_source": next_act_info.get("chapter_count_source", "ai"),
+                    **(placement or {}),
                 },
             },
             current_act.order_index + 1
@@ -2114,6 +2119,113 @@ class ContinuousPlanningService:
             "source": source,
             "message": f"已创建第 {node.number} 幕（{source}），请为其规划章节",
         }
+
+    async def declare_act_volume(
+        self,
+        *,
+        novel_id: str,
+        volume_nodes: List[StoryNode],
+        act_nodes: List[StoryNode],
+        observed_acts_per_volume: int = 0,
+    ):
+        """让 AI 声明「即将创建的这一幕属于哪一卷」（B-08）。
+
+        判不出来 / 调用失败 ⇒ 返回 ``VolumePlacement(None, "", SOURCE_NONE)``
+        （**未评估**），由调用方回落代码选卷策略（改造前的行为，逐位一致）。
+        """
+        from application.blueprint.services.act_volume_placement_contract import (
+            allowed_volume_numbers,
+            resolve_volume_anchor,
+        )
+        from application.blueprint.services.act_volume_placement_service import (
+            ActVolumePlacementService,
+        )
+
+        novel = None
+        if self.novel_repository is not None:
+            try:
+                novel = self.novel_repository.get_by_id(NovelId(novel_id))
+            except Exception as exc:
+                logger.warning(
+                    "读取小说信息失败，卷号声明将用兜底上下文 novel=%s: %s",
+                    novel_id,
+                    exc,
+                )
+
+        prefs = getattr(novel, "generation_prefs", None)
+        allowed = allowed_volume_numbers(volume_nodes, act_nodes)
+        anchor = resolve_volume_anchor(volume_nodes, act_nodes)
+
+        service = ActVolumePlacementService(self.llm_service)
+        return await service.declare(
+            novel_id=novel_id,
+            title=str(getattr(novel, "title", "") or ""),
+            genre=str(getattr(prefs, "locked_genre", "") or ""),
+            premise=str(getattr(novel, "premise", "") or ""),
+            volume_overview=self._volume_placement_overview(volume_nodes, act_nodes),
+            last_act=self._last_act_digest(act_nodes),
+            anchor_note=self._volume_anchor_note(anchor),
+            allowed_volume_numbers="、".join(str(n) for n in allowed),
+            observed_acts_per_volume=str(int(observed_acts_per_volume or 0)),
+        )
+
+    def _volume_placement_overview(
+        self, volume_nodes: List[StoryNode], act_nodes: List[StoryNode]
+    ) -> str:
+        """给 AI 看全书各卷：卷号 / 卷名 / 卷简介 / 已有幕。"""
+        lines: List[str] = []
+        for volume in volume_nodes:
+            number = getattr(volume, "number", None)
+            title = str(getattr(volume, "title", "") or "").strip()
+            description = str(
+                getattr(volume, "description", "") or ""
+            ).strip()
+            volume_id = getattr(volume, "id", None)
+            acts = [
+                a
+                for a in act_nodes
+                if getattr(a, "parent_id", None) == volume_id
+            ]
+            head = f"- 第{number}卷《{title}》"
+            if description:
+                head += f"：{description}"
+            if acts:
+                titles = "、".join(
+                    str(getattr(a, "title", "") or "").strip()
+                    for a in acts[:8]
+                    if str(getattr(a, "title", "") or "").strip()
+                )
+                lines.append(f"{head}（已有 {len(acts)} 幕：{titles}）")
+            else:
+                lines.append(f"{head}（尚无幕）")
+        return "\n".join(lines)
+
+    def _last_act_digest(self, act_nodes: List[StoryNode]) -> str:
+        """上一幕（最新一幕）的标题与简介。"""
+        if not act_nodes:
+            return ""
+        last = act_nodes[-1]
+        number = getattr(last, "number", None)
+        title = str(getattr(last, "title", "") or "").strip()
+        description = str(
+            getattr(last, "description", "") or ""
+        ).strip()
+        text = f"第{number}幕《{title}》"
+        if description:
+            text += f"：{description}"
+        return text
+
+    def _volume_anchor_note(self, anchor) -> str:
+        """锚点卷说明 + 不可回填的约束。"""
+        volume = getattr(anchor, "anchor", None)
+        if volume is None:
+            return "（当前没有可用的锚点卷）"
+        number = getattr(volume, "number", None)
+        title = str(getattr(volume, "title", "") or "").strip()
+        return (
+            f"当前最新一幕在第{number}卷《{title}》。"
+            "新一幕只能挂在这一卷或它之后的卷上，不许回到更早的卷。"
+        )
 
     def _bible_digest(self, novel_id: str) -> str:
         """给首幕生成用的 Bible 摘要（角色 / 世界 / 地点的名字与一句话）。"""

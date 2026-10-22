@@ -302,6 +302,116 @@ def _observed_acts_per_volume(act_nodes, volume_nodes, fallback: int) -> int:
     return max(relevant)
 
 
+
+async def _resolve_parent_volume_for_new_act(
+    host: "DaemonHostProtocol",
+    novel: Novel,
+    *,
+    volume_nodes: list,
+    act_nodes: list,
+    rec_acts_per_volume: int,
+) -> tuple[Any, Dict[str, Any]]:
+    """决定新一幕挂到哪一卷：**AI 声明优先**，代码选卷策略兜底（B-08）。
+
+    改造前这里是纯代码规则（锚点卷幕数达到 ``rec_acts_per_volume`` 才换卷），
+    「换卷时机」是创作判断却被写成了计数规则（登记表 B-08）。
+    现在这一判断交回 AI（``planning-act-volume-placement``），
+    但**两条不变量仍由代码保证**：卷号单调、不回填。
+
+    返回 ``(父卷节点, 挂载留痕)``。留痕随新幕落库 ⇒
+    「这一幕为什么挂在这卷」在库里可查，且来源可分辨：
+
+    - ``volume_placement_source`` = ``ai``（AI 声明被采纳）/ ``fallback``（回落代码策略）
+    - ``volume_placement_declared`` = AI 声明的**原始**卷号（None = AI 没判出来）
+    - ``volume_placement_reject_reason`` = ``not_assessed`` / ``not_allowed`` / 空
+    """
+    from application.blueprint.services.act_volume_placement_contract import (
+        SOURCE_AI,
+        SOURCE_FALLBACK,
+        SOURCE_NONE,
+        VolumePlacement,
+        allowed_volume_numbers,
+        resolve_placed_volume_number,
+    )
+
+    observed = _observed_acts_per_volume(act_nodes, volume_nodes, rec_acts_per_volume)
+    allowed = allowed_volume_numbers(volume_nodes, act_nodes)
+
+    placement = VolumePlacement(None, '', SOURCE_NONE)
+    # 只有「已经有一幕」时才问 AI：首幕的父卷由结构本身决定（第一卷），
+    # 那不是「换卷时机」，交给 AI 只会让首幕凭空跳卷、留下一堆空壳卷。
+    if act_nodes and allowed:
+        try:
+            placement = await host.planning_service.declare_act_volume(
+                novel_id=novel.novel_id.value,
+                volume_nodes=volume_nodes,
+                act_nodes=act_nodes,
+                observed_acts_per_volume=observed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] 卷号声明失败，回落代码选卷策略: %s",
+                novel.novel_id,
+                exc,
+            )
+            placement = VolumePlacement(None, '', SOURCE_NONE)
+
+    effective, reject_reason = resolve_placed_volume_number(
+        placement.declared_volume_number, allowed
+    )
+
+    meta: Dict[str, Any] = {
+        "volume_placement_source": SOURCE_FALLBACK,
+        "volume_placement_declared": placement.declared_volume_number,
+        "volume_placement_reason": placement.reason,
+        "volume_placement_reject_reason": reject_reason,
+        "volume_placement_volume": None,
+    }
+
+    if effective is not None:
+        chosen = next(
+            (
+                v
+                for v in volume_nodes
+                if getattr(v, "number", None) == effective
+            ),
+            None,
+        )
+        if chosen is not None:
+            meta["volume_placement_source"] = SOURCE_AI
+            meta["volume_placement_volume"] = effective
+            logger.info(
+                "[%s] 父卷选择：AI 声明这一幕属于第 %s 卷（依据：%s）",
+                novel.novel_id,
+                effective,
+                placement.reason or "（模型没写依据）",
+            )
+            return chosen, meta
+        # 卷节点在两次读取之间变了 ⇒ 回落代码策略，不猜
+        logger.warning(
+            "[%s] AI 声明的卷号 %s 找不到对应卷节点，回落代码选卷策略",
+            novel.novel_id,
+            effective,
+        )
+
+    if reject_reason:
+        logger.info(
+            "[%s] 卷号声明未采纳（原因=%s，声明=%s，允许=%s），回落代码选卷策略",
+            novel.novel_id,
+            reject_reason,
+            placement.declared_volume_number,
+            allowed,
+        )
+
+    parent_volume = host._find_parent_volume_for_new_act(
+        volume_nodes=volume_nodes,
+        act_nodes=act_nodes,
+        rec_acts_per_volume=observed,
+        novel_id=novel.novel_id,
+    )
+    if parent_volume is not None:
+        meta["volume_placement_volume"] = getattr(parent_volume, "number", None)
+    return parent_volume, meta
 def _completed_chapter_count(host, novel) -> int:
     """已完成章节数。
 
@@ -484,13 +594,14 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
             host._flush_novel(novel)
             return
 
-        parent_volume = host._find_parent_volume_for_new_act(
+        # B-08：建幕时由 **AI 声明**这一幕属于哪一卷
+        # （此前是代码按幕数计数的规则；卷号单调/不回填仍由代码保证）。
+        parent_volume, placement_meta = await _resolve_parent_volume_for_new_act(
+            host,
+            novel,
             volume_nodes=volume_nodes,
             act_nodes=act_nodes,
-            rec_acts_per_volume=_observed_acts_per_volume(
-                act_nodes, volume_nodes, rec_acts_per_volume
-            ),
-            novel_id=novel.novel_id,
+            rec_acts_per_volume=rec_acts_per_volume,
         )
 
         if parent_volume:
@@ -501,6 +612,7 @@ async def run_act_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
                         novel_id=novel_id,
                         current_act_id=last_act.id,
                         parent_volume_id=parent_volume.id,
+                        placement=placement_meta,
                     )
                     # 日志必须反映落库后的真实父卷（历史上选卷与挂载脱钩，日志曾长期失真）
                     created_act = {}

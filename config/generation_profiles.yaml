@@ -136,6 +136,12 @@ planning_depth:
   max_tokens: 800
   temperature: 0.2
 
+# B-08：新一幕所属卷的声明。判读题 => 温度低（要稳）。
+act_volume_placement:
+  extends: base_generation_profile
+  max_tokens: 800
+  temperature: 0.2
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

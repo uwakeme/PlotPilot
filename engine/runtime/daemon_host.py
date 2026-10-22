@@ -32,6 +32,10 @@ from domain.novel.value_objects.chapter_id import ChapterId
 from domain.novel.value_objects.word_count import WordCount
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
 from domain.structure.story_node import StoryNode
+from application.blueprint.services.act_volume_placement_contract import (
+    ANCHOR_DANGLING,
+    resolve_volume_anchor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2444,6 +2448,11 @@ class DaemonHostMixin:
         novel_id: str,
     ):
         """为新幕选择父卷（只向前换卷策略）。
+        ⚠ B-08：这是**代码兜底**策略 —— 「换卷时机」现在优先由 AI 声明
+        （``planning-act-volume-placement``）；AI 不可用 / 声明越界时才走这里。
+        两条不变量（卷号单调、不回填）在 AI 路径上由
+        ``act_volume_placement_contract.resolve_placed_volume_number`` 保证，
+        锚点口径与本方法**共用** ``resolve_volume_anchor``。
 
         1. 锚点 = 最后一个幕所在的卷（幕按全局 number 排序，act_nodes[-1] 即最新幕）；
            还没有任何幕时锚点 = 第一卷
@@ -2464,20 +2473,16 @@ class DaemonHostMixin:
         def _describe(volume) -> str:
             return f"第{volume.number}卷《{volume.title}》"
 
-        ordered = sorted(
-            volume_nodes,
-            key=lambda v: v.number if v.number is not None else 0,
-        )
-
-        anchor = None
-        if act_nodes:
-            last_act = act_nodes[-1]
-            anchor = next((v for v in ordered if v.id == last_act.parent_id), None)
-            if anchor is None:
-                logger.warning(
-                    "[%s] 最新幕 %s 的父卷 %s 不在卷列表中，回退为第一个未满卷",
-                    novel_id, last_act.id, last_act.parent_id,
-                )
+        # B-08：锚点口径与「卷号单调、不回填」的不变量校验**共用**同一实现
+        # （同一逻辑写两份必然各自漂移）。
+        anchor_info = resolve_volume_anchor(volume_nodes, act_nodes)
+        ordered = anchor_info.ordered
+        anchor = anchor_info.anchor
+        if anchor_info.reason == ANCHOR_DANGLING:
+            logger.warning(
+                "[%s] 最新幕 %s 的父卷 %s 不在卷列表中，回退为第一个未满卷",
+                novel_id, anchor_info.last_act_id, anchor_info.last_act_parent_id,
+            )
 
         if anchor is not None:
             anchor_count = _act_count(anchor)
