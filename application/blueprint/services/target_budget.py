@@ -52,13 +52,40 @@ __all__ = [
     "FINALE_BUDGET_DEFAULT",
     "FINALE_BUDGET_MAX",
     "FINALE_BUDGET_MIN",
+    "DEFAULT_TARGET_CHAPTERS",
     "TARGET_CHAPTERS_MAX",
     "auto_extend_block",
     "clamp_finale_budget",
     "clamp_target_chapters",
     "propose_continue_block",
     "propose_continue_target",
+    "resolve_target_chapters",
 ]
+
+
+#: 目标章数的**统一默认值**（I-05）。
+#: 此前 6 处各写各的兜底（30 / 50 / 100 / 100…）
+#: ⇒ **同一本书按不同口径算结构预算**。
+DEFAULT_TARGET_CHAPTERS = 100
+
+
+def resolve_target_chapters(value, *, default: int = DEFAULT_TARGET_CHAPTERS) -> int:
+    """目标章数的**唯一解析入口**（I-05）。
+
+    读不到 / 非法 ⇒ ``default``；超界 ⇒ 钳到 ``TARGET_CHAPTERS_MAX``。
+
+    ⚠ 与 ``clamp_target_chapters`` 的差别：那个把「≤0 未设置」当作 0 返回；
+    这个给的是**一个能用的数字**（结构预算不能用 0）。
+    """
+    if value is None:
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number <= 0:
+        return default
+    return min(number, TARGET_CHAPTERS_MAX)
 
 
 def clamp_target_chapters(value) -> int:

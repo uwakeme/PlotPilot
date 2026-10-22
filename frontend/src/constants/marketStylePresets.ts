@@ -102,6 +102,14 @@ export const MARKET_STYLE_PRESETS: MarketStylePreset[] = [
   },
 ]
 
+/**
+ * 按关键词给内置文风预设打分，返回命中的预设 value。
+ *
+ * ⚠ J-02：这条**只管显示**（面板上那个「内置模板 / 自定义公约」的标签），
+ * **不决定文风归属** —— 登记表把它写成「前端替 AI 判定文风归属」是**因果讲反了**：
+ * 真正替作者做决定的是「默认注入 presets[0]」那条（已删）。
+ * ⇒ 这里的分数只影响标签怎么显示，永远不会被写进 Bible。
+ */
 export function matchPresetValue(styleNotes: string): string | null {
   const scored = MARKET_STYLE_PRESETS
     .map(preset => ({ preset, score: scorePreset(styleNotes, preset) }))

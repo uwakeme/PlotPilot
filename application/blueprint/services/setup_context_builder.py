@@ -19,7 +19,10 @@ class SetupContextBuilder:
 
         title = str(variable_context.get("novel_title") or "").strip()
         premise = str(variable_context.get("premise") or "").strip()
-        target_chapters = self._as_int(variable_context.get("target_chapters"), default=100)
+        # I-05：统一解析入口（此前这里是 ``default=100``）。
+        from application.blueprint.services.target_budget import resolve_target_chapters
+
+        target_chapters = resolve_target_chapters(variable_context.get("target_chapters"))
         target_words_per_chapter = self._as_int(variable_context.get("target_words_per_chapter"), default=0)
         theme_metadata = self._theme_metadata_from_novel(novel)
         theme_metadata.update(variable_context.get("theme_metadata") or {})

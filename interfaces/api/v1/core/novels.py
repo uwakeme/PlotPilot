@@ -43,7 +43,13 @@ class CreateNovelRequest(BaseModel):
     target_chapters: int = Field(
         100,
         ge=0,
-        description="目标章节数；选 V1 体量档时可传 0 由服务端推导",
+        le=TARGET_CHAPTERS_MAX,
+        description=(
+            "目标章节数；选 V1 体量档时可传 0 由服务端推导；"
+            "上限与更新侧同一个 TARGET_CHAPTERS_MAX"
+            "（J-04：此前创建侧**没有上限** ⇒ 能建出一本"
+            "之后任何带 target_chapters 的 PUT 都 422 的书）"
+        ),
     )
     premise: str = Field(default="", max_length=2000, description="故事梗概/创意（建议 2000 字内）")
     genre: str = Field(default="", description="赛道/类型（下拉预设）")

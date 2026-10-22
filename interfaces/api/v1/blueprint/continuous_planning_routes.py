@@ -160,7 +160,13 @@ async def stream_macro_plan_sse(
     async def _generate():
         runtime_settings = get_planning_runtime_settings()
         # ─── 读取 target_chapters ───────────────────────────────────
-        target_chapters = 100
+        # I-05：统一默认值（此前这里是裸 100）。
+        from application.blueprint.services.target_budget import (
+            DEFAULT_TARGET_CHAPTERS,
+            resolve_target_chapters,
+        )
+
+        target_chapters = DEFAULT_TARGET_CHAPTERS
         try:
             from application.paths import get_db_path
             from infrastructure.persistence.database.connection import get_database
@@ -169,7 +175,7 @@ async def stream_macro_plan_sse(
                 "SELECT target_chapters FROM novels WHERE id = ?", (novel_id,)
             )
             if _row and _row["target_chapters"]:
-                target_chapters = int(_row["target_chapters"])
+                target_chapters = resolve_target_chapters(_row["target_chapters"])
         except Exception:
             pass
 

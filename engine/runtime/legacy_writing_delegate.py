@@ -191,7 +191,10 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
         logger.debug("[%s] 写作前结构探测失败（忽略）: %s", novel_id_v, e)
 
     # 1. 目标控制：目标章数是软目标——达标时按书目策略分流，不再一刀切完结
-    target_chapters = novel.target_chapters or 50
+    # I-05：目标章数走**统一解析入口**（此前这里各写各的兜底，同一本书会按不同口径算结构预算）。
+    from application.blueprint.services.target_budget import resolve_target_chapters
+
+    target_chapters = resolve_target_chapters(novel.target_chapters)
     max_chapters = novel.max_auto_chapters or 9999
     current_chapters = novel.current_auto_chapters or 0
 

@@ -209,7 +209,10 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
         macro_structure_ready=False,
     )
 
-    target_chapters = novel.target_chapters or 30
+    # I-05：目标章数走**统一解析入口**（此前这里各写各的兜底，同一本书会按不同口径算结构预算）。
+    from application.blueprint.services.target_budget import resolve_target_chapters
+
+    target_chapters = resolve_target_chapters(novel.target_chapters)
 
     logger.info(
         "[%s] macro_planning start target_chapters=%s",

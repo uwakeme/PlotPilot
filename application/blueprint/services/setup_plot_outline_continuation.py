@@ -258,7 +258,10 @@ def _target_chapters(context: ContinuationContext) -> int:
         value = int(raw or 0)
     except (TypeError, ValueError):
         value = 0
-    return max(1, value or 100)
+    # I-05：统一解析入口（此前这里是 ``value or 100``）。
+    from application.blueprint.services.target_budget import resolve_target_chapters
+
+    return resolve_target_chapters(value)
 
 
 def _chapter_ranges(target_chapters: int) -> list[tuple[int, int]]:

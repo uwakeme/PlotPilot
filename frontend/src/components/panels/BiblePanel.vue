@@ -90,6 +90,19 @@
               </div>
             </div>
           </div>
+
+          <!-- 文风公约未定：给出出口（作者自选 / AI 生成），不再由前端默认注入 -->
+          <div v-else class="bible-style-card bible-style-card--empty">
+            <div class="bible-style-info">
+              <div class="bible-style-label">
+                <span>文风公约未定</span>
+                <span class="bible-style-summary">
+                  文风公约会进正文提示词的「创作契约」槽，由你决定：从预设里选一个，或用上面的「AI 生成」让 AI 写。
+                </span>
+              </div>
+            </div>
+            <n-button size="tiny" secondary @click="openStylePresetModal">选择文风</n-button>
+          </div>
         </div>
       </div>
 
@@ -386,23 +399,19 @@ const toApiFormat = (data: any) => {
   return { characters, world_settings: [], locations, timeline_notes: [], style_notes }
 }
 
-function styleNotesWithCreationDefault(styleNotes: string): string {
-  const t = (styleNotes || '').trim()
-  if (t) return styleNotes
-  const v = MARKET_STYLE_PRESETS[0]?.value ?? 'xianxia_hot'
-  const p = MARKET_STYLE_PRESETS.find((x) => x.value === v)
-  return p?.body ?? ''
-}
-
-/** 并行阶段内解析 Bible；404 时自动 create 后再拉一次 */
+/**
+ * 并行阶段内解析 Bible；404 时自动 create 后再拉一次
+ *
+ * ⚠ J-02：这里**不再**给新书默认注入文风预设。
+ * 此前 `styleNotesWithCreationDefault('')` 会把 `MARKET_STYLE_PRESETS[0]`
+ * （修仙爽文）写进每一本新书的 Bible ⇒ **前端替作者定了文风**，
+ * 而它会走「创作契约」具名槽进正文提示词 ⇒ 确实生效。
+ * ⇒ 现在空就是空，由作者选预设、或用「AI 生成」让 AI 写。
+ */
 async function fetchBibleStateForPanel(slug: string): Promise<ReturnType<typeof emptyState>> {
   try {
     const bible = await bibleApi.getBible(slug)
-    let ui = fromApiFormat(bible)
-    if (!matchPresetValue(ui.style_notes) && !(ui.style_notes || '').trim()) {
-      ui = { ...ui, style_notes: styleNotesWithCreationDefault('') }
-    }
-    return ui
+    return fromApiFormat(bible)
   } catch (err: unknown) {
     if (getHttpStatus(err) !== 404) throw err
     try {
@@ -412,11 +421,7 @@ async function fetchBibleStateForPanel(slug: string): Promise<ReturnType<typeof 
       return emptyState()
     }
     const bible = await bibleApi.getBible(slug)
-    let ui = fromApiFormat(bible)
-    if (!matchPresetValue(ui.style_notes) && !(ui.style_notes || '').trim()) {
-      ui = { ...ui, style_notes: styleNotesWithCreationDefault('') }
-    }
-    return ui
+    return fromApiFormat(bible)
   }
 }
 
@@ -725,6 +730,14 @@ function onBiblePanelSoftReload() {
   border-radius: var(--app-radius-md, 10px);
   background: var(--plotpilot-panel-muted);
   border: 1px solid var(--app-border);
+}
+
+/* J-02：文风未定时的空态 —— 给出出口（选择文风），不再由前端默认注入 */
+.bible-style-card--empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .bible-style-card-header {

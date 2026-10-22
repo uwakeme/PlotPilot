@@ -839,7 +839,10 @@ def save_plot_outline(
         from infrastructure.persistence.database.sqlite_ai_invocation_repository import SqliteVariableHubRepository
 
         _ensure_plot_outline_invocation_contract()
-        target_chapters = int(getattr(novel, "target_chapters", 0) or 100)
+        # I-05：统一解析入口（此前这里是 ``or 100``）。
+        from application.blueprint.services.target_budget import resolve_target_chapters
+
+        target_chapters = resolve_target_chapters(getattr(novel, "target_chapters", 0))
         outline = normalize_setup_plot_outline_payload(
             request.plot_outline.model_dump(),
             target_chapters=target_chapters,
