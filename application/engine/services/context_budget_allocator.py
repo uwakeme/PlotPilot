@@ -654,6 +654,18 @@ class ContextBudgetAllocator:
             priority=65,
         )
 
+        # ── G-04: 情绪账本（EMOTION_LEDGER）── 章后累积的「核心损失 / 未解悬念」
+        # 此前只写不读（读回路径零生产调用方）⇒ 现在作为 T1 槽进生产上下文。
+        emotion_ledger_content = self._get_emotion_ledger_section(novel_id)
+        slots["emotion_ledger"] = ContextSlot(
+            name="情绪账本(EMOTION_LEDGER)",
+            tier=PriorityTier.T1_COMPRESSIBLE,
+            content=emotion_ledger_content,
+            tokens=self.estimate_tokens(emotion_ledger_content),
+            max_tokens=400,
+            priority=66,
+        )
+
         # ── 近期幕摘要 ──
         recent_acts = self._get_recent_act_summaries(novel_id, chapter_number, limit=3)
         slots["recent_act_summaries"] = ContextSlot(
@@ -1840,6 +1852,41 @@ class ContextBudgetAllocator:
         
         return ""
     
+    def _get_emotion_ledger_section(self, novel_id: str) -> str:
+        """情绪账本（章后累积的「核心损失 / 核心获得 / 未解悬念」）。
+
+        ⚠ G-04：此前这份账本**只写不读** —— 每章一次 LLM 抽取写进 checkpoints，
+        读回路径（memory_orchestrator.assemble_context）零生产调用方 ⇒ 写了没人看。
+        ⇒ 现在它作为 T1 槽进生产上下文（token 上限由槽位 max_tokens 兜住）。
+        """
+        try:
+            import json
+
+            from infrastructure.persistence.database.connection import get_database
+
+            db = get_database()
+            row = db.fetch_one(
+                """SELECT emotion_ledger FROM checkpoints
+                   WHERE story_id = ? AND is_active = 1
+                   ORDER BY created_at DESC LIMIT 1""",
+                (novel_id,),
+            )
+            if not row:
+                return ""
+            payload = row.get(
+"emotion_ledger"
+)
+            if not payload:
+                return ""
+            from engine.core.value_objects.emotion_ledger import EmotionLedger
+
+            ledger = EmotionLedger.from_dict(json.loads(payload))
+            return ledger.to_t0_section()
+        except Exception as e:
+            # 账本是可选增强：表不存在 / 解析失败都不应该报错（每章都会警告）。
+            logger.debug(f"情绪账本读取失败: {e}")
+            return ""
+
     def _get_diagnosis_breakpoints(
         self,
         novel_id: str,

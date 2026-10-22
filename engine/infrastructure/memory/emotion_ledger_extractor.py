@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from application.ai.llm_json_extract import parse_llm_json_to_dict
 from domain.ai.services.llm_service import GenerationConfig
 from engine.core.value_objects.emotion_ledger import (
+    coerce_urgency,
     EmotionLedger,
     EmotionalWound,
     EmotionalBoon,
@@ -19,7 +20,9 @@ from infrastructure.ai.prompt_utils import render_required_prompt
 logger = logging.getLogger(__name__)
 
 _MAX_CHAPTER_CHARS = 8000
-_MAX_ITEMS_PER_CATEGORY = 3
+#: 每类单次提取的上限（G-04：截断放宽）。
+#: 保留在这一处，不再在 merge_ledger 里截一次。
+_MAX_ITEMS_PER_CATEGORY = 8
 
 class EmotionLedgerExtractionError(RuntimeError):
     """情绪账本 LLM 提取失败；禁止用空增量伪装成功。"""
@@ -68,7 +71,7 @@ class EmotionLedgerExtractor:
         """将增量变更合并到现有账本（不可变追加）"""
         ledger = current
 
-        for item in deltas.get("wounds", [])[:_MAX_ITEMS_PER_CATEGORY]:
+        for item in deltas.get("wounds", []):
             wound = EmotionalWound(
                 description=str(item.get("description", "")).strip(),
                 impact=str(item.get("impact", "")).strip(),
@@ -77,7 +80,7 @@ class EmotionLedgerExtractor:
             if wound.description:
                 ledger = ledger.add_wound(wound)
 
-        for item in deltas.get("boons", [])[:_MAX_ITEMS_PER_CATEGORY]:
+        for item in deltas.get("boons", []):
             boon = EmotionalBoon(
                 description=str(item.get("description", "")).strip(),
                 value=str(item.get("value", "")).strip(),
@@ -86,7 +89,7 @@ class EmotionLedgerExtractor:
             if boon.description:
                 ledger = ledger.add_boon(boon)
 
-        for item in deltas.get("power_shifts", [])[:_MAX_ITEMS_PER_CATEGORY]:
+        for item in deltas.get("power_shifts", []):
             shift = PowerShift(
                 from_state=str(item.get("from_state", "")).strip(),
                 to_state=str(item.get("to_state", "")).strip(),
@@ -95,12 +98,11 @@ class EmotionLedgerExtractor:
             if shift.from_state and shift.to_state:
                 ledger = ledger.add_power_shift(shift)
 
-        for item in deltas.get("open_loops", [])[:_MAX_ITEMS_PER_CATEGORY]:
-            urgency = item.get("urgency", 0.5)
-            try:
-                urgency = max(0.0, min(1.0, float(urgency)))
-            except (TypeError, ValueError):
-                urgency = 0.5
+        for item in deltas.get("open_loops", []):
+            # G-04：模型给的紧迫度原样保留；
+            # 读不出数字 ⇒ 未评估（None），
+            # 不再回落 0.5（那是代码替模型说话）。
+            urgency = coerce_urgency(item.get("urgency"))
             loop = OpenLoop(
                 description=str(item.get("description", "")).strip(),
                 hint=str(item.get("hint", "")).strip(),

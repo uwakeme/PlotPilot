@@ -61,6 +61,8 @@ SLOT_CATALOG: Dict[str, SlotSpec] = {
         "causal_chains", "未闭环因果链", "已铺开但未回收的因果", "T1"),
     "diagnosis_breakpoints": SlotSpec(
         "diagnosis_breakpoints", "人设冲突提醒", "宏观诊断指出的人设风险", "T1"),
+    "emotion_ledger": SlotSpec(
+        "emotion_ledger", "情绪账本", "章后累积的核心损失/未解悬念", "T1"),
     "recent_act_summaries": SlotSpec(
         "recent_act_summaries", "近期幕摘要", "前几幕的摘要", "T1"),
     "character_state_lock": SlotSpec(
