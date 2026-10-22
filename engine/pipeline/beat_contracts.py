@@ -66,50 +66,6 @@ def serialize_beats_for_shared_state(beats: Any) -> list:
     return out
 
 
-def merge_beats_by_target(beats: list, total_target: int) -> list:
-    """Merge beats by chapter target while preserving all card prompt blocks."""
-    if not beats or len(beats) <= 1:
-        return beats
-
-    if total_target <= 2200:
-        # Short chapters stay as a single LLM call so the overall word budget is
-        # easier to control. The merged beat still exposes ordered sub-beats in
-        # the prompt instead of flattening them into one overloaded action.
-        merged = beats[0]
-        for b in beats[1:]:
-            merged = merge_two_beats(merged, b)
-        return [merged]
-
-    if total_target <= 3200:
-        mid = max(1, len(beats) // 2)
-        first = beats[0]
-        for b in beats[1:mid]:
-            first = merge_two_beats(first, b)
-        second = beats[mid]
-        for b in beats[mid + 1:]:
-            second = merge_two_beats(second, b)
-        return [first, second]
-
-    min_beat = 350
-    result = list(beats)
-    changed = True
-    while changed:
-        changed = False
-        new_result = []
-        i = 0
-        while i < len(result):
-            tw = getattr(result[i], "target_words", 0) or 0
-            if tw < min_beat and i + 1 < len(result):
-                new_result.append(merge_two_beats(result[i], result[i + 1]))
-                i += 2
-                changed = True
-            else:
-                new_result.append(result[i])
-                i += 1
-        result = new_result
-    return result
-
-
 def merge_two_beats(a: Any, b: Any) -> Any:
     """Merge two beat-like objects without dropping either prompt card."""
     subbeat_descriptions = _collect_descriptions(a) + _collect_descriptions(b)
