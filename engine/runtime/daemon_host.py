@@ -2282,7 +2282,12 @@ class DaemonHostMixin:
                 "beat_section": (beat_prompt or "").strip(),
             },
         )
-        config = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
+        # E-07：温度来自单一来源（config/performance.yaml 的 prose_sampling 段）。
+        from application.engine.services.prose_sampling_settings import (
+            prose_temperature,
+        )
+
+        config = GenerationConfig(max_tokens=max_tokens, temperature=prose_temperature())
         return await self._stream_llm_with_stop_watch(
             prompt, config, novel=novel, chapter_draft_so_far=chapter_draft_so_far
         )

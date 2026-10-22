@@ -101,7 +101,15 @@ class ChapterProseInvocationComposer:
     def _build_config(request: ProseCompositionRequest):
         from domain.ai.services.llm_service import GenerationConfig
 
-        return GenerationConfig(max_tokens=ChapterProseInvocationComposer._max_output_tokens(request), temperature=0.85)
+        # E-07：温度来自单一来源（config/performance.yaml 的 prose_sampling 段）。
+        from application.engine.services.prose_sampling_settings import (
+            prose_temperature,
+        )
+
+        return GenerationConfig(
+            max_tokens=ChapterProseInvocationComposer._max_output_tokens(request),
+            temperature=prose_temperature(),
+        )
 
     @staticmethod
     def _load_committed_story_pipeline_content(request: ProseCompositionRequest) -> str:
@@ -184,7 +192,11 @@ class ChapterProseInvocationComposer:
                 "generation_mode": "full_chapter_once",
                 "commit_owner": "story_pipeline_save_step",
             },
-            config={"max_tokens": self._max_output_tokens(request), "temperature": 0.85},
+            config={
+                "max_tokens": self._max_output_tokens(request),
+                # E-07：温度来自单一来源。
+                "temperature": prose_temperature(),
+            },
         )
         host = request.host or type("StoryPipelineComposerHost", (), {"llm_service": request.llm_service})()
         orchestrator = get_or_create_autopilot_orchestrator(host)

@@ -887,7 +887,14 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
                     from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
 
                     max_tokens = CHAPTER_PROSE_MAX_TOKENS
-                    cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
+                    # E-07：温度来自单一来源。
+                    from application.engine.services.prose_sampling_settings import (
+                        prose_temperature,
+                    )
+
+                    cfg = GenerationConfig(
+                        max_tokens=max_tokens, temperature=prose_temperature()
+                    )
                     beat_content = await host._stream_llm_with_stop_watch(
                         prompt, cfg, novel=novel, chapter_draft_so_far=accumulated_content
                     )
@@ -1072,7 +1079,12 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
                 style_summary=bundle["style_summary"],
                 voice_anchors=voice_anchors,
             )
-            cfg = GenerationConfig(max_tokens=3000, temperature=0.85)
+            # E-07：温度来自单一来源。
+            from application.engine.services.prose_sampling_settings import (
+                prose_temperature,
+            )
+
+            cfg = GenerationConfig(max_tokens=3000, temperature=prose_temperature())
             beat_content = await host._stream_llm_with_stop_watch(
                 prompt, cfg, novel=novel, chapter_draft_so_far=""
             )
