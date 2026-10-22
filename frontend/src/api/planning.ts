@@ -109,7 +109,12 @@ export interface StructurePreference {
 
 export interface MacroPlanRequest {
   target_chapters: number
-  structure: StructurePreference
+  /**
+   * B-05：结构网格。**不传** ⇒ 网格由 AI 提案（并由用户确认后落库）；
+   * 传了 ⇒ 用调用方钉死的网格（用户优先）。
+   * 此前是必填且默认 3×3×3 ⇒ 等于「代码替用户决定了结构」。
+   */
+  structure?: StructurePreference
 }
 
 export interface MacroActNode {
@@ -260,9 +265,16 @@ export function streamMacroPlan(
     onDone?: (e: MacroStreamDoneEvent) => void
     onError?: (message: string) => void
   },
+  /**
+   * B-05：结构规划模式。
+   * - `quick`（默认）：AI 自定整棵结构；
+   * - `precise`：网格**由 AI 提案**（代码夹紧上限）后逐节点填充。
+   */
+  opts?: { mode?: 'quick' | 'precise' },
 ): AbortController {
   const ctrl = new AbortController()
-  const url = resolveHttpUrl(`/api/v1/planning/novels/${novelId}/macro/stream`)
+  const mode = opts?.mode === 'precise' ? 'precise' : 'quick'
+  const url = resolveHttpUrl(`/api/v1/planning/novels/${novelId}/macro/stream?mode=${mode}`)
 
   void (async () => {
     try {

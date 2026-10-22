@@ -1,0 +1,46 @@
+name: 结构网格提案
+category: planning
+source: application/blueprint/services/structure_proposal.py::propose
+description: 由 AI 提案这本书的结构网格（部数/每部卷数/每卷幕数），取代代码铺死的固定网格
+builtin: true
+tags:
+- 规划
+- 宏观
+- 结构
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: title
+  desc: 书名
+  type: string
+  default: ''
+- name: genre
+  desc: 题材
+  type: string
+  default: ''
+- name: premise
+  desc: 一句话梗概
+  type: string
+  default: （未提供）
+- name: target_chapters
+  desc: 全书目标章数
+  type: string
+  required: true
+- name: max_parts
+  desc: 部数上限
+  type: string
+  required: true
+- name: max_volumes_per_part
+  desc: 每部卷数上限
+  type: string
+  required: true
+- name: max_acts_per_volume
+  desc: 每卷幕数上限
+  type: string
+  required: true
+id: planning-structure-proposal
+sort_order: 123

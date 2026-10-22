@@ -571,6 +571,8 @@ class ContinuousPlanningService:
         novel_id: str,
         target_chapters: int,
         structure_preference: Optional[Dict[str, int]] = None,
+        # B-05：精密模式下让 **AI 提案**结构网格（而不是代码公式铺死）。
+        propose_structure: bool = False,
     ) -> Dict:
         """生成宏观规划"""
         import time
@@ -585,7 +587,7 @@ class ContinuousPlanningService:
         bible_context = self._get_bible_context(novel_id)
 
         try:
-            if structure_preference is None:
+            if structure_preference is None and not propose_structure:
                 # 构建提示词
                 prompt = self._build_macro_planning_prompt(
                     bible_context=bible_context,
@@ -603,6 +605,12 @@ class ContinuousPlanningService:
                 raw = await self._stream_macro_llm_text(novel_id, prompt, config)
                 structure = self._parse_llm_response(raw)
             else:
+                if structure_preference is None:
+                    # B-05：网格由 **AI 提案**（判不出来 ⇒ 回落代码兜底 3×3×3）。
+                    structure_preference = await self._propose_structure_grid(
+                        novel_id=novel_id,
+                        target_chapters=target_chapters,
+                    )
                 structure = await self._generate_precise_macro_plan(
                     novel_id=novel_id,
                     bible_context=bible_context,
@@ -666,6 +674,73 @@ class ContinuousPlanningService:
                 message="结构规划生成失败",
             )
             raise
+
+    async def _propose_structure_grid(
+        self,
+        *,
+        novel_id: str,
+        target_chapters: int,
+    ) -> Dict[str, int]:
+        """B-05：让 **AI 提案**结构网格（部数 / 每部卷数 / 每卷幕数）。
+
+        判不出来 ⇒ **未评估** ⇒ 回落**代码兜底** 3×3×3
+        （= 改造前 ``StructurePreference`` 的默认值 ⇒ **逐位一致**）；
+        提案被代码夹紧 ⇒ 写进日志（**不许静默**）。
+        """
+        from application.blueprint.services.structure_proposal import (
+            FALLBACK_GRID,
+            SOURCE_AI,
+            StructureProposalService,
+        )
+
+        novel = None
+        if self.novel_repository is not None:
+            try:
+                novel = self.novel_repository.get_by_id(NovelId(novel_id))
+            except Exception as exc:
+                logger.warning(
+                    "读取小说信息失败，结构网格提案将用兜底上下文 novel=%s: %s",
+                    novel_id,
+                    exc,
+                )
+        prefs = getattr(novel, "generation_prefs", None)
+        proposal = await StructureProposalService(self.llm_service).propose(
+            novel_id=novel_id,
+            title=str(getattr(novel, "title", "") or ""),
+            genre=str(getattr(prefs, "locked_genre", "") or ""),
+            premise=str(getattr(novel, "premise", "") or ""),
+            target_chapters=target_chapters,
+        )
+        if proposal.source != SOURCE_AI:
+            logger.info(
+                "[MacroPlan] 结构网格未提案（source=%s），回落代码兜底 %s×%s×%s",
+                proposal.source,
+                FALLBACK_GRID[0],
+                FALLBACK_GRID[1],
+                FALLBACK_GRID[2],
+            )
+            return {
+                "parts": FALLBACK_GRID[0],
+                "volumes_per_part": FALLBACK_GRID[1],
+                "acts_per_volume": FALLBACK_GRID[2],
+            }
+        if proposal.clamped:
+            logger.warning(
+                "[MacroPlan] 结构网格提案被代码夹紧：%s×%s×%s（依据：%s）",
+                proposal.parts,
+                proposal.volumes_per_part,
+                proposal.acts_per_volume,
+                proposal.reason or "（模型没写依据）",
+            )
+        else:
+            logger.info(
+                "[MacroPlan] 结构网格由 AI 提案：%s×%s×%s（依据：%s）",
+                proposal.parts,
+                proposal.volumes_per_part,
+                proposal.acts_per_volume,
+                proposal.reason or "（模型没写依据）",
+            )
+        return proposal.as_preference()
 
     async def _generate_precise_macro_plan(
         self,
@@ -838,6 +913,12 @@ class ContinuousPlanningService:
                 continue
             node_id = str(update.get("node_id") or "").strip()
             if not node_id or node_id not in node_index:
+                # B-05：未知 node_id **不许静默丢弃** ——
+                # 模型可能给了与骨架不同的编号（它以为网格是自己定的）。
+                logger.warning(
+                    "[MacroPlan] 合并时丢弃未知节点 id=%s（骨架里没有这个节点）",
+                    node_id or "(空)",
+                )
                 continue
             self._apply_precise_node_update(node_index[node_id], update)
 

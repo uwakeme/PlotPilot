@@ -97,7 +97,10 @@ class StructurePreference(BaseModel):
 class MacroPlanRequest(BaseModel):
     """宏观规划请求"""
     target_chapters: int = Field(100, ge=10, le=1000)
-    structure: StructurePreference = Field(default_factory=StructurePreference)
+    # B-05：structure 改成**可选** —— 不传 ⇒ 网格由 **AI 提案**；
+    # 传了 ⇒ 用调用方钉死的网格（用户优先）。
+    # 此前默认 3×3×3 ⇒ 等于「代码替用户决定了结构」。
+    structure: Optional[StructurePreference] = None
 
 
 class MacroPlanConfirmRequest(BaseModel):
@@ -134,6 +137,11 @@ def get_service() -> ContinuousPlanningService:
 @router.get("/novels/{novel_id}/macro/stream")
 async def stream_macro_plan_sse(
     novel_id: str,
+    mode: str = Query(
+        "quick",
+        pattern="^(quick|precise)$",
+        description="结构规划模式：quick=快捷（AI 自定结构）/ precise=精密（网格由 AI 提案后逐节点填充）",
+    ),
     service: ContinuousPlanningService = Depends(get_service),
 ):
     """宏观规划 SSE 流式端点：LLM 生成阶段推送原始文本片段（chunk），完成后逐节点推送部→卷→幕。
@@ -174,6 +182,8 @@ async def stream_macro_plan_sse(
                 novel_id=novel_id,
                 target_chapters=target_chapters,
                 structure_preference=None,
+                # B-05：精密模式的网格由 **AI 提案**（不再由前端/代码铺死）。
+                propose_structure=(mode == "precise"),
             )
         )
 

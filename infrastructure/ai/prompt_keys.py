@@ -105,6 +105,9 @@ PLANNING_RHYTHM_QUOTA = "planning-rhythm-quota"
 PLANNING_DEPTH_ASSESSMENT = "planning-depth-assessment"
 # E-04：武侠题材的战斗逻辑 / 现代口语判定（由 LLM 审，取代代码的两条正则 + 7 项词表）
 PLANNING_WUXIA_STYLE_AUDIT = "wuxia-style-audit"
+# B-05：结构网格（部/卷/幕的数量）由 **AI 提案**（取代代码铺死的固定网格；
+# 代码保留的不变量：结构深度上限、防无限嵌套）
+PLANNING_STRUCTURE_PROPOSAL = "planning-structure-proposal"
 # B-08：建幕时由 **AI 声明**这一幕属于哪一卷（取代代码按幕数计数的换卷规则；
 # 代码保留的不变量：卷号单调、不回填）
 PLANNING_ACT_VOLUME_PLACEMENT = "planning-act-volume-placement"
@@ -219,6 +222,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_RHYTHM_QUOTA,
     PLANNING_DEPTH_ASSESSMENT,
     PLANNING_WUXIA_STYLE_AUDIT,
+    PLANNING_STRUCTURE_PROPOSAL,
     PLANNING_ACT_VOLUME_PLACEMENT,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,

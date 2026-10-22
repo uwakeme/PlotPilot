@@ -24,6 +24,16 @@
       <p class="idle-lead">
         将根据本书的<strong>世界观、人物与梗概</strong>，AI 自主规划部 / 卷 / 幕结构并写入左侧结构树。篇幅与节奏以<strong>创建书目时的设定</strong>为准。
       </p>
+      <div class="idle-mode">
+        <div class="idle-mode-label">规划方式</div>
+        <n-radio-group v-model:value="planMode" size="small">
+          <n-space :size="14" :wrap="true" align="flex-start">
+            <n-radio value="quick">快捷 —— AI 自定整棵结构</n-radio>
+            <n-radio value="precise">精密 —— AI 先提案网格，再逐节点填充</n-radio>
+          </n-space>
+        </n-radio-group>
+      </div>
+
       <div class="idle-card">
         <div class="idle-card-title">更适合</div>
         <ul class="idle-list">
@@ -152,6 +162,8 @@ const message = useMessage()
 // ─── State ────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'generating' | 'streaming' | 'done' | 'error'
 const phase = ref<Phase>('idle')
+/** B-05：规划方式。precise ⇒ 网格由 AI 提案（代码夹紧上限）后逐节点填充。 */
+const planMode = ref<'quick' | 'precise'>('quick')
 const statusMessage = ref('')
 const progressPct = ref(0)
 const errorMessage = ref('')
@@ -287,7 +299,7 @@ function startGenerate() {
       phase.value = 'error'
       abortCtrl = null
     },
-  })
+  }, { mode: planMode.value })
 }
 
 function abortGenerate() {
