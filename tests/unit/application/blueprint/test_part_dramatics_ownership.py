@@ -87,28 +87,55 @@ def test_no_code_written_three_stage_wording_reaches_any_prompt_section(parts):
 
 
 def test_chapter_budget_facts_are_still_present():
-    """不许为了去掉创作判断把章数预算一起删掉 —— 那是代码该守的不变量。"""
+    """不许为了去掉创作判断把章数预算一起删掉 —— 那是代码该守的不变量。
+
+    B-02 之后**留在**提示词里的事实是：全书总章数、部数、总幕数、平均每幕。
+    **逐部的章数分配**交给了 AI（那是创作判断）⇒ 「第N部：分配 X 章」不该再出现。
+    """
     prompt = _prompt(3)
 
     assert "PACING_GUIDE" in prompt.system
-    assert "第1部：分配" in prompt.system
-    assert "第3部：分配" in prompt.system
+    assert "全书共 120 章" in prompt.system
+    assert "分给 3 部" in prompt.system
     assert "总幕数：3 幕" in prompt.system
+    # B-02：逐部分配不再由代码喂给模型
+    assert "第1部：分配" not in prompt.system
+    assert "第3部：分配" not in prompt.system
 
 
 def test_the_allocation_sums_to_target_chapters():
-    """保留的预算必须自洽：各部章数之和 = 目标章数（这是代码该守的不变量）。
+    """各部章数之和 = 目标章数 —— 但**由 AI 给**，代码只核对不改写（B-02）。
 
-    这里只断言**和**，不钉死每一档比例 —— 比例本身是 B-02 的改造对象
-    （登记表：AI 直接给每部 estimated_chapters），钉死会让那条改造做不成。
+    B-02 之后：
+    - 提示词**不再**逐部给章数（那是代码代做的分配）；
+    - 各部之和的不变量由**提示词的要求** + **代码的部级预算校验**保证；
+    - 校验**只告警、不改写**（与幕级 B-03 同纪律：
+      纠正等于替 AI 做决定）。
     """
-    import re
+    from application.blueprint.services.act_chapter_budget import (
+        check_level_chapter_budget,
+    )
 
     prompt = _prompt(3)
-    numbers = [int(m) for m in re.findall(r"第\d+部：分配 (\d+) 章", prompt.system)]
+    assert "第1部：分配" not in prompt.system
 
-    assert len(numbers) == 3
-    assert sum(numbers) == 120
+    # 各部之和正确 ⇒ 无告警
+    ok = check_level_chapter_budget(
+        [{"estimated_chapters": 40}, {"estimated_chapters": 60}, {"estimated_chapters": 20}],
+        120,
+        level_label="部",
+    )
+    assert ok["ok"] is True
+    assert ok["warning"] == ""
+
+    # 不符 ⇒ 告警但**不改写**（保留 AI 原值）
+    bad = check_level_chapter_budget(
+        [{"estimated_chapters": 10}, {"estimated_chapters": 10}, {"estimated_chapters": 10}],
+        120,
+        level_label="部",
+    )
+    assert bad["ok"] is False
+    assert "部级章数之和" in bad["warning"]
 
 
 def test_dramatic_function_is_explicitly_handed_to_the_model():

@@ -58,6 +58,7 @@ from application.blueprint.services.chapter_book_structure_sync import (
 
 from application.blueprint.services.act_chapter_budget import (  # noqa: E402
     check_act_chapter_budget,
+    check_level_chapter_budget,
     read_act_chapters,
 )
 from application.blueprint.services.bible_context_budget import (  # noqa: E402
@@ -770,12 +771,22 @@ class ContinuousPlanningService:
         total_acts = max(parts * volumes_per_part * acts_per_volume, 1)
         avg_chapters_per_act = max(target_chapters // total_acts, 1)
 
+        # B-02：部级章数改由 **AI** 给；公式只作**兜底**（AI 没给时用）。
+        distribution = self._calculate_chapter_distribution(target_chapters, parts)
+        part_chapters = distribution["part_chapters"]
+
         structure = {"parts": []}
         for part_index in range(1, parts + 1):
             part_node = {
                 "node_id": f"P{part_index}",
                 "title": f"第{part_index}部",
                 "description": "",
+                # B-02：兜底章数（AI 给了就被覆盖）
+                "estimated_chapters": (
+                    part_chapters[part_index - 1]
+                    if part_index - 1 < len(part_chapters)
+                    else 0
+                ),
                 "volumes": [],
             }
             for volume_index in range(1, volumes_per_part + 1):
@@ -832,6 +843,14 @@ class ContinuousPlanningService:
 
         if rebalance:
             self._rebalance_act_chapters(acts, target_chapters)
+
+        # B-02：核对**部级**章数之和（AI 给的；公式只作兜底）。
+        # 与幕级同纪律：**只报告，不纠正**（纠正等于替 AI 做决定）。
+        part_report = check_level_chapter_budget(
+            skeleton.get("parts", []), target_chapters, level_label="部"
+        )
+        if part_report["warning"]:
+            logger.warning("[部级章数预算] %s", part_report["warning"])
         return skeleton
 
     def _apply_precise_node_update(self, node: Dict, update: Dict) -> None:
@@ -2669,8 +2688,6 @@ class ContinuousPlanningService:
         acts_per_volume = structure_preference.get("acts_per_volume", 3)
         total_acts = max(parts * volumes_per_part * acts_per_volume, 1)
 
-        distribution = self._calculate_chapter_distribution(target_chapters, parts)
-        part_chapters = distribution["part_chapters"]
         avg_chapters_per_act = max(target_chapters // total_acts, 1)
 
         # 各部的戏剧功能与整体节奏由 AI 自己判断（登记表 B-01）。
@@ -2683,8 +2700,12 @@ class ContinuousPlanningService:
         # 而这些文字是渲染进 **system prompt** 的（system.md:11），被放在
         # 「精密推演铁律」标题下 —— 等于用最高优先级告诉模型必须按三段式走。
         pacing_lines = ["<PACING_GUIDE>"]
-        for index, chapters in enumerate(part_chapters, 1):
-            pacing_lines.append(f"- 第{index}部：分配 {chapters} 章")
+        # B-02：**不再**逐部给章数（那是代码代做的分配）——
+        # 只给全书总章数与部数，**每部多少章由 AI 定**。
+        pacing_lines.append(
+            f"- 全书共 {target_chapters} 章，分给 {parts} 部；"
+            f"**每部多少章由你定**（各部章数之和必须等于 {target_chapters}）"
+        )
         pacing_lines.extend([
             f"- 总幕数：{total_acts} 幕",
             f"- 平均每幕：约 {avg_chapters_per_act} 章",

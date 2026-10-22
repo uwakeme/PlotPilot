@@ -33,6 +33,7 @@
 
 要求：
 1. 每个固定节点都必须返回一条 node_updates。
-2. Part 和 Volume 只需填写 node_id、title、description。
+2. Volume 只需填写 node_id、title、description；**Part 还要填写 estimated_chapters**（这一部多少章，由你定）。
 3. Act 必须填写全部幕级字段。
-4. 不要返回 parts/volumes/acts 树，不要添加解释文字。
+4. **各部 estimated_chapters 之和必须等于目标总章数**；部与部之间怎么分由你依据剧情判断（开篇部通常更重，结局部看全书长度）。
+5. 不要返回 parts/volumes/acts 树，不要添加解释文字。
