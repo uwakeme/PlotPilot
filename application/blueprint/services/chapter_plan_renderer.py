@@ -139,15 +139,26 @@ def render_chapter_execution_plan(chapter_plan: Any) -> str:
         state_text = stringify_plan_value(state)
         state_lines = [state_text] if state_text else []
 
-    sections = [
-        ("一、开篇切入点：", [opening] if opening else []),
-        ("二、场景转换列表：", scenes),
-        (f"三、关键对话（{len(dialogues)}组）：", dialogues),
-        (f"四、剧情事件链（{len(events)}个事件）：", events),
-        ("五、角色关键决策：", decisions),
-        ("六、爽点/反转设计：", payoffs),
-        ("七、主角状态变化：", state_lines),
-    ]
+    # ⚠ E-01a：段标题**不再**在这里写第二份 ——
+    # 「哪七段、每段怎么报数」由 `chapter_planning_policy.CHAPTER_EXECUTION_PLAN_SECTIONS`
+    # 唯一定义（此前 marker 常量与这里的段落表是两份平行清单）。
+    from application.blueprint.services.chapter_planning_policy import (
+        CHAPTER_EXECUTION_PLAN_SECTIONS,
+    )
+
+    section_items = (
+        [opening] if opening else [],
+        scenes,
+        dialogues,
+        events,
+        decisions,
+        payoffs,
+        state_lines,
+    )
+    sections = []
+    for (marker, unit), lines in zip(CHAPTER_EXECUTION_PLAN_SECTIONS, section_items):
+        title = f"{marker}（{len(lines)}{unit}）：" if unit else f"{marker}："
+        sections.append((title, lines))
     rendered: list[str] = []
     for title, lines in sections:
         rendered.append(title)

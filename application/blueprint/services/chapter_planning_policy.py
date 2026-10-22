@@ -26,14 +26,25 @@ class ChapterPlanningPolicy:
 DEFAULT_CHAPTER_PLANNING_POLICY = ChapterPlanningPolicy()
 
 
-CHAPTER_EXECUTION_PLAN_MARKERS = (
-    "一、开篇切入点",
-    "二、场景转换列表",
-    "三、关键对话",
-    "四、剧情事件链",
-    "五、角色关键决策",
-    "六、爽点/反转设计",
-    "七、主角状态变化",
+#: 七段执行剧本的**段标题 + 计数单位**（**唯一一处**定义「哪七段、每段怎么报数」）。
+#:
+#: ⚠ E-01a：此前这段「标题 + 计数单位」在 `chapter_plan_renderer.py` 的段落表里
+#: **又写了一份**（与下面的 marker 常量平行）⇒ 改一处就会与另一处对不上，
+#: 而「七段」是**代码写死**给模型的骨架（登记表 E-01）。
+#: ⇒ 现在渲染器从这张表取标题，marker 常量也由它派生。
+CHAPTER_EXECUTION_PLAN_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("一、开篇切入点", ""),
+    ("二、场景转换列表", ""),
+    ("三、关键对话", "组"),
+    ("四、剧情事件链", "个事件"),
+    ("五、角色关键决策", ""),
+    ("六、爽点/反转设计", ""),
+    ("七、主角状态变化", ""),
+)
+
+#: 七段的段标题（由上面的表派生，**不再手写第二份**）。
+CHAPTER_EXECUTION_PLAN_MARKERS = tuple(
+    marker for marker, _unit in CHAPTER_EXECUTION_PLAN_SECTIONS
 )
 
 CHAPTER_EXECUTION_PLAN_FORBIDDEN_MARKERS = (
