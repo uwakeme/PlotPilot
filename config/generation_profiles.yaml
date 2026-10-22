@@ -135,3 +135,12 @@ plot_point_classification:
   extends: base_generation_profile
   max_tokens: 1200
   temperature: 0.3
+
+# J-01：目标章数 / 终局预算提案。提案是「用户点继续写前看一眼」的前置动作
+# ⇒ 超时要短（超时即回落引擎默认公式，用户不能被一个慢模型卡住）。
+target_budget_proposal:
+  extends: base_generation_profile
+  max_tokens: 1200
+  temperature: 0.3
+  timeout_seconds: 30
+  retries: 0

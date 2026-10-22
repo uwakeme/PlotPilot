@@ -1,0 +1,45 @@
+name: 目标章数与终局预算提案
+category: planning
+source: application/blueprint/services/target_budget_proposal.py::propose
+description: 由 AI 判断「这本书还差多少章收得住」与「终局预算该给几章」，取代代码写死的常量公式
+builtin: true
+tags:
+- 预算
+- 目标章数
+- 终局
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: title
+  desc: 书名
+  type: string
+  default: ''
+- name: genre
+  desc: 题材
+  type: string
+  default: ''
+- name: target_chapters
+  desc: 本书当前目标章数
+  type: integer
+  required: true
+- name: completed_chapters
+  desc: 已完成章数
+  type: integer
+  required: true
+- name: remaining_threads
+  desc: 尚未收束的主要线索/伏笔
+  type: string
+  default: （未提供）
+- name: recent_digest
+  desc: 最近几章的一句话梗概
+  type: string
+  default: （未提供）
+- name: current_finale_budget
+  desc: 当前已设的终局预算（章）
+  type: integer
+  required: true
+id: planning-target-budget-proposal
+sort_order: 42

@@ -88,6 +88,8 @@ PLANNING_CHAPTER_MODE = "planning-chapter-mode"
 PLANNING_FINALE_INTENT = "planning-finale-intent"
 # D-08：续写策略判定（接着上次中断的正文写，还是整章重写）
 PLANNING_CONTINUATION_STRATEGY = "planning-continuation-strategy"
+# J-01：目标章数 / 终局预算提案（AI 决定「再写多少章」，取代常量公式）
+PLANNING_TARGET_BUDGET_PROPOSAL = "planning-target-budget-proposal"
 # H-06：宏观诊断的叙事校准指令（由 LLM 写，取代代码代写的三套模板句）
 PLANNING_MACRO_CALIBRATION = "planning-macro-calibration"
 CONTINUOUS_PLANNING_NEXT_ACT = "continuous-planning-next-act"
@@ -193,7 +195,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     PLANNING_CHAPTER_PREPLAN,
     FORESHADOW_SELECTION, PLANNING_CONTEXT_WEIGHTS,
     PLANNING_CHAPTER_MODE, PLANNING_FINALE_INTENT,
-    PLANNING_CONTINUATION_STRATEGY,
+    PLANNING_CONTINUATION_STRATEGY, PLANNING_TARGET_BUDGET_PROPOSAL,
     PLANNING_MACRO_CALIBRATION,
     CONTINUOUS_PLANNING_NEXT_ACT,
     OUTLINE_BEAT_PARTITION, BEAT_COT_BRIDGE,

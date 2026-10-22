@@ -231,6 +231,11 @@
               class="tr-input"
             />
             <span class="tr-unit">新目标章数</span>
+            <!-- J-01：提案的**来源**要让用户看见 ——
+                 「AI 提的」与「默认公式兜的」不是一回事。 -->
+            <span class="tr-unit" :title="budgetProposalReason || ''">
+              {{ budgetProposalSourceLabel }}
+            </span>
             <n-button
               type="warning"
               size="small"
@@ -613,6 +618,14 @@ const finaleBudget = ref(FINALE_BUDGET_DEFAULT)
 const finaleBudgetMin = ref(FINALE_BUDGET_MIN)
 const finaleBudgetMax = ref(FINALE_BUDGET_MAX)
 const continueTarget = ref(null)
+// J-01：提案来源（ai / fallback）与依据 —— 用户要看得见「这是 AI 提的还是公式兜的」
+const budgetProposalSource = ref('')
+const budgetProposalReason = ref('')
+const budgetProposalSourceLabel = computed(() => {
+  if (budgetProposalSource.value === 'ai') return 'AI 提案'
+  if (budgetProposalSource.value === 'fallback') return '默认公式'
+  return ''
+})
 
 watch(isTargetReachedPause, (active) => {
   if (active) {
@@ -629,11 +642,16 @@ async function loadTargetBudgetProposal() {
     finaleBudgetMin.value = p.finale_budget_min ?? FINALE_BUDGET_MIN
     finaleBudgetMax.value = p.finale_budget_max ?? FINALE_BUDGET_MAX
     continueTarget.value = p.continue_target
+    // J-01：来源与依据透出（缺省 = 拿不到来源 ⇒ 不显示标签，不编）
+    budgetProposalSource.value = String(p.source || '')
+    budgetProposalReason.value = String(p.reason || '')
   } catch (err) {
     // 拿不到提案 ⇒ 退回最小可用初值，不在前端编公式
     console.warn('[AutopilotPanel] 取加写预算提案失败:', err)
     finaleBudget.value = FINALE_BUDGET_DEFAULT
     continueTarget.value = completedChapters.value
+    budgetProposalSource.value = ''
+    budgetProposalReason.value = ''
   }
 }
 

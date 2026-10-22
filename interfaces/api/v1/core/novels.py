@@ -260,13 +260,18 @@ def list_novels(
 @router.get("/{novel_id}/target-budget-proposal")
 async def get_target_budget_proposal(
     novel_id: str,
-    service: NovelService = Depends(get_novel_service)
+    service: NovelService = Depends(get_novel_service),
 ):
     """「继续写」加多少章 / 终局预算多少 —— **后端提案**（J-01）。
 
     旧实现由前端自己算（``done + max(20, round(target * 0.2))``）再 PUT 回来：
     提案口径散在客户端、后端没有权威值；终局预算的钳制也只写在前端输入框上。
     现在提案与钳制都在后端一处，前端只显示初值、用户仍可改。
+
+    J-01：**提案本身改由 AI 给**（``planning-target-budget-proposal``）——
+    「这本书还差多少章收得住」是创作判断，不该由常量公式代答。
+    AI 不可用 / 说不出来 ⇒ 回落引擎默认公式（与改造前逐位相同），
+    并用 ``source`` 标出是 ``ai`` 还是 ``fallback``。
     """
     novel = service.get_novel(novel_id)
     if not novel:
@@ -277,17 +282,66 @@ async def get_target_budget_proposal(
     prefs = getattr(novel, "generation_prefs", None)
     # 终局预算的默认值只此一份（domain 的 ``FINALE_BUDGET_DEFAULT``）——
     # 不再在这里写第二份字面量（复审 §3.2d）。
-    finale_budget = clamp_finale_budget(getattr(prefs, "finale_chapter_budget", 0))
+    current_finale_budget = clamp_finale_budget(
+        getattr(prefs, "finale_chapter_budget", 0)
+    )
+
+    proposal = await _propose_target_budget(
+        novel_id=novel_id,
+        title=str(getattr(novel, "title", "") or ""),
+        genre=str(getattr(novel, "genre", "") or ""),
+        target_chapters=target,
+        completed_chapters=completed,
+        current_finale_budget=current_finale_budget,
+    )
 
     return {
-        "continue_target": propose_continue_target(
-            target_chapters=target, completed_chapters=completed
-        ),
-        "finale_budget": finale_budget,
-        "finale_budget_min": FINALE_BUDGET_MIN,
-        "finale_budget_max": FINALE_BUDGET_MAX,
+        "continue_target": proposal["continue_target"],
+        "continue_block": proposal["continue_block"],
+        "finale_budget": proposal["finale_budget"],
+        "finale_budget_min": proposal["finale_budget_min"],
+        "finale_budget_max": proposal["finale_budget_max"],
         "target_chapters_max": TARGET_CHAPTERS_MAX,
+        "source": proposal["source"],
+        "reason": proposal["reason"],
     }
+
+
+async def _propose_target_budget(**kwargs: Any) -> Dict[str, Any]:
+    """调 AI 提案；拿不到就用引擎默认公式（来源可分辨）。
+
+    ⚠ 这一步是**同步阻塞**在 HTTP 请求里的（提案 = 用户点「继续写」前看一眼）。
+    ⇒ 超时必须短（生成画像里 30s / 0 重试），超时就回落公式，不能把用户卡住。
+    """
+    from application.blueprint.services.target_budget_proposal import (
+        TargetBudgetProposalService,
+    )
+    from interfaces.api.dependencies import get_llm_service
+
+    try:
+        service = TargetBudgetProposalService(get_llm_service())
+        return await service.propose(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("目标预算提案失败，回落引擎默认公式 novel=%s: %s", kwargs.get("novel_id"), exc)
+        from application.blueprint.services.target_budget import (
+            FINALE_BUDGET_MAX as _MAX,
+            FINALE_BUDGET_MIN as _MIN,
+            propose_continue_block,
+        )
+        from application.blueprint.services.target_budget_schema import SOURCE_FALLBACK
+
+        target = int(kwargs.get("target_chapters") or 0)
+        completed = int(kwargs.get("completed_chapters") or 0)
+        block = propose_continue_block(target_chapters=target, completed_chapters=completed)
+        return {
+            "continue_target": completed + block,
+            "continue_block": block,
+            "finale_budget": clamp_finale_budget(kwargs.get("current_finale_budget") or 0),
+            "finale_budget_min": _MIN,
+            "finale_budget_max": _MAX,
+            "source": SOURCE_FALLBACK,
+            "reason": "AI 提案不可用，已回落引擎默认公式",
+        }
 
 
 def _count_completed_chapters(novel_id: str) -> int:
