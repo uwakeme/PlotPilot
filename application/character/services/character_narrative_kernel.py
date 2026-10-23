@@ -377,13 +377,21 @@ class CharacterNarrativeKernel:
         #     ⇒ **复姓碎裂**，所以**不能**那样改；
         #   - 新角色的贪婪问题要靠 AI NER 名单优先（``scene_director``），
         #     那是另一条路。
+        #
+        # ⚠ 复审 B3：「含有」过滤**只作用于正则兜底候选** ——
+        #   explicit 名单是 AI **明确点名**的（它本身就是这条路的补救手段），
+        #   若也被过滤，AI 点的「林风华」（含已知名「林风」）会被误杀
+        #   ⇒ G-05 的另一半补救被自己废掉。
         ordered: List[str] = []
         seen: set = set()
+        explicit_set = set(explicit)
         for name in list(explicit) + (re.findall(r"[一-龥]{2,4}", outline) if outline else []):
             if not name or name in seen:
                 continue
             # 含已知名 ⇒ 是「已知名 + 噪声」的粘连，不是新角色
-            if any(known in name for known in (known_names | set(location_names))):
+            if name not in explicit_set and any(
+                known in name for known in (known_names | set(location_names))
+            ):
                 continue
             seen.add(name)
             ordered.append(name)

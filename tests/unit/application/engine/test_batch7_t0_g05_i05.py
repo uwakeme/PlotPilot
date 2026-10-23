@@ -244,19 +244,58 @@ def test_default_is_2500_so_behaviour_is_unchanged():
     assert resolve_chapter_words(None) == 2500
 
 
+#: **章目标字数**的字段名（扫「绕过钳制的兜底」时只看这些）。
+#:
+#: ⚠ 不含泛指的 ``target_words``（那可能是**节拍级**的字数，如
+#:   ``beat_contracts`` / ``estimated_words``）—— 它们的兜底值
+#:   （600 之类）不是「每章目标字数」，不在本章钳制口径内。
+CHAPTER_TARGET_FIELD = re.compile(
+    r"target_words_per_chapter|target_chapter_words|target_word_count", re.I
+)
+#: 非零的数字兜底（``or 0`` 是「未设置」，不是「兜底默认值」⇒ 不算）。
+NUMERIC_FALLBACK = re.compile(r"or +[1-9][0-9]*")
+
+
 def test_no_scattered_word_count_fallbacks_remain():
-    """全仓（生产代码）不许再有 ``or 2500`` 这种绕过钳制的兜底。"""
+    """全仓（生产代码）不许再有「``or <数字>``」这种绕过钳制的兜底。
+
+    ⚠ 复审 S1：此前只查**字面量** ``or 2500`` ⇒ ``or 3000``、双空格 ``or  2500``
+    都漏（verifier 实测绿）⇒ 改成查「**任何**非零数字兜底出现在
+    **章目标字数**字段上」。
+
+    ⚠ 扫描要**剥掉注释**再查 ⇒ 否则「注释里写着 ``or 2500``」会误报，
+    而注释里的字面量恰恰是最容易误导人的地方。
+
+    ⚠ ``or 0`` 不算：它的语义是「没设置」（0），不是「兜底成某个字数」
+    ⇒ 那些位置（回填/统计/回显）是**如实回显库里的值**，不归本章钳制口径。
+    """
     import subprocess
 
     proc = subprocess.run(
-        ["git", "grep", "-n", "or 2500", "--", "application/", "engine/", "interfaces/"],
+        ["git", "ls-files", "--", "application/", "engine/", "interfaces/"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
     )
-    offenders = [
-        line for line in (proc.stdout or "").splitlines()
-        if "chapter_target_limits" not in line
-    ]
-    assert not offenders, "还有绕过钳制的兜底：\n" + "\n".join(offenders)
+    offenders: list[str] = []
+    for rel in (proc.stdout or "").splitlines():
+        rel = rel.strip()
+        if not rel.endswith(".py") or "chapter_target_limits" in rel:
+            continue
+        path = ROOT / rel
+        try:
+            code = _strip_comments(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        for number, line in enumerate(code.splitlines(), 1):
+            if not NUMERIC_FALLBACK.search(line):
+                continue
+            if not CHAPTER_TARGET_FIELD.search(line):
+                continue
+            offenders.append(f"{rel}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "还有绕过钳制的兜底（章目标字数上出现 ``or <非零数字>``）：\n"
+        + "\n".join(offenders)
+    )
 
 
 def test_v1_length_tiers_uses_the_shared_constants():

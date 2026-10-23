@@ -42,11 +42,17 @@ class StylePresetMatchLlmPayload(BaseModel):
 
     ⚠ ``value`` 只是**标识符**，不是正文 ——
     正文由代码从清单里取（模型给什么就写什么 ⇒ 代码替模型说话）。
-    空串 = 「都不匹配」。
+    空串 / ``null`` = 「都不匹配」。
+
+    ⚠ 复审 S8：``value`` 必须是 **Optional** ——
+    此前它是 ``str`` ⇒ 模型写 ``{"value": null, "reason": "都不匹配"}``
+    会**过不了 pydantic** ⇒ 落成「未评估」⇒
+    **「AI 说都不匹配」这一态几乎不可达**（而 ``null`` 是模型更常用的写法）。
+    ⇒ 两种写法都收。
     """
 
-    value: str = Field(default="")
-    reason: str = Field(default="")
+    value: Optional[str] = Field(default=None, description="预设标识符；都不匹配时为 null 或空串")
+    reason: Optional[str] = Field(default=None, description="依据 / 为什么不匹配")
 
 
 @dataclass(frozen=True)

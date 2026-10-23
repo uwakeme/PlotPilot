@@ -29,6 +29,14 @@ class ContextSlot:
     max_tokens: Optional[int] = None
     min_tokens: int = 0
     priority: int = 0
+    #: 本槽内容的**分节标题**（如 FACT_LOCK 的五节）。
+    #:
+    #: 用途：槽位被截断时**点名被截掉的小节**。
+    #: ⚠ 复审发现（§4）：此前截断标记只说「仅是部分内容」，
+    #:   而 FACT_LOCK 整段被截时**模型看不到「身份锁死」这一节存在**
+    #:   ⇒ 对「一旦违背即为废稿」的硬约束块，**截掉整节比截断半截更危险**。
+    #: ⇒ 声明了小节标题的槽位，截断后会说清「被截掉的小节：X、Y」。
+    section_headers: tuple = ()
 
     @property
     def is_mandatory(self) -> bool:

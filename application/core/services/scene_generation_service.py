@@ -10,6 +10,7 @@ from domain.novel.value_objects.scene import Scene
 from domain.ai.services.llm_service import LLMService, GenerationConfig
 from domain.ai.value_objects.prompt import Prompt
 from application.engine.services.scene_director_service import SceneDirectorService
+from application.engine.services.context_budget_policy import TRUNCATION_MARKER
 
 if TYPE_CHECKING:
     from infrastructure.ai.chromadb_vector_store import ChromaDBVectorStore
@@ -199,7 +200,9 @@ class SceneGenerationService:
 
         previous_scenes_parts = []
         for i, prev_scene in enumerate(previous_scenes[-2:], 1):
-            summary = prev_scene[:200] + "..." if len(prev_scene) > 200 else prev_scene
+            # ⚠ 复审 S12：此前是裸 ``"..."`` ⇒ 这段会进**模型可见**提示词
+            #   ⇒ 统一用 TRUNCATION_MARKER（不让模型以为内容「本来就那样」）。
+            summary = prev_scene[:200].rstrip() + TRUNCATION_MARKER if len(prev_scene) > 200 else prev_scene
             previous_scenes_parts.append(f"场景 {i}：\n{summary}")
         previous_scenes_block = "\n".join(previous_scenes_parts)
 

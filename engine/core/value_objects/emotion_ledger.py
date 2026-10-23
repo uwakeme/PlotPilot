@@ -278,6 +278,13 @@ class EmotionLedger:
                     f"（{label}共 {len(items)} 条，此处按注入口径只列最近 {len(kept)} 条，"
                     f"另有 {dropped} 条未列）"
                 )
+        if self.trimmed_items:
+            # 复审 S6：写入侧因**账本规模上限**丢弃的条数此前只落库、从不展示
+            # ⇒ 作者/模型都看不到「这个账本本身已经不完整」。
+            # ⚠ 措辞是「未保留」而不是「已删」—— 它们被丢弃，但账本本身仍有边界。
+            lines.append(
+                f"（账本规模上限：另有 {self.trimmed_items} 条记录未保留在本账本中）"
+            )
         return "\n".join(lines)
 
     def to_chapter_summary(self) -> str:

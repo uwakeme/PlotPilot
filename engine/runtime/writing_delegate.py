@@ -96,7 +96,16 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
 
     novel_id = novel.novel_id.value if hasattr(novel.novel_id, "value") else str(novel.novel_id)
     runner = _build_runner(daemon)
-    target_words = int(getattr(novel, "target_words_per_chapter", None) or runner.DEFAULT_TARGET_WORDS)
+    # 复审 B4：此前是 ``or runner.DEFAULT_TARGET_WORDS`` ⇒ **绕过 500..20000 钳制**
+    #   （库里存 99999 也照用），而这条是**默认生产路径**
+    #   （``engine_daemon`` 默认 ``get_story_pipeline_mode() ∈ {writing, full}``）
+    #   ⇒ 与其它 19 处一样走唯一入口。
+    from application.core.chapter_target_limits import resolve_chapter_words
+
+    target_words = resolve_chapter_words(
+        getattr(novel, "target_words_per_chapter", None),
+        default=runner.DEFAULT_TARGET_WORDS,
+    )
     genre = (getattr(novel, "genre", "") or "").strip().lower()
 
     logger.info("[%s] StoryPipeline 写作模式 genre=%s", novel_id, genre or "(default)")

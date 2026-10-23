@@ -1,9 +1,12 @@
 """Budget compression policy for context slots."""
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Mapping, Optional
 
 from application.engine.services.context_budget_models import ContextSlot
+
+logger = logging.getLogger(__name__)
 
 
 #: S-06：截断标记（**会进模型可见内容** ⇒ 写成「给模型看的话」）。
@@ -17,12 +20,40 @@ from application.engine.services.context_budget_models import ContextSlot
 #: ``context_budget_allocator.py`` 的「（叙事校准注入已按上限截断）」）。
 TRUNCATION_MARKER = "\n（此段已按上下文预算截断，仅为部分内容）"
 
+#: 槽位被**整体舍弃**时的说明（不许静默丢一整个槽）。
+#:
+#: ⚠ 复审发现（§4 / S5）：此前装不下的 T0 槽位被 ``content = ""`` **清零且不留痕迹**
+#:   ⇒ 模型看到的是「这一节不存在」，而作者/系统侧也**没有任何记录**。
+DROPPED_SLOT_MARKER = "\n（本槽因上下文预算不足被整体舍弃，其内容未纳入本次上下文）"
 
-def _mark_truncated(content: str, target_chars: int) -> str:
-    """按上限截断，并**附上说明**（不许裸 ``...``）。"""
+
+def _missing_sections(content: str, kept: str, section_headers) -> list:
+    """原文里存在、但被截掉的小节标题。
+
+    ⚠ 只报**确实出现过**（在原文里）却**没出现在保留部分**的小节 ——
+    原文本来就没有的小节不算「被截掉」。
+    """
+    missing = []
+    for header in section_headers or ():
+        if header and header in content and header not in kept:
+            missing.append(header)
+    return missing
+
+
+def _mark_truncated(content: str, target_chars: int, *, section_headers=()) -> str:
+    """按上限截断，并**附上说明**（不许裸 ``...``）。
+
+    ⚠ 复审发现（§4）：标记只说「仅是部分内容」⇒ 模型不知道**哪一节**没了。
+    ⇒ 槽位声明了 ``section_headers`` 时，额外**点名被截掉的小节**。
+    """
     if target_chars <= 0:
         return ""
-    return content[:target_chars].rstrip() + TRUNCATION_MARKER
+    kept = content[:target_chars].rstrip()
+    missing = _missing_sections(content, kept, section_headers)
+    if missing:
+        names = "、".join(str(h).rstrip("：:") for h in missing)
+        return f"{kept}{TRUNCATION_MARKER}（被截掉的小节：{names}）"
+    return kept + TRUNCATION_MARKER
 
 
 def cap_slots_by_own_limit(
@@ -48,7 +79,9 @@ def cap_slots_by_own_limit(
         if slot.tokens <= slot.max_tokens:
             continue
         target_chars = int(slot.max_tokens * chars_per_token_zh)
-        slot.content = _mark_truncated(slot.content, target_chars)
+        slot.content = _mark_truncated(
+            slot.content, target_chars, section_headers=slot.section_headers
+        )
         slot.tokens = slot.max_tokens
         capped += 1
     return capped
@@ -59,6 +92,7 @@ def truncate_t0_slots(
     budget: int,
     *,
     chars_per_token_zh: float,
+    compression_log: Optional[List[str]] = None,
 ) -> int:
     """把 T0 槽位裁进预算，**按插入顺序**。
 
@@ -82,6 +116,7 @@ def truncate_t0_slots(
     ⇒ 40% 动态阈值保护退化为**兜底**，而不再是唯一防线。
     """
     total = 0
+    dropped: List[str] = []
     # ── 第 1 步：按槽位自己的上限裁（幂等，重复裁无副作用） ──────────
     # ⚠ 放在这里而不是只在调用方做 ⇒ **谁调用本函数都先按各自上限裁**
     #   （否则直接调用它的路径会漏掉这一步）。
@@ -96,13 +131,26 @@ def truncate_t0_slots(
         remaining = budget - total
         if remaining > 0:
             target_chars = int(remaining * chars_per_token_zh)
-            slot.content = _mark_truncated(slot.content, target_chars)
+            slot.content = _mark_truncated(
+                slot.content, target_chars, section_headers=slot.section_headers
+            )
             slot.tokens = remaining
             total += remaining
         else:
             # 装不下了 ⇒ 舍弃（与 allocate_tier 的口径一致），**并计入 total**。
+            # ⚠ 复审 S5：此前是 ``content = ""`` ⇒ **清零且不留任何痕迹**
+            #   （模型看不到这一节存在，系统侧也没有记录）⇒ 现在**记进日志**。
+            # ⚠ 内容仍留空：留下标记就要为它计 token，而预算已满
+            #   ⇒ 会破坏「total ≤ budget」这条不变量。⇒ 痕迹走 compression_log。
+            dropped.append(slot.name)
             slot.content = ""
             slot.tokens = 0
+
+    if dropped:
+        message = f"T0 槽位因预算不足被整体舍弃：{'、'.join(dropped)}"
+        if compression_log is not None:
+            compression_log.append(message)
+        logger.warning(message)
     return total
 
 

@@ -115,6 +115,22 @@ class MemoryDeltaPayload(BaseModel):
 # FactLockBuilder: 从 Bible 动态构建不可篡改事实块
 # ============================================================
 
+#: FACT_LOCK 的**分节标题**（**单一来源**）。
+#:
+#: 用途有两个：
+#: 1. ``_build_from_bible`` 用它们拼标题（⇒ 标题只有这一份）；
+#: 2. 槽位被截断时**点名被截掉的小节**（复审 §4：此前截断只说「仅是部分内容」，
+#:    而 FACT_LOCK 整段被截时**模型看不到「身份锁死」这一节存在**
+#:    ⇒ 对「一旦违背即为废稿」的硬约束块，截掉整节比截断半截更危险）。
+FACT_LOCK_SECTION_HEADERS: tuple = (
+    "角色白名单（只可使用以下有名字的角色）：",
+    "已死亡角色（绝对不可复活、不可在当下时间线中出现）：",
+    "核心关系（不可更改）：",
+    "身份锁死：",
+    "核心事件时间线（不可矛盾）：",
+)
+
+
 class FactLockBuilder:
     """从 Bible + KnowledgeGraph 动态构建 FACT_LOCK 文本
     
@@ -203,14 +219,14 @@ class FactLockBuilder:
         characters = bible.characters
         if characters:
             names = [c.name for c in characters]
-            lines.append("角色白名单（只可使用以下有名字的角色）：")
+            lines.append(FACT_LOCK_SECTION_HEADERS[0])
             lines.append(f"   允许: {', '.join(names)}")
             lines.append("   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！\n")
 
         # ── 2. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
         dead_chars = self._extract_dead_characters(characters)
         if dead_chars:
-            lines.append("已死亡角色（绝对不可复活、不可在当下时间线中出现）：")
+            lines.append(FACT_LOCK_SECTION_HEADERS[1])
             for dc in dead_chars:
                 lines.append(f"   禁止: {dc['name']}({dc.get('role', '未知')}) - {dc.get('cause', '原因不详')}（死于{dc.get('when', '未知时间')}）")
             lines.append("")
@@ -218,7 +234,7 @@ class FactLockBuilder:
         # ── 3. 核心关系图谱 ──
         relations = self._build_relation_lines(characters)
         if relations:
-            lines.append("核心关系（不可更改）：")
+            lines.append(FACT_LOCK_SECTION_HEADERS[2])
             for rel in relations:
                 lines.append(f"   {rel}")
             lines.append("")
@@ -226,7 +242,7 @@ class FactLockBuilder:
         # ── 4. 身份锁死 ──
         identity_lines = self._build_identity_lines(characters, current_chapter)
         if identity_lines:
-            lines.append("身份锁死：")
+            lines.append(FACT_LOCK_SECTION_HEADERS[3])
             for il in identity_lines:
                 lines.append(f"   {il}")
             lines.append("")
@@ -234,7 +250,7 @@ class FactLockBuilder:
         # ── 5. 时间线锁定 ──
         timeline_lines = self._build_timeline_lines(bible)
         if timeline_lines:
-            lines.append("核心事件时间线（不可矛盾）：")
+            lines.append(FACT_LOCK_SECTION_HEADERS[4])
             for tl in timeline_lines:
                 lines.append(f"   {tl}")
 

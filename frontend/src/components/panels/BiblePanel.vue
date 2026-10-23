@@ -599,8 +599,18 @@ const generateBible = async () => {
 
 const openStylePresetModal = () => {
   const currentValue = matchPresetValue(state.value.style_notes)
-  selectedStylePresetValue.value = currentValue || MARKET_STYLE_PRESETS[0]?.value || 'xianxia_hot'
-  stylePresetSuggestion.value = null
+  // ⚠ 复审 S10：AI 判「都不匹配」后**重开弹窗**，此前又会把 presets[0] 预选上
+  //   ⇒ 那个「都不合适」的结论被静默丢弃（不写库，所以不是数据丢失，
+  //   但「同意诚实性」被破坏 —— 作者一点「应用」就套上了 AI 刚说不合适的那个）。
+  // ⇒ AI 判过不匹配 ⇒ **不预选**，让作者自己点。
+  const aiRejected =
+    !!stylePresetSuggestion.value?.assessed && !stylePresetSuggestion.value?.matched
+  if (aiRejected) {
+    selectedStylePresetValue.value = ''
+  } else {
+    selectedStylePresetValue.value = currentValue || MARKET_STYLE_PRESETS[0]?.value || 'xianxia_hot'
+  }
+  // ⚠ 不清空 stylePresetSuggestion：AI 的结论要留在弹窗里可见（也是上面那条判断的依据）
   showStylePresetModal.value = true
 }
 

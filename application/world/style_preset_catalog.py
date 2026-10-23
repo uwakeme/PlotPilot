@@ -17,6 +17,14 @@
 --------
 清单读不到 / 条目残缺 ⇒ **跳过并告警**，不编造预设；
 整份清单为空 ⇒ 调用方拿到的是「没有候选」⇒ 判不出 ⇒ 返回「未评估」。
+
+⚠ **生效时机**（复审 S11）
+----------------------------
+本模块带 ``@lru_cache`` ⇒ 改了 ``shared/taxonomy/style_presets_cn_v1.yaml``
+之后**必须重启进程**才生效；
+而前端读的是**构建期**生成的 bundle（``npm run build`` / ``npm run dev`` 前置脚本）
+⇒ **前后端的生效时机不同**（后端 = 重启，前端 = 重新构建）。
+⇒ 改清单时两边都要动，别只改一边。
 """
 from __future__ import annotations
 
@@ -121,12 +129,24 @@ def get_style_presets() -> Tuple[StylePreset, ...]:
 
 
 def get_style_preset(value: str) -> Optional[StylePreset]:
-    """按 ``value`` 取预设；取不到 ⇒ ``None``（不回落成第一个）。"""
+    """按 ``value`` 取预设；取不到 ⇒ ``None``（不回落成第一个）。
+
+    ⚠ 复审 S9：**别名也算命中** ——
+    模型看到的是候选行「``- xianxia_hot（修仙·升级打脸）；题材别名：修仙爽文、修仙…``」，
+    它很可能照抄**别名**（``仙侠``）⇒ 若只认 ``value``，
+    一份完全正确的回答会被判成「清单外的值 ⇒ 未评估」。
+    ⇒ 先按 ``value`` 精确匹配，再按别名匹配（别名在清单内 ⇒ 仍属「清单封闭」）。
+
+    ⚠ 别名在清单内**必须唯一**（否则「按别名匹配」有歧义）⇒ 有守卫钉住。
+    """
     target = str(value or "").strip()
     if not target:
         return None
     for preset in get_style_presets():
         if preset.value == target:
+            return preset
+    for preset in get_style_presets():
+        if target in preset.aliases:
             return preset
     return None
 

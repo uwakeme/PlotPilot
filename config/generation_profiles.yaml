@@ -2,8 +2,13 @@ base_generation_profile:
   provider_role: writing
   max_tokens: 120000
   temperature: 0.3
-  timeout_seconds: 60
-  retries: 1
+# ⚠ 复审 B2：本文件此前还有 ``timeout_seconds`` / ``retries`` 两个键，
+#   但 ``generation_config_from_profile`` **只读** model / max_tokens /
+#   temperature / response_format ⇒ **全仓无人读**（装饰品）。
+#   ⇒ 已删（留着只会让人以为「调小它就能限超时」—— 上一份审查简报就信了）。
+#   真实的超时/重试在 **provider 层**
+#   （``LLM_MAX_TOTAL_ATTEMPTS`` × ``Settings.timeout_seconds``）。
+#   要让超时可配 ⇒ 得改 ``domain`` 的 ``GenerationConfig`` + 各 provider ⇒ 留 P1。
 
 memory_extraction:
   extends: base_generation_profile
@@ -192,12 +197,17 @@ plot_point_classification:
 
 # J-01：目标章数 / 终局预算提案。提案是「用户点继续写前看一眼」的前置动作
 # ⇒ 超时要短（超时即回落引擎默认公式，用户不能被一个慢模型卡住）。
+# ⚠ 复审 B2：此处原先写着 ``timeout_seconds: 30`` / ``retries: 0``，
+#   **但那两个键全仓无人读** ⇒ 「超时要短」当时**并没有生效**。
+#   ⇒ 键已删（避免再骗人）。
+#   ⚠ 实查：**这一条现在仍然没有超时兜底**（``target_budget_proposal`` 服务内
+#   无 ``wait_for``）⇒ 与 J-02 不同，它仍会跑满 provider 的 ~900s。
+#   ⇒ 补超时闸（照 J-02 的做法：``asyncio.wait_for`` + 超时按未评估/回落处理）
+#   留 P1 —— 本次未改（不在本轮四条阻塞的范围内）。
 target_budget_proposal:
   extends: base_generation_profile
   max_tokens: 1200
   temperature: 0.3
-  timeout_seconds: 30
-  retries: 0
 
 # C-07：全书首幕（标题/描述/章数）。这是**创作内容**，不是分类
 # ⇒ 温度略高，且超时不能太长（守护进程在等它）。
@@ -205,5 +215,3 @@ planning_first_act:
   extends: base_generation_profile
   max_tokens: 2000
   temperature: 0.6
-  timeout_seconds: 60
-  retries: 1

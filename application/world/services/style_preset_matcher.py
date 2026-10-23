@@ -24,6 +24,7 @@ AI 看题材/梗概/世界观/已写文风，在**封闭的预设清单**里挑�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -54,6 +55,19 @@ logger = logging.getLogger(__name__)
 #: 「闸门真的挡住了模型调用」的；走常量就扫不到
 #: ⇒ 守卫会把这条能力判成「没接闸」（假红）。
 FEATURE_ID = "style_preset_match"
+
+#: 本次模型调用的**硬上限**（秒）。
+#:
+#: ⚠ 复审 B2：``config/generation_profiles.yaml`` 里的 ``timeout_seconds`` / ``retries``
+#:   **全仓无人读**（``generation_config_from_profile`` 只读 model / max_tokens /
+#:   temperature / response_format）⇒ 改那两个键是**空操作**；
+#:   真实上限在 **provider 层**（``LLM_MAX_TOTAL_ATTEMPTS = 3`` 次尝试 ×
+#:   ``Settings.timeout_seconds``（默认 300））⇒ **最坏约 900 秒**，
+#:   而前端 30 秒（``shortTaskTimeoutMs``）就放弃 ⇒ 用户看到失败，后端还在烧 token。
+#: ⇒ 这里**真的**加一道硬闸：超时 ⇒ 按「未评估」处理（**不编造**）。
+#:
+#: 数值与前端 ``shortTaskTimeoutMs``（30s）对齐：两边同时放弃。
+MATCH_TIMEOUT_SECONDS = 30
 
 
 class StylePresetMatcher:
@@ -101,7 +115,22 @@ class StylePresetMatcher:
                 },
             )
             config = generation_config_from_profile(FEATURE_ID)
-            result = await self._llm.generate(rendered.prompt, config)
+            result = await asyncio.wait_for(
+                self._llm.generate(rendered.prompt, config),
+                timeout=MATCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            # ⚠ 复审 B2：provider 层的真实上限是 ~900s ⇒ 这里自己加一道硬闸，
+            #   与前端的 30s 对齐 ⇒ 两边同时放弃（不再「用户看到失败、后端还在烧」）。
+            logger.warning(
+                "文风预设匹配超时（>%ss），按未评估处理 novel=%s",
+                MATCH_TIMEOUT_SECONDS,
+                novel_id,
+            )
+            return StylePresetSuggestion(
+                source=SOURCE_NONE,
+                reason=f"模型调用超时（>{MATCH_TIMEOUT_SECONDS} 秒），未评估",
+            )
         except Exception as exc:
             logger.warning("文风预设匹配调用失败，按未评估处理 novel=%s: %s", novel_id, exc)
             return StylePresetSuggestion(

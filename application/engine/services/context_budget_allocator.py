@@ -79,6 +79,20 @@ from infrastructure.ai.prompt_registry import get_prompt_registry
 logger = logging.getLogger(__name__)
 
 
+def _fact_lock_section_headers() -> tuple:
+    """FACT_LOCK 的分节标题（截断时用来点名被截掉的小节）。
+
+    ⚠ 惰性导入：``memory_engine`` 会拉起 prompt 契约等一串依赖，
+    而本模块在很多路径上被导入 ⇒ 顶层导入会拖慢启动并可能成环。
+    """
+    try:
+        from application.engine.services.memory_engine import FACT_LOCK_SECTION_HEADERS
+
+        return tuple(FACT_LOCK_SECTION_HEADERS)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
 def _sync_run_async(coro):
     """在同步上下文中运行 async 协程（处理已有事件循环的情况）。"""
     return run_coroutine_sync(lambda: coro)
@@ -327,14 +341,18 @@ class ContextBudgetAllocator:
                 f"T0 内容 {t0_total} tokens 超出动态阈值 {t0_max} ({T0_MAX_RATIO:.0%} 总预算)，"
                 f"触发 T0 截断保护"
             )
-            t0_total = self._truncate_t0_slots(t0_slots, t0_max)
+            t0_total = self._truncate_t0_slots(
+                t0_slots, t0_max, allocation.compression_log
+            )
             allocation.compression_log.append(f"T0 动态阈值保护：截断至 {T0_MAX_RATIO:.0%} 总预算")
 
         if t0_total > total_budget:
             # 极端情况：T0 超出总预算，只能截断
             logger.warning(f"T0 强制内容 {t0_total} tokens 超出总预算 {total_budget}")
             allocation.compression_log.append("T0 超预算，强制截断")
-            t0_total = self._truncate_t0_slots(t0_slots, total_budget)
+            t0_total = self._truncate_t0_slots(
+                t0_slots, total_budget, allocation.compression_log
+            )
 
         allocation.t0_reserved = t0_total
         
@@ -481,6 +499,9 @@ class ContextBudgetAllocator:
             tokens=self.estimate_tokens(fact_lock_content),
             max_tokens=1500,  # V9: 从 2500 砍到 1500
             priority=120,
+            # 复审 §4：声明分节标题 ⇒ 截断时**点名被截掉的小节**
+            # （否则模型看不到「身份锁死」这一节存在 ⇒ 不会去遵守它）。
+            section_headers=_fact_lock_section_headers(),
         )
 
         # ── T0-4: 角色锚点（核心人设）—— priority=110 ──
@@ -844,12 +865,22 @@ class ContextBudgetAllocator:
         """提取用户标记 is_key=1 的关键道具，注入 T1 上下文。"""
         return build_key_props_slot_content(novel_id)
 
-    def _truncate_t0_slots(self, t0_slots: Dict[str, ContextSlot], budget: int) -> int:
-        """极端情况：截断 T0 内容"""
+    def _truncate_t0_slots(
+        self,
+        t0_slots: Dict[str, ContextSlot],
+        budget: int,
+        compression_log: Optional[List[str]] = None,
+    ) -> int:
+        """极端情况：截断 T0 内容
+
+        ⚠ 复审 S5：装不下的槽位此前**清零且不留痕迹** ⇒ 现在把被舍弃的
+        槽位名**记进 compression_log**（不许静默丢一整个槽）。
+        """
         return truncate_t0_slots(
             t0_slots,
             budget,
             chars_per_token_zh=self.CHARS_PER_TOKEN_ZH,
+            compression_log=compression_log,
         )
 
     def _cap_t0_slots_by_own_limit(self, t0_slots: Dict[str, ContextSlot]) -> int:

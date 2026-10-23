@@ -197,13 +197,25 @@ def test_frontend_dimension_keys_come_from_the_bundle():
     assert "getWorldbuildingDimensionKeys()" in source, "前端没有从 bundle 派生维度键"
 
 
+def _strip_vue_comments(source: str) -> str:
+    """剥掉 Vue 模板里的 HTML 注释（``<!-- ... -->``）。
+
+    ⚠ 复审 S4：此前前端那条守卫直接对**原始未剥注释**的文件做正则
+    ⇒ 「把绑定注释掉」这种逃逸**照样绿**（注释里还留着 ``v-model``）。
+    """
+    return re.sub(r"<!--(?:.|\n)*?-->", "", source)
+
+
 def test_frontend_panel_field_bindings_match_the_contract():
     """表单模板里绑定的字段必须与契约**逐字段一致**。
 
     ⚠ 这是**文件内容级**断言（前端零测试设施，只有 ``npm run build`` 门禁）：
     它挡得住「契约加了字段而表单没加」，挡不住「字段顺序变了」。
+
+    ⚠ 复审 S4：必须**先剥 HTML 注释**再抽绑定 ——
+    否则「把绑定注释掉」这种逃逸照样绿。
     """
-    source = FRONTEND_PANEL.read_text(encoding="utf-8")
+    source = _strip_vue_comments(FRONTEND_PANEL.read_text(encoding="utf-8"))
     bound = re.findall(r'v-model:value="formData\.(\w+)\.(\w+)"', source)
 
     contract_fields = _contract_fields()
@@ -215,6 +227,19 @@ def test_frontend_panel_field_bindings_match_the_contract():
         f"  表单: {sorted(bound)}\n"
         f"  契约: {sorted(expected)}"
     )
+
+
+def test_the_frontend_panel_has_no_dead_bindings():
+    """⚠ 复审 S4：另一条逃逸是「把绑定包进 ``v-if="false"``」。
+
+    那种情况下绑定**文本还在** ⇒ 上一条照样绿 ⇒ 表单实际不渲染这些字段
+    ⇒ 契约与表单**形状**对不上，却没有任何断言能发现。
+    ⇒ 直接禁止这种写法（当前该文件里一处都没有）。
+    """
+    source = FRONTEND_PANEL.read_text(encoding="utf-8")
+
+    assert 'v-if="false"' not in source, "表单里有被 v-if=\"false\" 关掉的绑定"
+    assert 'v-show="false"' not in source, "表单里有被 v-show=\"false\" 关掉的绑定"
 
 
 def test_frontend_panel_dimension_count_is_not_hardcoded():

@@ -17,6 +17,7 @@ from domain.novel.repositories.storyline_repository import StorylineRepository
 from domain.ai.services.llm_service import LLMService, GenerationConfig
 from domain.ai.value_objects.prompt import Prompt
 from application.ai.trace_context import ensure_trace
+from application.engine.services.context_budget_policy import TRUNCATION_MARKER
 
 if TYPE_CHECKING:
     from infrastructure.ai.chromadb_vector_store import ChromaDBVectorStore
@@ -319,10 +320,14 @@ class BeatSheetService:
                 current_tokens = estimate_context_tokens(context)
 
             # 5. 截断前置章节摘要
+            # ⚠ 复审 S12：此前是裸 ``"..."`` ⇒ 这段会进**模型可见**提示词，
+            #   而模型只看到「有内容被砍了」，不知道砍的是前章摘要
+            #   ⇒ 统一用 TRUNCATION_MARKER（「截断从不静默」不是全仓的，
+            #   此前只覆盖了 context_budget_policy / context_assembler 两处）。
             if current_tokens > max_tokens and context.get("previous_chapter"):
                 summary = context["previous_chapter"].get("summary", "")
                 if len(summary) > 100:
-                    context["previous_chapter"]["summary"] = summary[:100] + "..."
+                    context["previous_chapter"]["summary"] = summary[:100].rstrip() + TRUNCATION_MARKER
                     current_tokens = estimate_context_tokens(context)
 
             logger.info(f"Context truncated to {current_tokens} tokens")

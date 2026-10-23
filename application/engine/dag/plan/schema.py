@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PlanDecompositionMode(StrEnum):
@@ -27,11 +27,25 @@ class PlanningEnvelope(BaseModel):
 
     novel_id: Optional[str] = None
     chapter_number: Optional[int] = None
-    target_chapter_words: int = Field(default=2500, ge=200, le=100_000)
+    # 复审 S7：上界此前是 ``100_000``，与规范上限（20000）矛盾。
+    # ⚠ 用**夹逼**而不是「越界就报错」：``target_chapter_words`` 来自 DAG 端口
+    #   （用户在 DAG 编辑器里可填任意值）⇒ 越界报错会让节点的**兜底分支**
+    #   用同一个值再构造一次信封 ⇒ 直接把节点打挂。
+    target_chapter_words: int = Field(default=2500, ge=200, le=20_000)
     source_outline_hash: Optional[str] = Field(
         default=None,
         description="可选：章纲指纹，便于缓存/幂等",
     )
+
+    @field_validator("target_chapter_words", mode="before")
+    @classmethod
+    def _clamp_target_chapter_words(cls, value: Any) -> Any:
+        """把每章目标字数**夹进** ``[200, 20000]``（读不出 ⇒ 2500）。"""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return 2500
+        return max(200, min(20_000, number))
 
 
 class PlanAtomSpec(BaseModel):
