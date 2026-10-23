@@ -1,5 +1,9 @@
 from application.engine.services.context_budget_models import ContextSlot, PriorityTier
-from application.engine.services.context_budget_policy import allocate_tier, truncate_t0_slots
+from application.engine.services.context_budget_policy import (
+    TRUNCATION_MARKER,
+    allocate_tier,
+    truncate_t0_slots,
+)
 
 
 def _slot(content, tokens, priority=0, max_tokens=100, min_tokens=0):
@@ -65,4 +69,6 @@ def test_truncate_t0_slots_stops_at_first_overflowing_slot():
     assert used == 15
     assert slots["first"].tokens == 10
     assert slots["second"].tokens == 5
-    assert slots["second"].content.endswith("...")
+    # S-06：截断必须**带说明**（此前是裸的 "..." ⇒ 模型不知道被砍了什么）。
+    assert TRUNCATION_MARKER in slots["second"].content
+    assert not slots["second"].content.endswith("..."), "还是裸省略号"

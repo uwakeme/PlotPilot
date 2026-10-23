@@ -8,11 +8,28 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from domain.novel.entities.novel import NovelStage
 
 logger = logging.getLogger(__name__)
+
+
+#: D-07：恢复时**改写**了大纲 ⇒ 在 ``story_nodes.metadata`` 里留下的记号。
+#:
+#: 键名稳定 ⇒ 前端能直接读（``StoryNode.to_dict()`` 已把 metadata 原样透出，
+#: 不需要改 DTO、不需要加列、不需要迁移）。
+#:
+#: 值是一个 dict：
+#: - ``original_outline`` —— **被替换掉的原大纲原文**（七段剧本渲染结果）
+#:   ⇒ 用户的已确认大纲不丢，可恢复；
+#: - ``replaced_by`` —— 替换成什么（``act_lightweight_outline``）；
+#: - ``rewritten_at`` —— ISO 时间戳。
+OUTLINE_REWRITTEN_KEY = "outline_rewritten"
+
+#: 替换来源的固定标签
+OUTLINE_REWRITTEN_SOURCE = "act_lightweight_outline"
 
 
 RETRYABLE_STAGES = {
@@ -563,6 +580,15 @@ class AutopilotRecoveryPolicy:
         ⇒ 现在初值是 `None`（语义是「没有可信替代」，不是「空」），
         只有真渲染出内容才回写；没有替代时**保留原大纲**，
         只清掉正文 / 字数 / 草稿状态。
+
+        ⚠ D-07（补）：**有**替代大纲时仍会改写（这是既有设计：中断留下的
+        七段剧本是「半截产物」，不能当稳定输入复用）⇒ 但改写是**用户可见的**：
+        用户的已确认大纲被换成了幕级大纲。
+        ⇒ 现在：① 覆盖前把**原大纲原文**存进 ``story_nodes.metadata``
+        （键 ``outline_rewritten``）⇒ 不丢、可恢复；
+        ② 前端能读到这个记号 ⇒ **显式提示**用户「这一章的大纲在恢复时被换过」
+        （登记表 D-07「该谁定」列：「恢复时保留已确认 outline，**或** UI 显式提示改写」
+        ⇒ 这里两条都做）。
         """
         try:
             db = self._get_db()
@@ -578,6 +604,7 @@ class AutopilotRecoveryPolicy:
             # None = 没有可信的替代大纲（**不是**空串）
             lightweight_outline: Optional[str] = None
             metadata: dict[str, Any] = {}
+            original_outline = ""
             if row:
                 metadata = self._json_object(row.get("metadata"))
                 act_plan = metadata.get("act_chapter_plan")
@@ -589,6 +616,24 @@ class AutopilotRecoveryPolicy:
                     rendered = render_lightweight_act_chapter_outline(act_plan)
                     if rendered.strip():
                         lightweight_outline = rendered
+                # D-07：改写前先取回**原大纲**（七段剧本渲染结果）。
+                # `chapters.outline` 才是用户看到的那一份；
+                # `story_nodes.outline` 是结构树上的那一份，两者都可能非空。
+                original_outline = self._fetch_original_chapter_outline(
+                    db, novel_id, int(chapter_number), row.get("outline")
+                )
+                if lightweight_outline is not None and original_outline:
+                    if original_outline != lightweight_outline:
+                        # 把「被替换掉的原大纲」留下来 ⇒ 用户已确认的大纲不丢、可恢复，
+                        # 且前端能读到「这一章的大纲在恢复时被换过」（显式提示）。
+                        metadata[OUTLINE_REWRITTEN_KEY] = {
+                            "original_outline": original_outline,
+                            "replaced_by": OUTLINE_REWRITTEN_SOURCE,
+                            "rewritten_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    else:
+                        # 替换前后一样 ⇒ 没有「改写」这回事，不留记号（不许制造噪音）。
+                        metadata.pop(OUTLINE_REWRITTEN_KEY, None)
                 if metadata.pop("chapter_preplan", None) is not None:
                     if lightweight_outline is None:
                         # 没有替代大纲 ⇒ 只摘掉 preplan，**保留节点原大纲**
@@ -616,6 +661,20 @@ class AutopilotRecoveryPolicy:
                                 row["id"],
                             ),
                         )
+                elif OUTLINE_REWRITTEN_KEY in metadata:
+                    # 没有 preplan、但记下了「原大纲被保留」⇒ **只写 metadata**，
+                    # 不许动 story_nodes.outline（与改造前逐位一致）。
+                    db.execute(
+                        """
+                        UPDATE story_nodes
+                        SET metadata = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                            row["id"],
+                        ),
+                    )
 
             if lightweight_outline is None:
                 # 没有可信替代 ⇒ 不许动 outline（不许拿空串覆盖真实大纲）
@@ -657,10 +716,11 @@ class AutopilotRecoveryPolicy:
             )
             self._commit()
             logger.info(
-                "丢弃未完成章节的章前规划 novel=%s chapter=%s 保留原大纲=%s",
+                "丢弃未完成章节的章前规划 novel=%s chapter=%s 保留原大纲=%s 改写=%s",
                 novel_id,
                 chapter_number,
                 lightweight_outline is None,
+                bool(metadata.get(OUTLINE_REWRITTEN_KEY)),
             )
         except Exception as exc:
             # D-07：清理失败不许再 `logger.debug` 吞掉 —— 降级路径要**看得见**。
@@ -670,6 +730,48 @@ class AutopilotRecoveryPolicy:
                 chapter_number,
                 exc,
             )
+
+    @staticmethod
+    def _fetch_original_chapter_outline(
+        db: Any,
+        novel_id: str,
+        chapter_number: int,
+        node_outline: Any = None,
+    ) -> str:
+        """取回**改写前**的大纲原文。
+
+        D-07：改写会同时覆盖 ``chapters.outline``（用户看到的那份）
+        与 ``story_nodes.outline``（结构树上的那份）。
+        ⇒ 覆盖前必须先把原文取出来（否则用户的已确认大纲凭空消失）。
+
+        优先级：``chapters.outline``（渲染出来的七段剧本）→ ``story_nodes.outline``。
+        读不到就返回空串（**不编造**）。
+        """
+        try:
+            row = db.fetch_one(
+                """
+                SELECT outline FROM chapters
+                WHERE novel_id = ? AND number = ?
+                LIMIT 1
+                """,
+                (novel_id, int(chapter_number)),
+            )
+        except Exception as exc:
+            logger.warning(
+                "读取原章节大纲失败 novel=%s ch=%s: %s",
+                novel_id,
+                chapter_number,
+                exc,
+            )
+            row = None
+        for candidate in (
+            (row or {}).get("outline") if row else "",
+            node_outline,
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
 
     @staticmethod
     def _json_object(raw: Any) -> dict[str, Any]:

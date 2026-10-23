@@ -112,11 +112,18 @@ def test_workflow_default_uses_the_constant():
 
 
 def test_pipeline_fallback_uses_the_constant():
-    """管线降级路径的 build_context 预算 = 常量（不再是 20000）。"""
-    path = REPO_ROOT / "engine" / "pipeline" / "base.py"
-    args = _call_max_tokens_arg(path, "build_context")
+    """管线降级路径的上下文预算 = 常量（不再是 20000）。
 
-    assert args, "没找到 build_context 的 max_tokens 实参"
+    ⚠ S-07：降级路径改调 ``build_context_with_hard_facts``（一次分配、两个出口）
+    ⇒ 这里**两个调用名都要查** ——
+    少了 ``build_context`` 那一条的话，把调用名改回去并写回 20000 就会漏网。
+    """
+    path = REPO_ROOT / "engine" / "pipeline" / "base.py"
+
+    args = _call_max_tokens_arg(path, "build_context")
+    args += _call_max_tokens_arg(path, "build_context_with_hard_facts")
+
+    assert args, "没找到降级路径的 max_tokens 实参"
     for arg in args:
         assert isinstance(arg, ast.Name) and arg.id == "DEFAULT_CONTEXT_MAX_TOKENS", (
             "管线里的上下文预算必须引用常量（不许再写回 20000）"

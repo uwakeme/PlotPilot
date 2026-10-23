@@ -6,6 +6,25 @@ from typing import Dict, List, Mapping, Optional
 from application.engine.services.context_budget_models import ContextSlot
 
 
+#: S-06：截断标记（**会进模型可见内容** ⇒ 写成「给模型看的话」）。
+#:
+#: 改造前这里是裸的 ``"..."`` ⇒ 模型看到的是「内容被砍掉了」，
+#: 但不知道砍的是什么、也不知道该不该担心（而 T0 被砍的通常是
+#: ``fact_lock`` —— **不得违反的既成事实**那块）。
+#:
+#: ⇒ 统一成本仓既有口径（``context_builder.py`` 的「（本块已按上限截断）」、
+#: ``prose_composer.py`` 的「（硬事实块已按总长上限截断）」、
+#: ``context_budget_allocator.py`` 的「（叙事校准注入已按上限截断）」）。
+TRUNCATION_MARKER = "\n（此段已按上下文预算截断，仅为部分内容）"
+
+
+def _mark_truncated(content: str, target_chars: int) -> str:
+    """按上限截断，并**附上说明**（不许裸 ``...``）。"""
+    if target_chars <= 0:
+        return ""
+    return content[:target_chars].rstrip() + TRUNCATION_MARKER
+
+
 def truncate_t0_slots(
     t0_slots: Dict[str, ContextSlot],
     budget: int,
@@ -22,7 +41,7 @@ def truncate_t0_slots(
         remaining = budget - total
         if remaining > 0:
             target_chars = int(remaining * chars_per_token_zh)
-            slot.content = slot.content[:target_chars] + "..."
+            slot.content = _mark_truncated(slot.content, target_chars)
             slot.tokens = remaining
             total += remaining
         break
@@ -101,7 +120,8 @@ def allocate_tier(
         if cap is not None and slot.tokens > cap:
             original = slot.tokens
             target_chars = int(cap * chars_per_token_zh)
-            slot.content = slot.content[:target_chars] + ("..." if cap > 0 else "")
+            # S-06：权重压低上限时也**不许裸 ...** ⇒ 要说明。
+            slot.content = _mark_truncated(slot.content, target_chars) if cap > 0 else ""
             slot.tokens = cap
             compression_log.append(
                 f"按权重压缩 {name}: {original} → {cap} tokens"
@@ -116,7 +136,7 @@ def allocate_tier(
         if slot.max_tokens and slot.max_tokens > 0:
             if remaining > slot.min_tokens:
                 target_chars = int(remaining * chars_per_token_zh)
-                slot.content = slot.content[:target_chars] + "..."
+                slot.content = _mark_truncated(slot.content, target_chars)
                 slot.tokens = remaining
                 total_used += remaining
                 compression_log.append(f"压缩 {name}: {original_tokens} → {remaining} tokens")
@@ -128,7 +148,7 @@ def allocate_tier(
 
         if remaining > 0:
             target_chars = int(remaining * chars_per_token_zh)
-            slot.content = slot.content[:target_chars] + "..."
+            slot.content = _mark_truncated(slot.content, target_chars)
             slot.tokens = remaining
             total_used += remaining
             compression_log.append(f"截断 {name}: {original_tokens} → {remaining} tokens")

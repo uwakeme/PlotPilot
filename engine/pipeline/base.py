@@ -816,13 +816,22 @@ class BaseStoryPipeline(ABC):
                     DEFAULT_CONTEXT_MAX_TOKENS,
                 )
 
-                ctx.context_text = ctx.context_builder.build_context(
+                # S-07：降级路径也要拿到**硬事实**。
+                # 此前这里只调 ``build_context()``（返回字符串、分配结果被丢掉）
+                # ⇒ ``ctx.hard_facts`` 保持默认空串 ⇒ 正文提示词里的
+                # 「【硬事实（不得违反的既成事实）】」是一节**空的**，
+                # 而同一份提示词的硬约束第 7 条还在要求「必须与之一致」
+                # ⇒ 模型看到一节空的「必须遵守」。
+                # ⇒ 改用「一次分配、两个出口」；``context`` 与改造前**逐字节相同**。
+                degraded = ctx.context_builder.build_context_with_hard_facts(
                     novel_id=ctx.novel_id,
                     chapter_number=ctx.chapter_number,
                     outline=ctx.outline,
                     max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
                     slot_weights=slot_weights,
                 )
+                ctx.context_text = degraded["context"]
+                ctx.hard_facts = degraded["hard_facts"]
                 logger.info(f"[{ctx.novel_id}] 上下文（builder）: {len(ctx.context_text)} 字符")
             except Exception as e:
                 logger.warning(f"context_builder 构建失败: {e}")

@@ -1,14 +1,14 @@
-"""三层记忆模型实现 — MemoryOrchestrator
+"""记忆编排器实现 — MemoryOrchestrator
 
-三层记忆架构（复刻人类作家）：
-- T0 语义记忆(20%)：世界观设定、角色关系、伏笔状态、Fact Lock
-- T1 情景记忆(30%)：EmotionLedger（情绪账本替代摘要）
-- T2 工作记忆(35%)：最近10-15章的完整内容
-- T3 向量召回(15%)：早期原文片段（Echo Recall）
+G-04-b：原先这里还有一整套「三层记忆模型」的**读回装配**
+（``assemble_context`` + ``_assemble_t0..t3`` + ``_apply_budget_pressure``），
+但它**零生产调用方**（生产上下文的装配早已由
+``application/engine/services/context_budget_allocator.py`` 承担，
+两套并存、语义不同）⇒ 已删除，避免「两套都留着」。
 
-Token预算紧张时的挤压策略：
-- T3 → T2 → T1 逐层挤压
-- T0 绝对保护（不可挤压）
+本模块现在只负责**写路径**：
+- ``update_emotion_ledger``：每章抽取情绪账本写进 checkpoints；
+- ``restore_state`` / ``manage_foreshadow``：引擎状态恢复与伏笔生命周期。
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from engine.core.services.memory_orchestrator import (
-    MemoryOrchestrator, TokenBudget, ContextAssembly,
+    MemoryOrchestrator,
 )
 from engine.core.entities.story import StoryId
 from engine.core.value_objects.emotion_ledger import EmotionLedger
@@ -29,10 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryOrchestratorImpl(MemoryOrchestrator):
-    """三层记忆模型实现
-
-    组装写作上下文，Token预算管理，EmotionLedger更新
-    """
+    """记忆编排器实现（**写路径**：情绪账本抽取 / 状态恢复 / 伏笔生命周期）"""
 
     def __init__(
         self,
@@ -45,75 +42,6 @@ class MemoryOrchestratorImpl(MemoryOrchestrator):
         self._character_psyche = character_psyche or CharacterPsycheEngine(db_pool)
         self._echo_recall = echo_recall or EchoRecall(db_pool)
         self._ledger_extractor = EmotionLedgerExtractor(llm_service=llm_service)
-
-    async def assemble_context(
-        self,
-        story_id: StoryId,
-        chapter_number: int,
-        budget: TokenBudget,
-    ) -> ContextAssembly:
-        """组装写作上下文（三层记忆模型）"""
-        assembly = ContextAssembly(budget=budget)
-
-        try:
-            # T0 语义记忆(20%)：世界观+角色面具+伏笔状态
-            t0_parts = await self._assemble_t0(story_id.value, chapter_number)
-            assembly.t0_content = "\n\n".join(t0_parts)
-
-            # T1 情景记忆(30%)：EmotionLedger
-            assembly.t1_content = await self._assemble_t1(story_id.value, chapter_number)
-
-            # T2 工作记忆(35%)：最近章节内容
-            assembly.t2_content = await self._assemble_t2(story_id.value, chapter_number)
-
-            # T3 向量召回(15%)：早期原文
-            assembly.t3_content = await self._assemble_t3(story_id.value, chapter_number)
-
-            # Token预算挤压
-            assembly = self._apply_budget_pressure(assembly, budget)
-
-        except Exception as e:
-            logger.error(f"组装上下文失败: {e}")
-
-        return assembly
-
-    async def _assemble_t0(self, story_id: str, chapter_number: int) -> List[str]:
-        """T0 语义记忆：世界观+角色面具+伏笔状态"""
-        parts = []
-
-        # 角色Fact Lock
-        try:
-            if self._db_pool:
-                with self._db_pool.get_connection() as conn:
-                    # 获取故事中的角色列表
-                    rows = conn.execute(
-                        """SELECT character_id FROM story_characters
-                           WHERE story_id = ?""",
-                        (story_id,)
-                    ).fetchall()
-
-                    for row in rows:
-                        fact_lock = await self._character_psyche.generate_t0_fact_lock(
-                            row["character_id"], chapter_number
-                        )
-                        if fact_lock:
-                            parts.append(fact_lock)
-        except Exception as e:
-            logger.debug(f"T0角色FactLock组装失败: {e}")
-
-        return parts
-
-    async def _assemble_t1(self, story_id: str, chapter_number: int) -> str:
-        """T1 情景记忆：EmotionLedger"""
-        try:
-            ledger_data = self._load_emotion_ledger_json(story_id)
-            if ledger_data:
-                ledger = EmotionLedger.from_dict(ledger_data)
-                return ledger.to_t0_section()
-        except Exception as e:
-            logger.debug(f"T1情景记忆组装失败: {e}")
-
-        return ""
 
     def _load_emotion_ledger_json(self, story_id: str) -> Optional[Dict[str, Any]]:
         """从 checkpoint 读取当前情绪账本"""
@@ -139,105 +67,6 @@ class MemoryOrchestratorImpl(MemoryOrchestrator):
             if row and row["emotion_ledger"]:
                 return json.loads(row["emotion_ledger"])
         return None
-
-    async def _assemble_t2(self, story_id: str, chapter_number: int) -> str:
-        """T2 工作记忆：最近10-15章的完整内容"""
-        try:
-            if self._db_pool:
-                with self._db_pool.get_connection() as conn:
-                    rows = conn.execute(
-                        """SELECT number, title, content
-                           FROM chapters
-                           WHERE novel_id = ? AND number < ?
-                           ORDER BY number DESC
-                           LIMIT 10""",
-                        (story_id, chapter_number)
-                    ).fetchall()
-
-                    if rows:
-                        parts = []
-                        for row in reversed(rows):
-                            header = f"第{row['number']}章 {row['title'] or ''}"
-                            content = row["content"] or ""
-                            # 截断过长章节
-                            if len(content) > 2000:
-                                content = content[:2000] + "...(截断)"
-                            parts.append(f"{header}\n{content}")
-                        return "\n\n---\n\n".join(parts)
-        except Exception as e:
-            logger.debug(f"T2工作记忆组装失败: {e}")
-
-        return ""
-
-    async def _assemble_t3(self, story_id: str, chapter_number: int) -> str:
-        """T3 向量召回：早期原文片段"""
-        parts = []
-
-        try:
-            if self._db_pool:
-                with self._db_pool.get_connection() as conn:
-                    # 获取故事中的角色
-                    rows = conn.execute(
-                        """SELECT character_id, character_name
-                           FROM story_characters
-                           WHERE story_id = ?""",
-                        (story_id,)
-                    ).fetchall()
-
-                    for row in rows:
-                        instruction = await self._echo_recall.generate_echo_instruction(
-                            character_id=row["character_id"],
-                            character_name=row["character_name"],
-                            context=f"第{chapter_number}章",
-                        )
-                        if instruction:
-                            parts.append(instruction)
-        except Exception as e:
-            logger.debug(f"T3向量召回组装失败: {e}")
-
-        return "\n\n".join(parts)
-
-    def _apply_budget_pressure(self, assembly: ContextAssembly, budget: TokenBudget) -> ContextAssembly:
-        """Token预算挤压（T3→T2→T1，T0绝对保护）"""
-        # 统一口径：domain.shared.token_estimation（中英加权，原为 2字/token 粗估）
-        from domain.shared.token_estimation import estimate_tokens
-
-        total = estimate_tokens(assembly.t0_content) + estimate_tokens(assembly.t1_content) + estimate_tokens(assembly.t2_content) + estimate_tokens(assembly.t3_content)
-        assembly.total_tokens = total
-
-        if total <= budget.total:
-            return assembly  # 预算充足
-
-        # 挤压T3
-        t3_tokens = estimate_tokens(assembly.t3_content)
-        if t3_tokens > budget.t3_max:
-            # 截断T3
-            max_chars = budget.t3_max * 2
-            assembly.t3_content = assembly.t3_content[:max_chars]
-
-        # 挤压T2
-        t2_tokens = estimate_tokens(assembly.t2_content)
-        if t2_tokens > budget.t2_max:
-            max_chars = budget.t2_max * 2
-            assembly.t2_content = assembly.t2_content[:max_chars] + "\n...(更多章节已截断)"
-
-        # 挤压T1
-        t1_tokens = estimate_tokens(assembly.t1_content)
-        if t1_tokens > budget.t1_max:
-            max_chars = budget.t1_max * 2
-            assembly.t1_content = assembly.t1_content[:max_chars]
-
-        # T0绝对保护（不挤压）
-
-        # 重新估算
-        assembly.total_tokens = (
-            estimate_tokens(assembly.t0_content) +
-            estimate_tokens(assembly.t1_content) +
-            estimate_tokens(assembly.t2_content) +
-            estimate_tokens(assembly.t3_content)
-        )
-
-        return assembly
 
     async def update_emotion_ledger(
         self,

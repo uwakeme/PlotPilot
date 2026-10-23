@@ -226,6 +226,39 @@ class ContextBuilder:
 
         return allocation.get_final_context()
 
+    def build_context_with_hard_facts(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str,
+        max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
+        scene_director: SceneDirectorInput = None,
+        slot_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """一次分配，同时返回**完整上下文**与**硬事实小块**。
+
+        S-07：降级路径此前只调 :meth:`build_context`（返回**字符串**），
+        分配结果被丢掉 ⇒ ``hard_facts`` 拿不出来 ⇒ 正文提示词里的
+        「【硬事实（不得违反的既成事实）】」是一节**空的**，
+        而同一份提示词的硬约束第 7 条还在说「【硬事实】……必须与之一致」
+        ⇒ 模型看到一节空的「必须遵守」。
+
+        ⇒ 这里一次分配、两个出口；``context`` 与 :meth:`build_context` 的
+        返回值**逐字节相同**（同一个 ``allocation.get_final_context()``）。
+        """
+        self._apply_slot_weights(slot_weights)
+        allocation = self.budget_allocator.allocate(
+            novel_id=novel_id,
+            chapter_number=chapter_number,
+            outline=outline,
+            total_budget=max_tokens,
+            scene_director=scene_director,
+        )
+        return {
+            "context": allocation.get_final_context(),
+            "hard_facts": self._build_hard_facts(allocation),
+        }
+
     def build_structured_context(
         self,
         novel_id: str,

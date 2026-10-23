@@ -153,7 +153,14 @@ class ContextAssembler:
 
         result = "\n".join(lines)
         if len(result) > 300:
-            result = result[:297] + "..."
+            # S-06：裸 "..." ⇒ 模型不知道被砍掉了什么。改用与
+            # context_budget_policy 同一套截断标记口径。
+            from application.engine.services.context_budget_policy import (
+                TRUNCATION_MARKER,
+            )
+
+            keep = max(0, 300 - len(TRUNCATION_MARKER))
+            result = result[:keep].rstrip() + TRUNCATION_MARKER
         return result
 
     @staticmethod

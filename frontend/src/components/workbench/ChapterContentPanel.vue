@@ -49,6 +49,24 @@
             当前为章纲拆条预览。
           </n-alert>
 
+          <n-alert
+            v-if="outlineRewrittenNotice"
+            type="warning"
+            :show-icon="true"
+            size="small"
+            class="script-alert"
+          >
+            <div>本章大纲在上次写作中断后被替换成了幕级大纲（原七段剧本已保留）。</div>
+            <n-collapse v-if="outlineRewrittenShrunk" size="small" class="outline-rewritten-detail">
+              <n-collapse-item name="original" title="查看被替换掉的原大纲">
+                <pre class="outline-rewritten-original">{{ outlineRewrittenNotice.originalOutline }}</pre>
+              </n-collapse-item>
+            </n-collapse>
+            <div v-else class="outline-rewritten-detail">
+              原七段剧本已保留：{{ outlineRewrittenNotice.originalOutline }}
+            </div>
+          </n-alert>
+
           <div v-if="scriptBlocks.length" class="script-blocks">
             <section v-for="block in scriptBlocks" :key="block.title" class="script-block">
               <h4>{{ block.title }}</h4>
@@ -527,6 +545,42 @@ const totalTargetWords = computed(() =>
   microBeats.value.reduce((sum, beat) => sum + Math.max(0, Number(beat.target_words || 0)), 0)
 )
 
+/**
+ * D-07：这一章的大纲在「恢复」时被替换过（中断重写时，幕级轻量大纲
+ * 顶替了原来的七段剧本）。
+ *
+ * 后端把**原大纲原文**留在 `story_nodes.metadata.outline_rewritten`
+ * （`StoryNode.to_dict()` 已把 metadata 原样透出）⇒ 这里能读到。
+ *
+ * 没有这一条提示，作者看到的是「我的大纲莫名其妙变了」——
+ * 而实际是系统在恢复时换的。这是**用户可见的隐性内容决策**，
+ * 必须显式说出来。
+ */
+const outlineRewrittenNotice = computed<{
+  originalOutline: string
+  rewrittenAt: string
+} | null>(() => {
+  const metadata = chapterPlan.value?.metadata
+  if (!metadata || typeof metadata !== 'object') return null
+  const marker = (metadata as Record<string, unknown>).outline_rewritten
+  if (!marker || typeof marker !== 'object') return null
+  const record = marker as Record<string, unknown>
+  const originalOutline = String(record.original_outline ?? '').trim()
+  if (!originalOutline) return null
+  return {
+    originalOutline,
+    rewrittenAt: String(record.rewritten_at ?? '').trim(),
+  }
+})
+
+/** 原大纲是否比当前大纲长（短了才值得提示「已换掉」） */
+const outlineRewrittenShrunk = computed(() => {
+  const notice = outlineRewrittenNotice.value
+  if (!notice) return false
+  const current = (chapterPlan.value?.outline ?? '').trim()
+  return current.length < notice.originalOutline.length
+})
+
 function countBeatConstraints(beat: MicroBeat): number {
   return (beat.must_include?.length || 0) + (beat.must_not_include?.length || 0)
 }
@@ -749,6 +803,28 @@ onMounted(async () => {
 
 .script-alert {
   margin-bottom: 10px;
+}
+
+/* D-07：恢复时大纲被替换的提示（原七段剧本可展开查看） */
+.outline-rewritten-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.outline-rewritten-original {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.04);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
 }
 
 .chapter-script-text {

@@ -28,7 +28,13 @@ def chapter_prose_input_bindings() -> list[VariableBinding]:
         # `metadata.get("continuity_context") or request.context_text`），
         # 而前者恒非空 ⇒ 后者永远进不了正文提示词 ⇒ 模型看不见角色状态锚点、
         # 叙事契约（死亡锁/白名单/身份锁）、伏笔槽位、幕摘要。
-        VariableBinding("chapter_context", "chapter.context", False, "", scope="chapter", stage="writing", display_name="章节上下文包（T0–T3）"),
+        #
+        # S-08：display_name 原写「章节上下文包（T0–T3）」，但这个槽位里
+        # 现在装的是**硬事实三块**（死亡锁 / 角色锚点 / 创作契约），
+        # 不是整包上下文 ⇒ 标签与实际不符 ⇒ 面板上会误导人。
+        # ⚠ 只改标签，不改 variable_key（`chapter.context`）——
+        # 改 key 会让既有绑定集对不上。
+        VariableBinding("chapter_context", "chapter.context", False, "", scope="chapter", stage="writing", display_name="本章硬事实（死亡锁 / 角色锚点 / 创作契约）"),
         # E-06：本章节奏配额（AI 依题材/前章张力定）。
         # ⚠ 受 config/performance.yaml 的 rhythm_quota.enabled 控制（默认关闭）。
         VariableBinding("rhythm_quota", "chapter.rhythm_quota", False, "", scope="chapter", stage="writing", display_name="本章节奏配额"),

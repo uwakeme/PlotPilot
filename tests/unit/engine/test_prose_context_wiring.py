@@ -114,11 +114,22 @@ def test_the_whole_context_bundle_never_reaches_the_prose_prompt(monkeypatch):
 
     ⚠ 样本要有鉴别力：**必须用「硬事实为空」的请求**。
     若硬事实非空，整包那条分支根本不会触发 ⇒ 这个用例就抓不到「整包被当兜底」。
+
+    ⚠ S-07：硬事实为空时不再**留空**，而是给一句**显式说明**
+    （「本次未取到硬事实…请勿据此推断存在任何额外约束」）
+    ⇒ 断言从「必须等于空串」改成「**不许是整包，且必须把「没取到」说出来**」——
+    这才是本用例的**原意**（整包不许进、缺失不许装作有）。
     """
     vars_ = _variables(monkeypatch, hard_facts="")
 
-    assert vars_["chapter_context"] == "", "整包上下文被当成了硬事实的兜底"
     assert "整包上下文" not in str(vars_), "整包上下文漏进了正文提示词"
+    assert "整包上下文" not in vars_["chapter_context"], (
+        "整包上下文被当成了硬事实的兜底"
+    )
+    # S-07：缺失必须**明说**（不许留一节空的「必须遵守」）。
+    assert "未取到硬事实" in vars_["chapter_context"], (
+        "硬事实为空时没有说明「没取到」⇒ 模型看到一节空的约束"
+    )
 
 
 def test_the_whole_context_bundle_never_leaks_when_hard_facts_are_present(monkeypatch):
