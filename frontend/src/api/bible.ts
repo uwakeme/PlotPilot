@@ -66,6 +66,25 @@ export interface StyleNoteDTO {
   content: string
 }
 
+/**
+ * AI 的文风预设推荐（J-02）。
+ *
+ * ⚠ `value` 为 null 有**两种**含义，靠 `source` 区分：
+ * - `source === 'ai'` ⇒ AI **判了**：候选里没有贴切的（`reason` 说明为什么）；
+ * - `source === ''` ⇒ **未评估**：模型调用失败 / 输出不合契约 / 总闸关闭。
+ */
+export interface StylePresetSuggestion {
+  novel_id: string
+  value: string | null
+  label: string
+  icon: string
+  body: string
+  reason: string
+  source: string
+  matched: boolean
+  assessed: boolean
+}
+
 export interface BibleDTO {
   id: string
   novel_id: string
@@ -254,6 +273,20 @@ export const bibleApi = {
       `/bible/novels/${novelId}/bible/status`,
       { timeout: WIZARD_STEP_TIMEOUT_MS }
     ) as Promise<{ exists: boolean; ready: boolean; novel_id: string }>,
+
+  /**
+   * AI 按题材**推荐**一个文风预设（J-02）。
+   * POST /api/v1/bible/novels/{novelId}/bible/style-preset-suggestion
+   *
+   * ⚠ 只推荐、不写库：作者点「应用」才把 body 写进 Bible。
+   * ⚠ 判不出来时 `value` 为 null（**不会**回落到第一个预设）。
+   */
+  suggestStylePreset: (novelId: string) =>
+    apiClient.post<StylePresetSuggestion>(
+      `/bible/novels/${novelId}/bible/style-preset-suggestion`,
+      {},
+      { timeout: runtimePerformance.network.shortTaskTimeoutMs }
+    ) as Promise<StylePresetSuggestion>,
 
   /**
    * 异步 Bible 生成失败原因（单进程内存；成功或未失败时 error 为 null）

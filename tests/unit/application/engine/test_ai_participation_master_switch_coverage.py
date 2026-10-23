@@ -488,6 +488,9 @@ BEHAVIOUR_CASES = [
     ("application.audit.services.macro_refactor_proposal_service", "MacroRefactorProposalService",
      "generate_proposal",
      {"request": _refactor_request()}),
+    # ── 第 9 批：J-02 文风预设语义匹配 ──
+    ("application.world.services.style_preset_matcher", "StylePresetMatcher", "suggest",
+     {"novel_id": "n-1", "genre": "都市异能", "premise": "一个普通人在城市里觉醒"}),
 ]
 
 

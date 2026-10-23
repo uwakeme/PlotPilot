@@ -1,0 +1,42 @@
+name: 文风预设语义匹配
+category: bible
+source: application/world/services/style_preset_matcher.py::suggest
+description: 由 AI 按题材语义在文风公约预设清单里挑一个（或明说都不匹配）
+builtin: true
+tags:
+- 文风
+- 题材
+- 匹配
+- JSON输出
+output_format: json
+variables:
+- name: novel_id
+  desc: 小说ID
+  type: string
+  required: true
+- name: title
+  desc: 书名
+  type: string
+  default: ''
+- name: genre
+  desc: 题材
+  type: string
+  default: ''
+- name: premise
+  desc: 一句话梗概
+  type: string
+  default: ''
+- name: worldbuilding_style
+  desc: 世界观风格要点
+  type: string
+  default: ''
+- name: current_style_notes
+  desc: 当前已写的文风公约（可为空）
+  type: string
+  default: ''
+- name: candidates
+  desc: 候选文风预设清单（标识符与题材特征）
+  type: string
+  default: ''
+id: bible-style-preset-match
+sort_order: 125

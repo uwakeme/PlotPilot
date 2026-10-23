@@ -62,6 +62,8 @@ AI_PARTICIPATION_FEATURES: tuple[str, ...] = (
     "macro_breakpoint",  # H-06A 宏观断点语义分类
     "macro_refactor_proposal",  # H-06B 宏观重构提案
     "emotion_ledger",  # G-04 情绪账本抽取
+    # ── 第 9 批新增 ──
+    "style_preset_match",  # J-02 文风预设语义匹配
 )
 
 #: **没有代码兜底物**的能力（总闸关掉 ⇒ 这项判断**本轮不存在**，
@@ -143,6 +145,7 @@ AI_PARTICIPATION_CAPABILITY_MODULES: frozenset[str] = frozenset(
         "application/evolution/services/dead_character_checker.py",
         "application/world/services/foreshadow_selection.py",
         "application/world/services/plot_point_classifier.py",
+        "application/world/services/style_preset_matcher.py",
         "engine/infrastructure/memory/emotion_ledger_extractor.py",
     }
 )
@@ -182,6 +185,10 @@ AI_PARTICIPATION_CORE_PIPELINE_MODULES: frozenset[str] = frozenset(
         "interfaces/api/v1/core/novels.py",
         "interfaces/api/v1/engine/checkpoint_routes.py",
         "interfaces/api/v1/world/cast.py",
+        # J-02：这条路由**自己不打模型**，但调用了已接闸的
+        # ``StylePresetMatcher.suggest`` ⇒ 关闸对它天然生效（返回「未评估」）
+        # ⇒ 归核心链路，不要求自己接闸。
+        "interfaces/api/v1/world/bible.py",
         "application/blueprint/services/beat_sheet_service.py",
         "application/blueprint/services/chapter_preplanning_service.py",
         "application/blueprint/services/continuous_planning_service.py",

@@ -853,6 +853,20 @@ def get_title_suggestion_service() -> TitleSuggestionService:
     return TitleSuggestionService(llm_service=get_llm_service())
 
 
+def get_style_preset_matcher():
+    """获取文风预设语义匹配器（J-02）。
+
+    ⚠ 它是**一条新入口**（作者点「AI 推荐」才走）⇒ 不参与任何既有链路
+    ⇒ 没作者点它，就一次模型调用都不会发生。
+
+    Returns:
+        StylePresetMatcher 实例
+    """
+    from application.world.services.style_preset_matcher import StylePresetMatcher
+
+    return StylePresetMatcher(llm_service=get_llm_service())
+
+
 def get_auto_knowledge_generator() -> AutoKnowledgeGenerator:
     """获取自动 Knowledge 生成器
 

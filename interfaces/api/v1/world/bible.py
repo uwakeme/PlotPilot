@@ -10,6 +10,8 @@ import asyncio
 from application.world.services.bible_service import BibleService
 from application.world.services.auto_bible_generator import AutoBibleGenerator
 from application.world.services.auto_knowledge_generator import AutoKnowledgeGenerator
+from application.world.services.style_preset_matcher import StylePresetMatcher
+from application.core.services.novel_service import NovelService
 from application.world.dtos.bible_dto import BibleDTO
 from application.ai_invocation.dtos import InvocationPolicy, InvocationRequest
 from application.ai_invocation.gateway import AIInvocationGateway
@@ -25,7 +27,9 @@ from application.core.v1_length_tiers import strip_v1_structure_black_box_hint
 from interfaces.api.dependencies import (
     get_bible_service,
     get_auto_bible_generator,
-    get_auto_knowledge_generator
+    get_auto_knowledge_generator,
+    get_novel_service,
+    get_style_preset_matcher,
 )
 from interfaces.api.urls import bible_generation_status_url
 from domain.shared.exceptions import EntityNotFoundError
@@ -1307,3 +1311,81 @@ async def bulk_update_bible(
         pass
     _sync_bible_variable_hub(novel_id, dto)
     return dto
+
+
+class StylePresetSuggestionResponse(BaseModel):
+    """文风预设推荐结果（J-02）。
+
+    ⚠ ``value`` 为 ``null`` 有**两种**含义，靠 ``source`` 区分：
+    - ``source="ai"`` ⇒ AI **判了**：候选里没有贴切的（``reason`` 说明为什么都不合适）；
+    - ``source=""`` ⇒ **未评估**：模型调用失败 / 输出不合契约 / 总闸关闭。
+    ⇒ 前端据此显示「AI 说都不匹配」与「判不出来」两件**不同**的事。
+    """
+
+    novel_id: str = Field(description="小说 ID")
+    value: Optional[str] = Field(default=None, description="命中的预设标识符；无匹配时为 null")
+    label: str = Field(default="", description="命中预设的显示名")
+    icon: str = Field(default="", description="命中预设的图标")
+    body: str = Field(default="", description="命中预设的文风公约正文（作者点「应用」才写入）")
+    reason: str = Field(default="", description="推荐理由 / 未评估原因")
+    source: str = Field(default="", description="ai / 空（未评估）")
+    matched: bool = Field(default=False, description="是否匹配到了预设")
+    assessed: bool = Field(default=False, description="AI 是否做出了判定")
+
+
+@router.post(
+    "/novels/{novel_id}/bible/style-preset-suggestion",
+    response_model=StylePresetSuggestionResponse,
+)
+async def suggest_style_preset(
+    novel_id: str,
+    novel_service: NovelService = Depends(get_novel_service),
+    bible_service: BibleService = Depends(get_bible_service),
+    matcher: StylePresetMatcher = Depends(get_style_preset_matcher),
+):
+    """文风预设**语义匹配**（J-02）—— 让 AI 按题材挑一个文风公约。
+
+    ⚠ 这条接口**只推荐、不写库**：作者点「应用」才把 ``body`` 写进 Bible
+    ⇒ **AI 不替作者做决定**（作者也可以直接手选预设，完全不用这条接口）。
+
+    ⚠ 也**不回落到第一个预设**：判不出来就是 ``value=null`` + 一个说人话的理由
+    （回落 = 复活第 4 批删掉的「默认注入 ``presets[0]」那条 ——
+    前端替作者定文风，而它会具名进正文提示词 ⇒ 确实生效）。
+    """
+    novel = novel_service.get_novel(novel_id)
+    if not novel:
+        raise HTTPException(status_code=404, detail=f"Novel not found: {novel_id}")
+
+    current_style_notes = ""
+    worldbuilding_style = ""
+    try:
+        bible = bible_service.get_bible_by_novel(novel_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 Bible 失败，文风预设匹配将不带文风上下文 novel=%s: %s", novel_id, exc)
+        bible = None
+    if bible is not None:
+        current_style_notes = "\n\n".join(
+            str(getattr(note, "content", "") or "") for note in (bible.style_notes or [])
+        ).strip()
+        worldbuilding_style = str(getattr(bible, "style", "") or "").strip()
+
+    suggestion = await matcher.suggest(
+        novel_id=novel_id,
+        title=str(getattr(novel, "title", "") or ""),
+        genre=str(getattr(novel, "genre", "") or ""),
+        premise=str(getattr(novel, "premise", "") or ""),
+        worldbuilding_style=worldbuilding_style,
+        current_style_notes=current_style_notes,
+    )
+
+    return StylePresetSuggestionResponse(
+        novel_id=novel_id,
+        value=suggestion.value,
+        label=suggestion.label,
+        icon=suggestion.icon,
+        body=suggestion.body,
+        reason=suggestion.reason,
+        source=suggestion.source,
+        matched=suggestion.matched,
+        assessed=suggestion.assessed,
+    )

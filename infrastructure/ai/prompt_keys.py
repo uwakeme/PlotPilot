@@ -26,6 +26,8 @@ BIBLE_WORLDBUILDING = "bible-worldbuilding"
 BIBLE_CHARACTERS = "bible-characters"
 BIBLE_LOCATIONS = "bible-locations"
 BIBLE_STYLE_CONVENTION = "bible-style-convention"
+# J-02：按题材**语义匹配**到某个文风预设（不是「AI 写文风」——那是上面那个节点）。
+BIBLE_STYLE_PRESET_MATCH = "bible-style-preset-match"
 
 # ── Chapter generation ───────────────────────────────────────────────────
 CHAPTER_GENERATION_MAIN = "chapter-generation-main"
@@ -185,7 +187,7 @@ CHAPTER_REVISE = "chapter-revise"
 ALL_KEYS: frozenset[str] = frozenset({
     # Bible
     BIBLE_ALL, BIBLE_WORLDBUILDING, BIBLE_CHARACTERS, BIBLE_LOCATIONS,
-    BIBLE_STYLE_CONVENTION,
+    BIBLE_STYLE_CONVENTION, BIBLE_STYLE_PRESET_MATCH,
     # Chapter
     CHAPTER_GENERATION_MAIN, CHAPTER_GENERATION_BASIC, CHAPTER_PROSE_GENERATION,
     CHAPTER_NARRATIVE_SYNC, CHAPTER_STATE_EXTRACTION, CHAPTER_SUMMARIZER,

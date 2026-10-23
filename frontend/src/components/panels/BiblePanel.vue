@@ -91,17 +91,27 @@
             </div>
           </div>
 
-          <!-- 文风公约未定：给出出口（作者自选 / AI 生成），不再由前端默认注入 -->
+          <!-- 文风公约未定：给出出口（作者自选 / AI 推荐），不再由前端默认注入 -->
           <div v-else class="bible-style-card bible-style-card--empty">
             <div class="bible-style-info">
               <div class="bible-style-label">
                 <span>文风公约未定</span>
                 <span class="bible-style-summary">
-                  文风公约会进正文提示词的「创作契约」槽，由你决定：从预设里选一个，或用上面的「AI 生成」让 AI 写。
+                  文风公约会进正文提示词的「创作契约」槽，由你决定：从预设里选一个，或让 AI 按题材推荐一个。
                 </span>
               </div>
             </div>
-            <n-button size="tiny" secondary @click="openStylePresetModal">选择文风</n-button>
+            <n-space :size="8">
+              <n-button size="tiny" secondary @click="openStylePresetModal">选择文风</n-button>
+              <n-button
+                size="tiny"
+                secondary
+                :loading="suggestingStylePreset"
+                @click="openStylePresetModalAndSuggest"
+              >
+                AI 推荐
+              </n-button>
+            </n-space>
           </div>
         </div>
       </div>
@@ -176,9 +186,25 @@
       title="选择文风预设"
       style="width:900px;max-width:95vw"
     >
-      <StylePresetSelector v-model="selectedStylePresetValue" />
+      <n-space vertical :size="12">
+        <n-alert v-if="stylePresetSuggestion" type="info" :bordered="false">
+          <template v-if="stylePresetSuggestion.matched">
+            AI 推荐：<strong>{{ stylePresetSuggestion.label }}</strong>
+            <template v-if="stylePresetSuggestion.reason"> —— {{ stylePresetSuggestion.reason }}</template>
+            （已帮你选中；点「应用」才会写进 Bible）
+          </template>
+          <template v-else-if="stylePresetSuggestion.assessed">
+            AI 认为现有预设都不合适：{{ stylePresetSuggestion.reason }}
+          </template>
+          <template v-else>
+            没能判断出合适的预设：{{ stylePresetSuggestion.reason }}
+          </template>
+        </n-alert>
+        <StylePresetSelector v-model="selectedStylePresetValue" />
+      </n-space>
       <template #footer>
         <n-space justify="end" :size="8">
+          <n-button :loading="suggestingStylePreset" @click="requestStylePresetSuggestion">AI 推荐</n-button>
           <n-button @click="showStylePresetModal = false">取消</n-button>
           <n-button type="primary" :loading="saving" @click="applyStylePreset">应用</n-button>
         </n-space>
@@ -192,7 +218,7 @@ import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { DocumentTextOutline, LockClosedOutline, BookmarkOutline } from '@vicons/ionicons5'
 import { bibleApi } from '../../api/bible'
-import type { CharacterDTO, LocationDTO, TimelineNoteDTO, StyleNoteDTO } from '../../api/bible'
+import type { CharacterDTO, LocationDTO, TimelineNoteDTO, StyleNoteDTO, StylePresetSuggestion } from '../../api/bible'
 import { knowledgeApi } from '../../api/knowledge'
 import { MARKET_STYLE_PRESETS, getMarketStylePresetIcon, matchPresetValue } from '@/constants/marketStylePresets'
 import { novelApi } from '@/api/novel'
@@ -229,6 +255,9 @@ const jsonRaw = ref('')
 const showJsonModal = ref(false)
 const showStylePresetModal = ref(false)
 const selectedStylePresetValue = ref('')
+/** J-02：AI 的文风预设推荐（只推荐，写不写由作者点「应用」决定） */
+const stylePresetSuggestion = ref<StylePresetSuggestion | null>(null)
+const suggestingStylePreset = ref(false)
 const saving = ref(false)
 const generating = ref(false)
 const premiseLock = ref('')
@@ -571,7 +600,45 @@ const generateBible = async () => {
 const openStylePresetModal = () => {
   const currentValue = matchPresetValue(state.value.style_notes)
   selectedStylePresetValue.value = currentValue || MARKET_STYLE_PRESETS[0]?.value || 'xianxia_hot'
+  stylePresetSuggestion.value = null
   showStylePresetModal.value = true
+}
+
+/**
+ * J-02：让 AI 按题材**推荐**一个文风预设。
+ *
+ * ⚠ **只推荐、不写库**：命中时只是把选择器**预选**到那个预设，
+ *   真正写进 Bible 仍然要作者点「应用」。
+ * ⚠ **AI 说「都不匹配」时清空选择**：否则选择器里预选着的还是第一个预设，
+ *   作者顺手一点「应用」就把不合适的公约套上了 —— 那是「AI 说不合适，
+ *   但界面还是替作者选好了」的假出口。
+ */
+const requestStylePresetSuggestion = async () => {
+  suggestingStylePreset.value = true
+  stylePresetSuggestion.value = null
+  try {
+    const res = await bibleApi.suggestStylePreset(props.slug)
+    stylePresetSuggestion.value = res
+    if (res.matched && res.value) {
+      selectedStylePresetValue.value = res.value
+      message.success(`AI 推荐：${res.label}`)
+    } else if (res.assessed) {
+      selectedStylePresetValue.value = ''
+      message.warning(res.reason || 'AI 认为现有预设都不合适')
+    } else {
+      selectedStylePresetValue.value = ''
+      message.warning(res.reason || '没能判断出合适的文风预设')
+    }
+  } catch (e: unknown) {
+    message.error(formatApiError(e, 'AI 推荐文风预设失败'))
+  } finally {
+    suggestingStylePreset.value = false
+  }
+}
+
+const openStylePresetModalAndSuggest = async () => {
+  openStylePresetModal()
+  await requestStylePresetSuggestion()
 }
 
 const applyStylePreset = async () => {

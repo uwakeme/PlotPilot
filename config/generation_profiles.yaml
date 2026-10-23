@@ -154,6 +154,12 @@ act_volume_placement:
   max_tokens: 800
   temperature: 0.2
 
+# J-02：文风预设语义匹配。判读题 ⇒ 温度低（要稳）。
+style_preset_match:
+  extends: base_generation_profile
+  max_tokens: 500
+  temperature: 0.2
+
 character_context_selection:
   extends: base_generation_profile
   max_tokens: 3000

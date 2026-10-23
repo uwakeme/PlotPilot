@@ -22,6 +22,11 @@ const targets = [
     out: resolve(repoRoot, 'frontend/src/domain/worldbuilding/contract.bundle.json'),
     label: 'worldbuilding-contract',
   },
+  {
+    src: resolve(repoRoot, 'shared/taxonomy/style_presets_cn_v1.yaml'),
+    out: resolve(repoRoot, 'frontend/src/domain/style/presets.bundle.json'),
+    label: 'style-presets',
+  },
 ]
 
 const bannedTaxonomyPhrases = [
