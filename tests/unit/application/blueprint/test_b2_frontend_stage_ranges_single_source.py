@@ -163,7 +163,24 @@ def test_frontend_does_not_fabricate_ranges_when_missing():
       - 括号/下标赋值 ``next['chapter_start'] = …``
       - 点号赋值 ``next.chapter_start = …``
     ⇒ 任何一处「从别处算出来的」赋值都会被抓。
+
+    ⚠ 第 3 批四次复审：上一版**声称 4 种、实际只支持 2 种** ——
+    「读 vs 写」靠「prefix 以 ``.`` 结尾 ⇒ 判为读」这个启发式，
+    于是 ``next.chapter_start = 5`` 被当成**读**而放行；
+    而 ``next['chapter_start'] = 5`` 压根不匹配（后面是 ``']`` 不是 ``[:=]``）。
+    ⇒ 现在改用**分隔符**判断：
+      - ``=`` ⇒ 一定是**写**（赋值）；
+      - ``:`` ⇒ 对象字面量属性（写）或 TS 类型标注（不是写）；
+      - 三元表达式里的**读**（``? stage.chapter_start : undefined``）靠
+        「同一行前面出现过 ``?``」排除。
+
+    ⚠ **这四种形态是实测过的，不是声称的**：
+    第 3 批四次复审指出上一版「声称 4 种、实际只支持 2 种」
+    ⇒ 现在用真实代码注入 4 种写法逐个验证（变异脚本
+    ``_mut_s6_forms.py``）：4 种**全部被抓住**。
+    ⇒ 改这份清单前，**先跑那个变异脚本**，别再写一个没验证过的清单。
     """
+
     import re
 
     # 允许的赋值形态（只允许「原样透传」与「留空」）
@@ -181,9 +198,14 @@ def test_frontend_does_not_fabricate_ranges_when_missing():
     )
 
     # 匹配「给 chapter_start/chapter_end 赋值」的各种形态。
-    # ⚠ 前置的负向断言 ⇒ ``estimated_chapter_start`` 这类**同后缀**名字不算。
+    # - 前置负向断言 ⇒ ``estimated_chapter_start`` 这类**同后缀**名字不算；
+    # - ``(?:['\"]\]\s*)?`` ⇒ 支持下标写法 ``next['chapter_start'] = …``
+    #   （注意是 **引号 + 右方括号**，不是 ``[']`` —— 那是键在括号外的另一种写法）；
+    # - 分隔符必须是**单个** ``=`` / ``:`` ⇒ ``===`` / ``==``（比较运算）不算；
+    # - 捕获分隔符 ⇒ 用它区分「写」与「读」。
     assign_re = re.compile(
-        r"(?<![A-Za-z0-9_])chapter_(start|end)\s*[:=]\s*([^,;\n}]+)"
+        r"(?<![A-Za-z0-9_])chapter_(start|end)\b\s*(?:['\"]\]\s*)?"
+        r"(:(?!=)|=(?!=))\s*([^,;\n}]+)"
     )
 
     offenders: list[str] = []
@@ -197,10 +219,12 @@ def test_frontend_does_not_fabricate_ranges_when_missing():
             if "chapter_start" not in stripped and "chapter_end" not in stripped:
                 continue
             for match in assign_re.finditer(stripped):
-                value = match.group(2).strip().rstrip(",")
-                # 读（不是赋值）：``stage.chapter_start``
+                separator = match.group(2)
+                value = match.group(3).strip().rstrip(",")
                 prefix = stripped[: match.start()]
-                if prefix.rstrip().endswith("."):
+                if separator == ":" and "?" in prefix:
+                    # 三元表达式里的**读**：``? stage.chapter_start : 0``
+                    # （``:`` 前面出现过 ``?`` ⇒ 这个 ``:`` 是三元运算符的值槽）
                     continue
                 if not allowed_value.match(value):
                     offenders.append(f"{rel}: {stripped}")
