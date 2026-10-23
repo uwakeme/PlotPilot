@@ -246,7 +246,26 @@ def test_the_slot_is_compressible_not_critical():
     src = _func_source(ALLOCATOR_REL, "_collect_all_slots")
     idx = src.find('slots["emotion_ledger"]')
     assert idx > 0
-    block = src[idx : idx + 400]
+    # ⚠ 取**整个 ContextSlot(...) 块**，不用固定字符窗口 ——
+    # 固定窗口会被注释长度顶掉（踩过一次：加了段说明注释后
+    # ``max_tokens=`` 正好被挤出 400 字符窗口 ⇒ 守卫假红）。
+    # ⚠ 也不能用 ``find(")")`` 找结尾 —— ``name="情绪账本(EMOTION_LEDGER)"``
+    # 里就有括号（踩了第二次）⇒ 要**配平**地找。
+    open_at = src.find("ContextSlot(", idx)
+    assert open_at > idx, "没找到 emotion_ledger 的 ContextSlot("
+    depth = 0
+    end = -1
+    for pos in range(open_at, len(src)):
+        ch = src[pos]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = pos
+                break
+    assert end > open_at, "ContextSlot(...) 的右括号没配平"
+    block = src[idx : end + 1]
     assert "PriorityTier.T1_COMPRESSIBLE" in block
     assert "max_tokens=" in block
 

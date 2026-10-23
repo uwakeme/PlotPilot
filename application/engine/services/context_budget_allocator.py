@@ -682,7 +682,14 @@ class ContextBudgetAllocator:
             tier=PriorityTier.T1_COMPRESSIBLE,
             content=emotion_ledger_content,
             tokens=self.estimate_tokens(emotion_ledger_content),
-            max_tokens=400,
+            # G-04-a：400 → 1000。
+            # ⚠ 此前 400 只是**兜底**（真正的口径在别处，而「别处」当时是**无界**的
+            #   —— open_loops 全部打印 ⇒ 注入长度随未回收悬念线性增长 ⇒ 到点被砍一刀，
+            #   而砍掉的是「已埋但还没回收的线」⇒ 静默丢失）。
+            # ⇒ 现在注入长度由**账本自己的口径**（INJECT_ITEMS_PER_CATEGORY）决定，
+            #   满量约 700 token（最坏情况）⇒ 这个上限只作**兜底**，
+            #   不再是「口径之外又被砍一刀」的那个刀。
+            max_tokens=1000,
             priority=66,
         )
 

@@ -103,6 +103,24 @@ class OpenLoop:
 #: 留**最新**、丢最旧；被丢的条数记在 ``trimmed_items``（**不许静默**）。
 MAX_ITEMS_PER_CATEGORY = 20
 
+#: G-04-a：**注入侧**的口径 —— 每类最多注入多少条。
+#:
+#: ⚠ 此前「注入长度」完全由外部预算决定：
+#:   - ``to_t0_section()`` 里 wounds/boons/power_shifts 各取最近 3/3/2 条，
+#:     但 **open_loops 全部打印**（``add_open_loop`` 的 docstring 明说
+#:     「未回收的悬念不能因为上限而消失」）⇒ 注入长度随未回收悬念**线性增长**；
+#:   - 唯一的兜底是槽位的 ``max_tokens=400`` ⇒ 到点就被砍一刀，
+#:     而砍掉的是「已埋但还没回收的线」⇒ **静默丢失**。
+#:
+#: ⇒ 现在：**账本自己定口径**（这里是独立预算口径的落点），
+#:   每类注入条数有界；``open_loops`` 超量时**保留最新**并**明说**裁了多少
+#:   （模型与作者都看得见「还有几条没列出来」）。
+#:
+#: ⚠ 注意与 ``MAX_ITEMS_PER_CATEGORY`` 的区别：那是**写入侧**的规模上限
+#:   （账本里最多存多少条），这个是**注入侧**的展示口径（一次给模型看多少条）。
+#: ⇒ 两者独立：写得进 ≠ 一次全给。
+INJECT_ITEMS_PER_CATEGORY = 5
+
 
 def coerce_urgency(value: Any) -> Optional[float]:
     """模型给的紧迫度**原样保留**；读不出数字 ⇒ **未评估**（None）。
@@ -125,6 +143,20 @@ def _trim_to_cap(items: list) -> tuple[list, int]:
     return (
         items[-MAX_ITEMS_PER_CATEGORY:],
         len(items) - MAX_ITEMS_PER_CATEGORY,
+    )
+
+
+def _trim_for_injection(items: list) -> tuple[list, int]:
+    """按**注入口径**裁剪（留最新），返回 (裁剪后, 被丢条数)。
+
+    G-04-a：与 :func:`_trim_to_cap`（**写入侧**规模上限）不同 ——
+    这个管**一次给模型看多少条**。
+    """
+    if len(items) <= INJECT_ITEMS_PER_CATEGORY:
+        return items, 0
+    return (
+        items[-INJECT_ITEMS_PER_CATEGORY:],
+        len(items) - INJECT_ITEMS_PER_CATEGORY,
     )
 
 
@@ -215,16 +247,37 @@ class EmotionLedger:
         )
 
     def to_t0_section(self) -> str:
-        """生成T0层情绪账本注入内容"""
+        """生成T0层情绪账本注入内容。
+
+        ⚠ G-04-a：此前**注入长度不受账本自己控制** ——
+        wounds/boons/power_shifts 各取最近 3/3/2 条，但 **open_loops 全部打印**
+        ⇒ 注入长度随未回收悬念**线性增长**，
+        唯一的兜底是槽位 ``max_tokens=400`` ⇒ 到点被砍一刀，
+        而砍掉的是「已埋但还没回收的线」⇒ **静默丢失**。
+
+        ⇒ 现在按**注入口径**（``INJECT_ITEMS_PER_CATEGORY``）逐类裁剪，
+        并且**明说**裁了多少 ⇒ 模型与作者都看得见「还有几条没列出来」。
+
+        ⚠ 口径只管**展示**，不管**存储**：
+        ``add_open_loop`` 仍然不裁剪（未回收的线不能因为上限而消失），
+        写侧上限是另一个常量（``MAX_ITEMS_PER_CATEGORY``）。
+        """
         lines = ["[情绪账本]"]
-        for w in self.wounds[-3:]:  # 最近3个创伤
-            lines.append(w.to_summary_line())
-        for b in self.boons[-3:]:
-            lines.append(b.to_summary_line())
-        for ps in self.power_shifts[-2:]:
-            lines.append(ps.to_summary_line())
-        for ol in self.open_loops:
-            lines.append(ol.to_summary_line())
+        for label, items, render in (
+            ("创伤", self.wounds, lambda x: x.to_summary_line()),
+            ("获得", self.boons, lambda x: x.to_summary_line()),
+            ("势能变化", self.power_shifts, lambda x: x.to_summary_line()),
+            ("未解悬念", self.open_loops, lambda x: x.to_summary_line()),
+        ):
+            kept, dropped = _trim_for_injection(items)
+            for item in kept:
+                lines.append(render(item))
+            if dropped:
+                # 不许静默：明说还剩几条没列出来
+                lines.append(
+                    f"（{label}共 {len(items)} 条，此处按注入口径只列最近 {len(kept)} 条，"
+                    f"另有 {dropped} 条未列）"
+                )
         return "\n".join(lines)
 
     def to_chapter_summary(self) -> str:
