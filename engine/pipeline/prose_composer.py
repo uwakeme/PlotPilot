@@ -13,6 +13,7 @@ from application.engine.services.prose_context_settings import (
     get_prose_context_runtime_settings,
     prose_context_total_cap,
 )
+from application.core.chapter_target_limits import resolve_chapter_words
 from infrastructure.ai.prompt_keys import CHAPTER_PROSE_GENERATION
 from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
 
@@ -112,7 +113,7 @@ class ChapterProseInvocationComposer:
                 )
 
         return {
-            "target_words": int(request.target_words or 2500),
+            "target_words": resolve_chapter_words(request.target_words),
             "chapter_outline": request.outline,
             "continuity_context": continuity_context,
             "chapter_context": chapter_context,

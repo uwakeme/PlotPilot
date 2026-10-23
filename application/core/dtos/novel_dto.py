@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime
 
+from application.core.chapter_target_limits import resolve_chapter_words
+
 if TYPE_CHECKING:
     from domain.novel.entities.novel import Novel
     from domain.novel.entities.chapter import Chapter
@@ -155,6 +157,8 @@ class NovelDTO:
             locked_pacing_control=gp_locked_pacing_control,
             locked_writing_style=gp_locked_writing_style,
             locked_special_requirements=gp_locked_special_requirements,
-            target_words_per_chapter=int(getattr(novel, "target_words_per_chapter", 2500) or 2500),
+            target_words_per_chapter=resolve_chapter_words(
+            getattr(novel, "target_words_per_chapter", None)
+        ),
             generation_prefs=gp_dict,
         )

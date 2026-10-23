@@ -22,6 +22,7 @@ from application.engine.services.shared_state_repository import (
     ChapterSummary,
     get_shared_state_repository,
 )
+from application.core.chapter_target_limits import resolve_chapter_words
 from application.ai_invocation.autopilot.review_gate import (
     INVOCATION_FAILED_STATUSES,
     PENDING_INVOCATION_STATUSES,
@@ -534,8 +535,12 @@ class QueryService:
                 current_auto_chapters=novel_row['current_auto_chapters'] or 0,
                 max_auto_chapters=9999,
                 target_chapters=target_chapters,
-                target_words_per_chapter=novel_row['target_words_per_chapter'] or 2500,
-                target_plan_total_words=target_chapters * (novel_row['target_words_per_chapter'] or 2500),
+                target_words_per_chapter=resolve_chapter_words(
+            novel_row['target_words_per_chapter']
+        ),
+                target_plan_total_words=target_chapters * resolve_chapter_words(
+            novel_row['target_words_per_chapter']
+        ),
                 last_chapter_tension=last_tension,
                 consecutive_error_count=novel_row['consecutive_error_count'] or 0,
                 total_words=total_words,

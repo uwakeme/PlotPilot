@@ -173,6 +173,15 @@ async def schedule_characters(
                 chapter_number=request.current_chapter,
                 outline=request.outline,
                 max_characters=request.max_characters,
+                # G-05：此前**不传** scene_director ⇒ 内核拿不到「本章明确出场名单」
+                # ⇒ 这条路**永远走正则兜底**（正则贪婪，会把已册角色粘成噪声）。
+                # ⚠ ``mentioned_names``（大纲中明确提到的角色名）就是那份名单
+                #   ⇒ 传进去即可，不需要新建 AI 通道。
+                scene_director=(
+                    {"characters": list(request.mentioned_names)}
+                    if request.mentioned_names
+                    else None
+                ),
             )
             selected_outputs = [
                 CharacterOutput(

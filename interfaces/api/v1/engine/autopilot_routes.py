@@ -20,6 +20,7 @@ from application.core.chapter_target_limits import (
     CHAPTER_TARGET_WORDS_MAX,
     CHAPTER_TARGET_WORDS_MIN,
     clamp_chapter_target_words,
+    resolve_chapter_words,
 )
 from infrastructure.persistence.database.story_node_repository import StoryNodeRepository
 from infrastructure.persistence.database.sqlite_pragmas import (
@@ -371,7 +372,7 @@ def _build_fallback_status(novel) -> Dict[str, Any]:
     前端不会卡死（至少能看到「审计中」和 audit_progress）。
     """
     target = novel.target_chapters or 1
-    twpc = getattr(novel, "target_words_per_chapter", None) or 2500
+    twpc = resolve_chapter_words(getattr(novel, "target_words_per_chapter", None))
     lacn = getattr(novel, "last_audit_chapter_number", None)
     # 张力三态：None = 未评估，0 = 评估过且张力为 0。
     # 压成 0 会让前端把「没打过分」渲染成「张力 0」，
@@ -556,7 +557,11 @@ def _build_autopilot_status_sync(novel_id: str) -> Optional[Dict[str, Any]]:
                 novel[key] = shared.get(key)
 
     target = (novel.get("target_chapters") if isinstance(novel, dict) else novel.target_chapters) or 1
-    twpc = (novel.get("target_words_per_chapter") if isinstance(novel, dict) else getattr(novel, "target_words_per_chapter", None)) or 2500
+    twpc = resolve_chapter_words(
+        novel.get("target_words_per_chapter")
+        if isinstance(novel, dict)
+        else getattr(novel, "target_words_per_chapter", None)
+    )
 
     lacn = novel.get("last_audit_chapter_number") if isinstance(novel, dict) else getattr(novel, "last_audit_chapter_number", None)
     # 张力三态：None = 未评估，0 = 评估过且张力为 0（见 L376 处的说明）。
@@ -734,7 +739,7 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
     progress_count = max(completed_count, manuscript_count, current_auto_count)
     total_words = shared.get("_cached_total_words", 0)
     target = shared.get("target_chapters", 1) or 1
-    twpc = shared.get("target_words_per_chapter", 2500) or 2500
+    twpc = resolve_chapter_words(shared.get("target_words_per_chapter"))
     stage = shared.get("current_stage", "writing")
 
     return with_review_gate({
@@ -883,7 +888,7 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         )
         if row:
             target = row["target_chapters"] or 1
-            twpc = row["target_words_per_chapter"] or 2500
+            twpc = resolve_chapter_words(row["target_words_per_chapter"])
             autopilot_status = row["autopilot_status"] or "stopped"
             auto_approve_mode = bool(row["auto_approve_mode"])
             consecutive_error_count = row["consecutive_error_count"] or 0
@@ -900,7 +905,7 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         auto_approve_mode = shared.get("auto_approve_mode", False)
         consecutive_error_count = shared.get("consecutive_error_count", 0)
         target = shared.get("target_chapters", 1) or 1
-        twpc = shared.get("target_words_per_chapter", 2500) or 2500
+        twpc = resolve_chapter_words(shared.get("target_words_per_chapter"))
         completed_count = int(shared.get("_cached_completed_chapters", 0) or 0)
         in_manuscript_count = int(shared.get("_cached_manuscript_chapters", 0) or 0)
         total_words = shared.get("_cached_total_words", 0)
@@ -1429,7 +1434,7 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
         current_chapter_in_act = shared.get("current_chapter_in_act", 0) or 0
         current_beat_index = int(shared.get("current_beat_index", 0) or 0)
         resolved_tc = int(shared.get("target_chapters", 1) or 1)
-        resolved_twpc = int(shared.get("target_words_per_chapter") or 2500)
+        resolved_twpc = resolve_chapter_words(shared.get("target_words_per_chapter"))
 
         # 计算下一阶段
         fresh_stages = {"planning", "macro_planning"}
@@ -1452,7 +1457,9 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
                 "current_chapter_in_act": n.current_chapter_in_act or 0,
                 "current_beat_index": getattr(n, "current_beat_index", 0) or 0,
                 "target_chapters": n.target_chapters or 1,
-                "target_words_per_chapter": getattr(n, "target_words_per_chapter", None) or 2500,
+                "target_words_per_chapter": resolve_chapter_words(
+                getattr(n, "target_words_per_chapter", None)
+            ),
             }
 
         try:
@@ -1471,7 +1478,7 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
         current_chapter_in_act = novel_data["current_chapter_in_act"]
         current_beat_index = int(novel_data.get("current_beat_index") or 0)
         resolved_tc = int(novel_data["target_chapters"])
-        resolved_twpc = int(novel_data.get("target_words_per_chapter") or 2500)
+        resolved_twpc = resolve_chapter_words(novel_data.get("target_words_per_chapter"))
 
         fresh_stages = {"planning", "macro_planning"}
         if current_stage_str in fresh_stages:
@@ -1816,7 +1823,9 @@ async def resume_from_review(novel_id: str):
                 current_act=current_act,
                 max_auto_chapters=getattr(novel, "max_auto_chapters", 9999) or 9999,
                 target_chapters=novel.target_chapters or 1,
-                target_words_per_chapter=getattr(novel, "target_words_per_chapter", None) or 2500,
+                target_words_per_chapter=resolve_chapter_words(
+            getattr(novel, "target_words_per_chapter", None)
+        ),
             )
             logger.info("autopilot resume: novel_id=%s persisted (DB)", novel_id)
         except Exception as e:

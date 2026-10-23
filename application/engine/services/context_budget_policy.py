@@ -25,15 +25,70 @@ def _mark_truncated(content: str, target_chars: int) -> str:
     return content[:target_chars].rstrip() + TRUNCATION_MARKER
 
 
+def cap_slots_by_own_limit(
+    slots: Dict[str, ContextSlot],
+    *,
+    chars_per_token_zh: float,
+) -> int:
+    """把每个槽位裁到**它自己的** ``max_tokens``；返回被裁的槽位数。
+
+    S-06a：T0 路径此前**从不查** ``max_tokens`` ⇒ V9 给每个 T0 槽位写的上限
+    （fact_lock 1500 / character_anchors 1500 / context_brief 800 …，合计 8320）
+    **形同虚设** ⇒ T0 能涨到 6 万 token。
+
+    ⇒ 这里把那个上限**真正生效**（T1/T2/T3 走 ``allocate_tier`` 时本来就会用
+    ``max_tokens``，只有 T0 漏了 ⇒ 两套口径 ⇒ **同一逻辑写两份**）。
+
+    ⚠ 裁剪后**必须带说明**（S-06）—— 这些内容会进模型可见上下文。
+    """
+    capped = 0
+    for slot in slots.values():
+        if not slot.max_tokens or slot.max_tokens <= 0:
+            continue
+        if slot.tokens <= slot.max_tokens:
+            continue
+        target_chars = int(slot.max_tokens * chars_per_token_zh)
+        slot.content = _mark_truncated(slot.content, target_chars)
+        slot.tokens = slot.max_tokens
+        capped += 1
+    return capped
+
+
 def truncate_t0_slots(
     t0_slots: Dict[str, ContextSlot],
     budget: int,
     *,
     chars_per_token_zh: float,
 ) -> int:
-    """Keep T0 slots in insertion order and truncate the first overflowing slot."""
+    """把 T0 槽位裁进预算，**按插入顺序**。
+
+    ⚠ S-06（记账修正）：本函数此前**只**裁剪**第一个**溢出的槽位就 ``break``，
+    其后的 T0 槽位**原封不动且不计入 total** ⇒
+    ① 账面 ``total`` 严重低估 T0 真实用量；
+    ② 最终上下文可大幅超预算（实测：budget=200 / a=100 / b=5000 / c=3000
+    ⇒ 返回 200，实际内容 100 + 100 + **3000**）。
+
+    ⇒ 现在分两步：
+    1. **每个槽位先按自己的 ``max_tokens`` 裁**（V9 给每个槽位都写了上限：
+       lifecycle_directive 600 / story_anchor 300 / narrative_promise 420 /
+       narrative_contract 1400 / fact_lock 1500 / character_anchors 1500 /
+       context_brief 800 / evolution_presenter 1200 / act_summary 600
+       ⇒ T0 合计上限 **8320 tokens**）——
+       ⚠ 这些上限此前**从未生效**（T0 路径不查 ``max_tokens``），
+       这是「T0 无限膨胀」的根因；
+    2. 若裁完仍超 ``budget``，再按插入顺序裁到装得下（**且如实计入 total**）。
+
+    ⇒ 正常情况下第 1 步就够了（T0 上限 8320 < 40% 总预算 14000）
+    ⇒ 40% 动态阈值保护退化为**兜底**，而不再是唯一防线。
+    """
     total = 0
+    # ── 第 1 步：按槽位自己的上限裁（幂等，重复裁无副作用） ──────────
+    # ⚠ 放在这里而不是只在调用方做 ⇒ **谁调用本函数都先按各自上限裁**
+    #   （否则直接调用它的路径会漏掉这一步）。
+    cap_slots_by_own_limit(t0_slots, chars_per_token_zh=chars_per_token_zh)
+
     for slot in t0_slots.values():
+        # ── 第 2 步：按总量预算裁（插入顺序，装得下就装） ───────────
         if total + slot.tokens <= budget:
             total += slot.tokens
             continue
@@ -44,7 +99,10 @@ def truncate_t0_slots(
             slot.content = _mark_truncated(slot.content, target_chars)
             slot.tokens = remaining
             total += remaining
-        break
+        else:
+            # 装不下了 ⇒ 舍弃（与 allocate_tier 的口径一致），**并计入 total**。
+            slot.content = ""
+            slot.tokens = 0
     return total
 
 

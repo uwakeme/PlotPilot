@@ -4,7 +4,11 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Optional, Tuple
 
-from application.core.chapter_target_limits import clamp_chapter_target_words
+from application.core.chapter_target_limits import (
+    clamp_chapter_target_words,
+    resolve_chapter_words,
+)
+from application.blueprint.services.target_budget import DEFAULT_TARGET_CHAPTERS
 
 # 档位 id → 约总字数（规划目标，非公证成稿字数）
 V1_LENGTH_TIERS: Dict[str, Dict[str, Any]] = {
@@ -50,9 +54,16 @@ def resolve_v1_length_params(
         chapters = max(1, math.ceil(total / wpc))
         return chapters, wpc, tier
 
-    tc = target_chapters if target_chapters and target_chapters > 0 else 100
-    tw = target_words_per_chapter if target_words_per_chapter and target_words_per_chapter > 0 else 2500
-    tw = clamp_chapter_target_words(tw)
+    # I-05（补）：两处兜底原先是**手写字面量**（100 / 2500）⇒
+    # 与 `target_budget.DEFAULT_TARGET_CHAPTERS` / `DEFAULT_CHAPTER_WORDS`
+    # 是**第二份副本**（第 4 批的 I-05 收口漏了这一处）。
+    # ⇒ 现在统一引用常量（**值不变** ⇒ 逐位一致）。
+    tc = (
+        target_chapters
+        if target_chapters and target_chapters > 0
+        else DEFAULT_TARGET_CHAPTERS
+    )
+    tw = resolve_chapter_words(target_words_per_chapter)
     return tc, tw, None
 
 

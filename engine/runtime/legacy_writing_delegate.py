@@ -24,6 +24,7 @@ from engine.runtime.target_reached_gate import (
     TARGET_REACHED_PAUSE_REASON,
     resolve_target_reached,
 )
+from application.core.chapter_target_limits import resolve_chapter_words
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,9 @@ async def run_legacy_writing(host: "DaemonHostProtocol", novel: Novel) -> None:
             f"确保读者在喘息中依然保持期待，而不是「聊天喝茶」式断裂。"
         )
 
-    target_word_count = int(getattr(novel, "target_words_per_chapter", None) or 2500)
+    target_word_count = resolve_chapter_words(
+        getattr(novel, "target_words_per_chapter", None)
+    )
     logger.info(f"[{novel.novel_id}] 开始写第 {chapter_num} 章：{outline[:60]}...")
     logger.info(f"[{novel.novel_id}]    进度: {current_chapters}/{target_chapters} 章（目标 {target_word_count} 字/章）")
 

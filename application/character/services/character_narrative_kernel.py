@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from dataclasses import asdict
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from application.character.dtos.character_narrative import (
     CastSlot,
@@ -362,12 +362,31 @@ class CharacterNarrativeKernel:
             explicit = [str(x).strip() for x in scene_director["characters"] if str(x).strip()]
         # G-05：顺序 = 显式名单（AI 给的）在前，正则候选按**出现顺序**在后。
         # ⚠ 此前是 set + sorted() ⇒ **字典序** ⇒ 截断时真名可能被噪声挤掉。
+        #
+        # G-05（补）：候选若**包含已知名**，一律丢弃。
+        # ⚠ 兜底正则 ``re.findall(r"[一-龥]{2,4}", outline)`` 是**贪婪**的
+        #   （``{2,4}`` 优先吃满 4 字）⇒ 大纲「林风遇见沈照」会被切成
+        #   ``林风遇见`` + ``沈照`` ⇒ **已在册角色**「林风」变成了候选
+        #   「林风遇见」⇒ 已册角色被当成新角色重新提出。
+        #
+        # ⇒ 现在：候选里**含有**任何已知名（角色/地点）的，直接丢弃。
+        #
+        # ⚠ **不改贪婪度、不改扫描范围** —— 只减不增：
+        #   - 「沈照」这种真名**照常**被提取（它不含已知名）；
+        #   - 非贪婪 ``{2,4}?`` 会把一切切成 2 字块（「欧阳修在此」→「欧阳」「修在」）
+        #     ⇒ **复姓碎裂**，所以**不能**那样改；
+        #   - 新角色的贪婪问题要靠 AI NER 名单优先（``scene_director``），
+        #     那是另一条路。
         ordered: List[str] = []
         seen: set = set()
         for name in list(explicit) + (re.findall(r"[一-龥]{2,4}", outline) if outline else []):
-            if name and name not in seen:
-                seen.add(name)
-                ordered.append(name)
+            if not name or name in seen:
+                continue
+            # 含已知名 ⇒ 是「已知名 + 噪声」的粘连，不是新角色
+            if any(known in name for known in (known_names | set(location_names))):
+                continue
+            seen.add(name)
+            ordered.append(name)
 
         out: List[NewCharacterCandidate] = []
         for name in ordered:

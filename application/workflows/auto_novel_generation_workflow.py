@@ -10,6 +10,7 @@ from application.engine.services.context_builder import (
     ContextBuilder,
     DEFAULT_CONTEXT_MAX_TOKENS,
 )
+from application.core.chapter_target_limits import resolve_chapter_words
 from application.analyst.services.state_extractor import StateExtractor
 from application.analyst.services.state_updater import StateUpdater
 from application.audit.services.conflict_detection_service import ConflictDetectionService
@@ -491,7 +492,7 @@ class AutoNovelGenerationWorkflow:
         try:
             novel = self.context_builder.novel_repository.get_by_id(NovelId(novel_id))
             if novel is not None:
-                w = int(getattr(novel, "target_words_per_chapter", 2500) or 2500)
+                w = resolve_chapter_words(getattr(novel, "target_words_per_chapter", None))
                 return clamp_chapter_target_words(w)
         except Exception as e:
             logger.debug("读取 target_words_per_chapter 失败，使用默认 2500: %s", e)

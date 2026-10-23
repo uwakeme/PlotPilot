@@ -20,6 +20,7 @@ from domain.ai.services.llm_service import LLMService, GenerationConfig
 from application.ai.trace_context import ensure_trace
 from domain.ai.value_objects.prompt import Prompt
 from application.engine.services.context_builder import ContextBuilder
+from application.core.chapter_target_limits import resolve_chapter_words
 from application.engine.services.background_task_service import BackgroundTaskService, TaskType
 from application.workflows.auto_novel_generation_workflow import AutoNovelGenerationWorkflow
 from application.engine.services.chapter_aftermath_pipeline import ChapterAftermathPipeline
@@ -228,7 +229,7 @@ class DaemonHostMixin:
             "current_beat_index": novel.current_beat_index or 0,
             "current_auto_chapters": novel.current_auto_chapters or 0,
             "target_chapters": novel.target_chapters or 0,
-            "target_words_per_chapter": novel.target_words_per_chapter or 2500,
+            "target_words_per_chapter": resolve_chapter_words(novel.target_words_per_chapter),
             "consecutive_error_count": novel.consecutive_error_count or 0,
             # 不加 `or 0`：`last_chapter_tension` 现为 Optional，None = 从未评估，
             # 压成 0 会让「没测过」在下游读成「张力 0」
@@ -745,7 +746,9 @@ class DaemonHostMixin:
                 autopilot_status=novel.autopilot_status.value,
                 consecutive_error_count=novel.consecutive_error_count or 0,
                 target_chapters=novel.target_chapters,
-                target_words_per_chapter=getattr(novel, 'target_words_per_chapter', 2500) or 2500,
+                target_words_per_chapter=resolve_chapter_words(
+                getattr(novel, 'target_words_per_chapter', None)
+            ),
                 auto_approve_mode=getattr(novel, 'auto_approve_mode', False),
                 # 不用 `or 0`：`or` 会把合法的 0 与「没这个字段」压成同一个值 ——
                 # 这里显式区分 None（该小说还没有张力数据）。

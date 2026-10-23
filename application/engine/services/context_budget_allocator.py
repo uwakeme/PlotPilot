@@ -43,6 +43,7 @@ from application.engine.services.context_budget_models import (
 )
 from application.engine.services.context_budget_policy import (
     allocate_tier,
+    cap_slots_by_own_limit,
     truncate_t0_slots,
 )
 from application.engine.services.context_brief import (
@@ -297,12 +298,30 @@ class ContextBudgetAllocator:
         
         # ========== 第二步：计算 T0 强制保留量 ==========
         t0_slots = {name: slot for name, slot in slots.items() if slot.tier == PriorityTier.T0_CRITICAL}
-        t0_total = sum(slot.tokens for slot in t0_slots.values())
-        
+
         # Phase 2: T0 动态阈值保护 — T0 最多占 40% 总预算
         # 防止伏笔/角色等 T0 内容无限膨胀挤占 T2/T3
         T0_MAX_RATIO = 0.40
         t0_max = int(total_budget * T0_MAX_RATIO)
+
+        # S-06a：先把每个 T0 槽位裁到**它自己的** max_tokens
+        # （V9 给每个 T0 槽位都写了上限：合计 8320 tokens）。
+        # ⚠ 此前 T0 路径**从不查** max_tokens ⇒ 那些上限形同虚设
+        #    ⇒ T0 才能涨到 6 万 token（fact_lock 独占大头）。
+        # ⇒ 这一步让「T0 最多占 40%」从**唯一防线**变回**兜底**，
+        #    同时让下面的账面数字**真实**。
+        t0_capped = self._cap_t0_slots_by_own_limit(t0_slots)
+        t0_total = sum(slot.tokens for slot in t0_slots.values())
+        if t0_capped:
+            allocation.compression_log.append(
+                f"T0 槽位按各自上限裁剪（{t0_capped} 个）：合计 {t0_total} tokens"
+            )
+            logger.warning(
+                "T0 槽位超出各自 max_tokens，已按上限裁剪（%s 个槽位，合计 %s tokens）",
+                t0_capped,
+                t0_total,
+            )
+
         if t0_total > t0_max:
             logger.warning(
                 f"T0 内容 {t0_total} tokens 超出动态阈值 {t0_max} ({T0_MAX_RATIO:.0%} 总预算)，"
@@ -310,13 +329,13 @@ class ContextBudgetAllocator:
             )
             t0_total = self._truncate_t0_slots(t0_slots, t0_max)
             allocation.compression_log.append(f"T0 动态阈值保护：截断至 {T0_MAX_RATIO:.0%} 总预算")
-        
+
         if t0_total > total_budget:
             # 极端情况：T0 超出总预算，只能截断
             logger.warning(f"T0 强制内容 {t0_total} tokens 超出总预算 {total_budget}")
             allocation.compression_log.append("T0 超预算，强制截断")
             t0_total = self._truncate_t0_slots(t0_slots, total_budget)
-        
+
         allocation.t0_reserved = t0_total
         
         # ========== 第三步：分配剩余预算给 T1/T2/T3 ==========
@@ -823,6 +842,21 @@ class ContextBudgetAllocator:
         return truncate_t0_slots(
             t0_slots,
             budget,
+            chars_per_token_zh=self.CHARS_PER_TOKEN_ZH,
+        )
+
+    def _cap_t0_slots_by_own_limit(self, t0_slots: Dict[str, ContextSlot]) -> int:
+        """S-06a：把每个 T0 槽位裁到**它自己的** ``max_tokens``。
+
+        ⚠ 此前 T0 路径**从不查** ``max_tokens`` ⇒ V9 给每个 T0 槽位写的上限
+        （fact_lock 1500 / character_anchors 1500 / context_brief 800 …，
+        合计 **8320** tokens）**形同虚设** ⇒ T0 能涨到 6 万 token。
+
+        ⇒ 现在那些上限**真正生效**；「T0 最多占 40%」从唯一防线变回**兜底**，
+        账面数字也**真实**了。
+        """
+        return cap_slots_by_own_limit(
+            t0_slots,
             chars_per_token_zh=self.CHARS_PER_TOKEN_ZH,
         )
     

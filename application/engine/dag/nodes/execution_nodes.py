@@ -21,6 +21,7 @@ from application.engine.dag.models import (
     PromptMode,
 )
 from application.engine.dag.registry import BaseNode, NodeRegistry
+from application.core.chapter_target_limits import resolve_chapter_words
 from infrastructure.ai.prompt_keys import (
     ANTI_AI_ALLOWLIST_EXPLAIN,
     ANTI_AI_BEHAVIOR_PROTOCOL,
@@ -311,7 +312,9 @@ class BeatNode(BaseNode):
                 chap = int(chap_raw)
             except (TypeError, ValueError):
                 chap = 1
-            tw_raw = inputs.get("target_chapter_words") or context.get("target_chapter_words") or 2500
+            tw_raw = resolve_chapter_words(
+            inputs.get("target_chapter_words") or context.get("target_chapter_words")
+        )
             try:
                 tw = int(tw_raw)
             except (TypeError, ValueError):
