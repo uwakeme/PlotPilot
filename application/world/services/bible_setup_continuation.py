@@ -11,9 +11,11 @@ from application.ai_invocation.output_binding_resolution import (
 )
 from application.world.dtos.bible_dto import CharacterDTO, LocationDTO, StyleNoteDTO
 from application.world.worldbuilding_schema import validate_complete_dimension_fields
+from application.world.worldbuilding_contract import worldbuilding_dimension_keys
 
 
-WORLDBUILDING_DIMENSION_KEYS = ("core_rules", "geography", "society", "culture", "daily_life")
+# A-06：维度键集改为从**契约**读（此前这里是手写副本之一）。
+WORLDBUILDING_DIMENSION_KEYS = worldbuilding_dimension_keys()
 
 
 def _context_value(context: Mapping[str, Any], key: str, default: Any = None) -> Any:

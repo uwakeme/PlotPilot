@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from application.core.v1_length_tiers import strip_v1_structure_black_box_hint
+from application.world.worldbuilding_contract import (
+    worldbuilding_dimension_keys,
+    worldbuilding_dimension_label,
+)
 from application.ai_invocation.variable_hub import (
     VariableHubRepository,
     VariableWrite,
@@ -284,7 +288,9 @@ class VariableHubBackfillService:
                 display_name="世界观",
                 stage="worldbuilding",
             )
-        for key in ("core_rules", "geography", "society", "culture", "daily_life"):
+        # A-06：维度键集与中文标签都从**契约**读
+        # （此前这里是手写元组 + 另一份手写中文标签表 ⇒ 两份真相）。
+        for key in worldbuilding_dimension_keys():
             value = dimensions.get(key)
             if isinstance(value, Mapping):
                 self._write_missing(
@@ -293,13 +299,7 @@ class VariableHubBackfillService:
                     value=dict(value),
                     context_key=context_key,
                     value_type="object",
-                    display_name={
-                        "core_rules": "核心法则",
-                        "geography": "地理生态",
-                        "society": "社会结构",
-                        "culture": "历史文化",
-                        "daily_life": "沉浸感细节",
-                    }[key],
+                    display_name=worldbuilding_dimension_label(key),
                     stage="worldbuilding",
                 )
 

@@ -7,12 +7,16 @@ from typing import Any, Mapping, Protocol
 from application.ai_invocation.dtos import InvocationSpec, VariableBinding, VariablePlan, stable_hash
 from application.ai_invocation.variable_projection import render_variable_value
 from application.core.v1_length_tiers import strip_v1_structure_black_box_hint
+from application.world.worldbuilding_contract import worldbuilding_dimension_keys
 
 RUNTIME_ONLY_BINDING_SOURCES = frozenset(
     {"runtime_only", "derived_config", "system_template", "prompt_input"}
 )
 SNAPSHOT_EXCLUDED_BINDING_SOURCES = frozenset({"runtime_only", "derived_config", "system_template"})
-WORLD_BUILDING_DIMENSION_KEYS = ("core_rules", "geography", "society", "culture", "daily_life")
+# A-06：维度键集改为从**契约**读（此前这里是手写副本之一）。
+# ⚠ 契约是 SSOT（``shared/taxonomy/worldbuilding_contract_cn_v1.yaml``）⇒
+#   契约一改，这里自动跟着改（此前要改 4 处）。
+WORLD_BUILDING_DIMENSION_KEYS = worldbuilding_dimension_keys()
 VARIABLE_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "novel.title": ("novel.setup.title",),
     "novel.setup.title": ("novel.title",),

@@ -1,9 +1,26 @@
 import type { BibleDTO, StyleNoteDTO } from '@/api/bible'
-import { getDimensionFieldOrder, getWorldbuildingFieldLabel } from '@/domain/worldbuilding/contract'
+import {
+  getDimensionFieldOrder,
+  getWorldbuildingDimensionKeys,
+  getWorldbuildingFieldLabel,
+} from '@/domain/worldbuilding/contract'
 
-export const WB_DIMS = ['core_rules', 'geography', 'society', 'culture', 'daily_life'] as const
+/** A-06：维度键的**字面量联合**（编译期用）。 */
+export type WorldbuildingDimKey =
+  | 'core_rules'
+  | 'geography'
+  | 'society'
+  | 'culture'
+  | 'daily_life'
 
-export type WorldbuildingDimKey = (typeof WB_DIMS)[number]
+/**
+ * A-06：运行时值改为从 **bundle 派生**（此前这里是手写的第二份数组）。
+ * ⚠ 类型联合是字面量（编译期需要），**不保证**与 bundle 一致
+ * ⇒ 由守卫 `tests/unit/application/world/test_a06_worldbuilding_contract_single_source.py`
+ *   断言两者相同。
+ */
+export const WB_DIMS = getWorldbuildingDimensionKeys() as readonly WorldbuildingDimKey[]
+
 export type WorldbuildingDraftShape = Record<WorldbuildingDimKey, Record<string, string>>
 
 export interface OrderedWorldbuildingField {

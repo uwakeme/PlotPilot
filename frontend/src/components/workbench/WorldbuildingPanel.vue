@@ -296,6 +296,7 @@ import {
   FlashOutline, EarthOutline, PeopleOutline, LibraryOutline, LayersOutline, BulbOutline,
 } from '@vicons/ionicons5'
 import { worldbuildingApi } from '@/api/worldbuilding'
+import { getWorldbuildingDimensionKeys } from '@/domain/worldbuilding/contract'
 import { runtimePerformance } from '@/config/performance'
 import { formatApiError } from '@/utils/apiError'
 
@@ -357,12 +358,18 @@ function sectionChipLabel(key: SectionKey): string {
   return `${filled}/${total}`
 }
 
+// A-06：维数与维度键都从**契约 bundle** 派生（此前这里手写了 5 维数组，
+// 且完成度还写死 ``/ 5`` ⇒ 契约加一维就会算错）。
+const SECTION_KEYS = getWorldbuildingDimensionKeys() as SectionKey[]
+
 const filledDimensions = computed<number>(() => {
-  const keys: SectionKey[] = ['core_rules', 'geography', 'society', 'culture', 'daily_life']
-  return keys.filter(k => sectionFilledCount(k) > 0).length
+  return SECTION_KEYS.filter(k => sectionFilledCount(k) > 0).length
 })
 
-const completenessPercent = computed(() => Math.round((filledDimensions.value / 5) * 100))
+const completenessPercent = computed(() => {
+  const total = SECTION_KEYS.length || 1
+  return Math.round((filledDimensions.value / total) * 100)
+})
 
 const progressColor = computed(() => {
   if (completenessPercent.value < 40) return 'var(--color-warning)'

@@ -25,6 +25,7 @@ from application.engine.dag.models import (
     PromptMode,
 )
 from application.engine.dag.registry import BaseNode, NodeRegistry
+from application.world.worldbuilding_contract import worldbuilding_dimension_keys
 from infrastructure.ai.prompt_keys import (
     BIBLE_ALL,
     BIBLE_CHARACTERS,
@@ -39,13 +40,17 @@ def _worldbuilding_prompt_fields_from_payload(payload: Dict[str, Any]) -> Dict[s
     from application.world.services.narrative_contract_text import build_worldbuilding_prompt_fields
 
     worldbuilding = payload.get("worldbuilding") if isinstance(payload.get("worldbuilding"), dict) else {}
+    # A-06：维度键集从**契约**读（此前这里是同一个手写元组，**写了两遍**）。
+    # ⚠ 注意：下面的 ``NodePort(name="core_rules")`` 是 **DAG 端口名**，
+    #   前端 DAG 编辑器按名连线 ⇒ **必须保持字面量**，不能改成动态生成。
+    dimension_keys = worldbuilding_dimension_keys()
     if not worldbuilding and any(
         isinstance(payload.get(dim), (str, dict))
-        for dim in ("core_rules", "geography", "society", "culture", "daily_life")
+        for dim in dimension_keys
     ):
         worldbuilding = {
             dim: payload.get(dim) if isinstance(payload.get(dim), dict) else {}
-            for dim in ("core_rules", "geography", "society", "culture", "daily_life")
+            for dim in dimension_keys
         }
     if worldbuilding:
         return build_worldbuilding_prompt_fields(worldbuilding_slices=worldbuilding)
