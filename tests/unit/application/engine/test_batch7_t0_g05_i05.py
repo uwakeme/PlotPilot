@@ -246,25 +246,64 @@ def test_default_is_2500_so_behaviour_is_unchanged():
 
 #: **章目标字数**的字段名（扫「绕过钳制的兜底」时只看这些）。
 #:
-#: ⚠ 不含泛指的 ``target_words``（那可能是**节拍级**的字数，如
-#:   ``beat_contracts`` / ``estimated_words``）—— 它们的兜底值
-#:   （600 之类）不是「每章目标字数」，不在本章钳制口径内。
-CHAPTER_TARGET_FIELD = re.compile(
-    r"target_words_per_chapter|target_chapter_words|target_word_count", re.I
+#: ⚠ 复审 S5：此前只有 ``target_words_per_chapter|target_chapter_words|target_word_count``
+#:   ⇒ ``data.get("chapter_target_words") or 3000`` **漏**。
+CHAPTER_TARGET_FIELDS = (
+    "target_words_per_chapter",
+    "target_chapter_words",
+    "chapter_target_words",
+    "target_word_count",
 )
-#: 非零的数字兜底（``or 0`` 是「未设置」，不是「兜底默认值」⇒ 不算）。
-NUMERIC_FALLBACK = re.compile(r"or +[1-9][0-9]*")
+
+
+def _chapter_target_fallbacks(code: str) -> list[str]:
+    """AST 扫描：章目标字数上的「``or <非零数字/常量>``」兜底。
+
+    ⚠ 复审 S5：此前是**按行** + 剥注释的**文本**扫描 ⇒ 四个活的口子：
+      ① 换行写的 ``... or 3000``（单独一行）⇒ 漏；
+      ② ``data.get("chapter_target_words") or 3000`` ⇒ 字段名没在正则里 ⇒ 漏；
+      ③ 剥注释把**整除符 ``//``** 和**字符串里的 ``#``** 当注释吃掉
+         （``a // 2 or 3000``、``v = "#tag" or 3000``）⇒ 逃逸；
+      ④ ``or <命名常量>`` ⇒ 永远抓不到。
+    ⇒ 现在用 **AST**：
+      - 语句级的 ``or``（不看行 ⇒ 换行写法也抓得到）；
+      - 字段名出现在**左值**里（属性名 / 字符串常量都算 ⇒ ``data.get("chapter_target_words")`` 抓得到）；
+      - 右值是**非零数字**或**命名常量** ⇒ 一律算兜底；
+      - **不剥注释**（AST 天然看不见注释 ⇒ ③ 消失）。
+    """
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
+            continue
+        left_text = ast.dump(node.values[0])
+        if not any(field in left_text for field in CHAPTER_TARGET_FIELDS):
+            continue
+        for value in node.values[1:]:
+            if (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, (int, float))
+                and not isinstance(value.value, bool)
+            ):
+                if value.value == 0:
+                    continue  # 0 = 「未设置」，不是兜底默认值
+                hits.append(f"line {node.lineno}: {ast.unparse(node)}")
+            elif isinstance(value, ast.Name):
+                hits.append(f"line {node.lineno}: {ast.unparse(node)}")
+    return hits
 
 
 def test_no_scattered_word_count_fallbacks_remain():
     """全仓（生产代码）不许再有「``or <数字>``」这种绕过钳制的兜底。
 
     ⚠ 复审 S1：此前只查**字面量** ``or 2500`` ⇒ ``or 3000``、双空格 ``or  2500``
-    都漏（verifier 实测绿）⇒ 改成查「**任何**非零数字兜底出现在
-    **章目标字数**字段上」。
-
-    ⚠ 扫描要**剥掉注释**再查 ⇒ 否则「注释里写着 ``or 2500``」会误报，
-    而注释里的字面量恰恰是最容易误导人的地方。
+    都漏（verifier 实测绿）⇒ 改成 AST 级的「章目标字数上出现非零数字/常量兜底」。
 
     ⚠ ``or 0`` 不算：它的语义是「没设置」（0），不是「兜底成某个字数」
     ⇒ 那些位置（回填/统计/回显）是**如实回显库里的值**，不归本章钳制口径。
@@ -282,18 +321,14 @@ def test_no_scattered_word_count_fallbacks_remain():
             continue
         path = ROOT / rel
         try:
-            code = _strip_comments(path.read_text(encoding="utf-8"))
+            code = path.read_text(encoding="utf-8")
         except Exception:  # noqa: BLE001
             continue
-        for number, line in enumerate(code.splitlines(), 1):
-            if not NUMERIC_FALLBACK.search(line):
-                continue
-            if not CHAPTER_TARGET_FIELD.search(line):
-                continue
-            offenders.append(f"{rel}:{number}: {line.strip()}")
+        for hit in _chapter_target_fallbacks(code):
+            offenders.append(f"{rel}: {hit}")
 
     assert not offenders, (
-        "还有绕过钳制的兜底（章目标字数上出现 ``or <非零数字>``）：\n"
+        "还有绕过钳制的兜底（章目标字数上出现 ``or <非零数字/常量>``）：\n"
         + "\n".join(offenders)
     )
 

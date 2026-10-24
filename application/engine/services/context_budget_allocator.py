@@ -84,12 +84,19 @@ def _fact_lock_section_headers() -> tuple:
 
     ⚠ 惰性导入：``memory_engine`` 会拉起 prompt 契约等一串依赖，
     而本模块在很多路径上被导入 ⇒ 顶层导入会拖慢启动并可能成环。
+    ⚠ 复审 S12：此前导入失败**静默** ``return ()`` ⇒ 点名机制**无声失效**
+    （这正是上轮 §4 那个修复的病灶）⇒ 现在**告警**，且有守卫盯着这个 tuple 非空。
     """
     try:
         from application.engine.services.memory_engine import FACT_LOCK_SECTION_HEADERS
 
         return tuple(FACT_LOCK_SECTION_HEADERS)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "FACT_LOCK 分节标题导入失败 ⇒ 截断将**无法点名被截掉的小节**"
+            "（模型看不到哪一节没了）：%s",
+            exc,
+        )
         return ()
 
 

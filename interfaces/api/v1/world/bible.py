@@ -24,6 +24,7 @@ from application.world.services.bible_setup_invocation import (
 )
 from application.onboarding.setup_stage_definitions import get_onboarding_stage_definition
 from application.core.v1_length_tiers import strip_v1_structure_black_box_hint
+from application.core.chapter_target_limits import resolve_chapter_words
 from interfaces.api.dependencies import (
     get_bible_service,
     get_auto_bible_generator,
@@ -440,7 +441,9 @@ def _backfill_bible_setup_variable_hub(*, variable_repo, novel_id: str, novel) -
     _write_variable_if_missing(
         variable_repo,
         key="novel.target_words_per_chapter",
-        value=int(getattr(novel, "target_words_per_chapter", 0) or 0),
+        # 复审 S8：此前是 ``or 0`` ⇒ 把**库里的原始值**原样写进变量 hub
+        #   ⇒ 越界值（存量数据）会**绕过钳制进提示词** ⇒ 改走唯一入口。
+        value=resolve_chapter_words(getattr(novel, "target_words_per_chapter", None)),
         context_key=context_key,
         value_type="integer",
         display_name="每章字数",

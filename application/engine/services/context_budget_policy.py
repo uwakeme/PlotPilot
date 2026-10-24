@@ -22,9 +22,24 @@ TRUNCATION_MARKER = "\n（此段已按上下文预算截断，仅为部分内容
 
 #: 槽位被**整体舍弃**时的说明（不许静默丢一整个槽）。
 #:
-#: ⚠ 复审发现（§4 / S5）：此前装不下的 T0 槽位被 ``content = ""`` **清零且不留痕迹**
-#:   ⇒ 模型看到的是「这一节不存在」，而作者/系统侧也**没有任何记录**。
-DROPPED_SLOT_MARKER = "\n（本槽因上下文预算不足被整体舍弃，其内容未纳入本次上下文）"
+#: ⚠ 复审 S1：定义了、写了一段很长的说明，但**零使用** ⇒ 是**死代码**。
+#:   留着它 = 留一个「槽位被舍弃时模型能看见说明」的**假信号**
+#:   （本项目反复修的那类病）⇒ 已删。
+#:   实际做法：整槽被舍弃时**内容留空**（留标记就要为它计 token ⇒ 会破坏
+#:   「total ≤ budget」这条不变量），痕迹走 ``compression_log`` + logger。
+
+#: 「被截掉的小节」这段说明的**位置标记**（内容开头）。
+#:
+#: ⚠ 复审 B-1：这段说明**必须放在开头** —— 放在结尾会被**下游的二次截断**切掉：
+#:   分配器给 fact_lock 的上限是 1500 tokens × 1.5 = **2250 字**，
+#:   而正文槽的上限是 **2000 字**（``prose_context_settings.DEFAULT_MAX_CHARS_PER_SLOT``）
+#:   ⇒ 分配器留在**结尾**的点名正好被 builder 那次独立截断切没
+#:   ⇒ 模型在正文提示词里**又**看不见「哪一节没了」（= 上轮 §4 的同一个病灶）。
+#: ⇒ 开头是**唯一**能被后续任何截断保住的位置。
+_MISSING_SECTIONS_PREFIX = "【被截掉的小节："
+#: ⚠ 外层用 **【】**（不是 ``（）``）—— 小节标题本身含「）」（如
+#:   「核心事件时间线（不可矛盾）：」）⇒ 用圆括号做外层会让标记**无法被无歧义解析**。
+_MISSING_SECTIONS_SUFFIX = "】\n"
 
 
 def _missing_sections(content: str, kept: str, section_headers) -> list:
@@ -45,15 +60,19 @@ def _mark_truncated(content: str, target_chars: int, *, section_headers=()) -> s
 
     ⚠ 复审发现（§4）：标记只说「仅是部分内容」⇒ 模型不知道**哪一节**没了。
     ⇒ 槽位声明了 ``section_headers`` 时，额外**点名被截掉的小节**。
+
+    ⚠ 复审 B-1：**点名放在开头**（见 :data:`_MISSING_SECTIONS_PREFIX` 的说明），
+    否则会被下游的二次截断切没 ⇒ 模型在正文提示词里又看不见了。
     """
     if target_chars <= 0:
         return ""
     kept = content[:target_chars].rstrip()
     missing = _missing_sections(content, kept, section_headers)
+    notice = ""
     if missing:
         names = "、".join(str(h).rstrip("：:") for h in missing)
-        return f"{kept}{TRUNCATION_MARKER}（被截掉的小节：{names}）"
-    return kept + TRUNCATION_MARKER
+        notice = f"{_MISSING_SECTIONS_PREFIX}{names}{_MISSING_SECTIONS_SUFFIX}"
+    return f"{notice}{kept}{TRUNCATION_MARKER}"
 
 
 def cap_slots_by_own_limit(

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from application.core.v1_length_tiers import strip_v1_structure_black_box_hint
+from application.core.chapter_target_limits import resolve_chapter_words
 from application.world.worldbuilding_contract import (
     worldbuilding_dimension_keys,
     worldbuilding_dimension_label,
@@ -117,7 +118,9 @@ class VariableHubBackfillService:
         self._write_missing(
             result,
             key="novel.setup.target_words_per_chapter",
-            value=int(getattr(novel, "target_words_per_chapter", 0) or 0),
+            # 复审 S8：此前是 ``or 0`` ⇒ 把**库里的原始值**原样写进变量 hub
+            #   ⇒ 越界值（存量数据）会**绕过钳制进提示词** ⇒ 改走唯一入口。
+            value=resolve_chapter_words(getattr(novel, "target_words_per_chapter", None)),
             context_key=context_key,
             value_type="integer",
             display_name="每章字数",

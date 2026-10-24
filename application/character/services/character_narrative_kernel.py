@@ -415,6 +415,21 @@ class CharacterNarrativeKernel:
                 function = "explicit_scene_cast"
                 confidence = 0.82
                 reason = "场记明确列为出镜角色，自动创建最小角色档案"
+                # 复审 Q1：B3 的修法让 explicit 名单**不再**被「含有已知名」过滤
+                #   ⇒ 一份完全正确的回答（AI/用户确实点名了「林风华」）不再被丢。
+                #   ⚠ 代价：名字**含**已知名的新角色会被**真的写进 Bible**
+                #   （可能与已有角色构成近似重复）。
+                #   ⇒ 取舍：**honor 明确点名**（那份名单是断言，不是正则噪声），
+                #     但**把近似关系写进 reason** ⇒ 它会随
+                #     「自动准入角色：{reason}」进 Bible 条目 ⇒ **作者看得见**、
+                #     能自己判断要不要删。
+                near = sorted(
+                    known
+                    for known in (known_names | set(location_names))
+                    if known and known in name
+                )
+                if near:
+                    reason += f"（注意：与已册的「{'、'.join(near)}」名字相近）"
             elif self._looks_like_ephemeral(name):
                 recommendation = "ephemeral"
                 function = "walk_on"

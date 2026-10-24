@@ -864,7 +864,11 @@ def get_style_preset_matcher():
     """
     from application.world.services.style_preset_matcher import StylePresetMatcher
 
-    return StylePresetMatcher(llm_service=get_llm_service())
+    # ⚠ 构造器的形参叫 ``llm``（位置参数）⇒ 这里**不能**用 ``llm_service=``。
+    #   上一轮写成 ``llm_service=`` ⇒ 端点在生产上直接 TypeError ⇒ HTTP 500
+    #   ⇒ 整个「AI 推荐文风预设」是死的，而**所有测试都用手搓 stub 直接构造**
+    #   ⇒ 没人走过这个工厂。守卫见 test_batch11_review_fixes.py。
+    return StylePresetMatcher(get_llm_service())
 
 
 def get_auto_knowledge_generator() -> AutoKnowledgeGenerator:

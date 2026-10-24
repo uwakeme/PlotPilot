@@ -288,7 +288,8 @@ async def test_a_slow_model_is_cut_off_at_the_hard_timeout(monkeypatch):
             return SimpleNamespace(content="{}")
 
     monkeypatch.setattr(mod, "get_prompt_gateway", lambda: _FakeGateway())
-    monkeypatch.setattr(mod, "MATCH_TIMEOUT_SECONDS", 0.05)
+    # ⚠ 复审 S2：超时值现在从 config/performance.yaml 读 ⇒ 打桩**解析函数**
+    monkeypatch.setattr(mod, "resolve_match_timeout_seconds", lambda: 0.05)
     llm = _SlowLLM()
     svc = mod.StylePresetMatcher(llm)
 
@@ -496,7 +497,12 @@ def test_the_truncation_marker_names_the_dropped_sections():
     text = slot.content
     assert TRUNCATION_MARKER in text
     assert "被截掉的小节" in text, "截断没说清哪几节没了"
-    named = text.split("被截掉的小节")[-1]
+    # ⚠ 复审 B-1：点名现在在**开头** ⇒ 取名要用「标记本身」那一段，
+    #   不能 split 整个内容（那样会把保留部分也算进去）。
+    #   ⚠ 外层是【】⇒ 小节标题里的「）」不会把标记切坏。
+    match = re.search(r"【被截掉的小节：(.+?)】", text, re.S)
+    assert match, "标记格式不对（外层应为【】）"
+    named = match.group(1)
     assert "身份锁死" in named, "没点名被截掉的小节"
     assert "核心事件时间线" in named, "没点名被截掉的小节"
     # 保住的节不该被点名成「被截掉」
@@ -539,8 +545,10 @@ def test_the_write_side_trim_count_is_shown():
 
     section = ledger.to_t0_section()
     assert "未保留" in section, "写入侧丢弃的条数没有在注入文本里说出来"
-    assert "另有 5 条记录未保留" in section, (
-        f"没说清丢了几条：{section.splitlines()[-1]}"
+    # ⚠ 复审 S11：措辞要与注入侧那两句**区分开**
+    #   （「写入时即被丢弃」≠「这次没列」）⇒ 断言关键的区分词。
+    assert "另有 5 条记录在**写入账本时**即被丢弃" in section, (
+        f"没说清丢了几条、也没与「未列」区分开：{section.splitlines()[-1]}"
     )
 
 
@@ -584,23 +592,34 @@ def test_the_aliases_are_unique_across_the_presets():
 
 
 def test_the_plan_envelope_clamps_the_word_count():
-    """⚠ **S7**：``PlanningEnvelope`` 的上界要与规范一致（此前 100000）。"""
+    """⚠ **S7**：``PlanningEnvelope`` 的上界要与规范一致（此前 100000）。
+
+    ⚠ 复审 S6：区间与解析现在**跟唯一入口一致**（[500, 20000]、`float` 解析）⇒
+    探针：10 → 500、0 → 2500、``"3000.0"`` → 3000（与 ``resolve_chapter_words`` 逐位一致）。
+    """
     from application.engine.dag.plan.schema import PlanningEnvelope
 
     assert PlanningEnvelope(target_chapter_words=99999).target_chapter_words == 20_000
-    assert PlanningEnvelope(target_chapter_words=10).target_chapter_words == 200
+    assert PlanningEnvelope(target_chapter_words=10).target_chapter_words == 500
+    assert PlanningEnvelope(target_chapter_words=0).target_chapter_words == 2500
+    assert PlanningEnvelope(target_chapter_words="3000.0").target_chapter_words == 3000
     assert PlanningEnvelope().target_chapter_words == 2500
 
 
 def test_no_bare_ellipsis_reaches_the_model_visible_prompts():
-    """⚠ **S12**：截断**从不静默**不是全仓的 —— 这两处此前仍是裸 ``"..."``。"""
+    """⚠ **S12**：截断**从不静默**不是全仓的 —— 这两处此前仍是裸 ``"..."``。
+
+    ⚠ 复审 S10：判据只认**双引号** ⇒ ``+ '...'`` / ``+ f"..."`` 都漏
+    ⇒ 现在认**任意引号**与 **f/r 前缀**。
+    """
     for rel in (
         "application/blueprint/services/beat_sheet_service.py",
         "application/core/services/scene_generation_service.py",
     ):
         code = _strip_comments((ROOT / rel).read_text(encoding="utf-8"))
-        assert not re.search(r'\+ "\.\.\."', code), (
-            f"{rel} 里还有裸的 \"...\" ⇒ 它会进模型可见提示词"
+        hits = re.findall(r"""(?:f|r|rf|fr)?["']\.\.\.["']""", code)
+        assert not hits, (
+            f"{rel} 里还有裸的省略号字面量（{hits}）⇒ 它会进模型可见提示词"
         )
 
 

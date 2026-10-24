@@ -28,10 +28,14 @@ class PlanningEnvelope(BaseModel):
     novel_id: Optional[str] = None
     chapter_number: Optional[int] = None
     # 复审 S7：上界此前是 ``100_000``，与规范上限（20000）矛盾。
+    # ⚠ 复审 S6：区间与解析都**必须**跟 ``resolve_chapter_words`` 一致
+    #   （此前信封夹 [200, 20000]、用 ``int(value)`` 解析，
+    #   而唯一入口夹 [500, 20000]、走 ``float`` ⇒ 同一个概念两套口径：
+    #   探针 10 → 200 vs 500；"3000.0" → 2500 vs 3000）⇒ 现在**只留一个**。
     # ⚠ 用**夹逼**而不是「越界就报错」：``target_chapter_words`` 来自 DAG 端口
     #   （用户在 DAG 编辑器里可填任意值）⇒ 越界报错会让节点的**兜底分支**
     #   用同一个值再构造一次信封 ⇒ 直接把节点打挂。
-    target_chapter_words: int = Field(default=2500, ge=200, le=20_000)
+    target_chapter_words: int = Field(default=2500, ge=500, le=20_000)
     source_outline_hash: Optional[str] = Field(
         default=None,
         description="可选：章纲指纹，便于缓存/幂等",
@@ -40,12 +44,10 @@ class PlanningEnvelope(BaseModel):
     @field_validator("target_chapter_words", mode="before")
     @classmethod
     def _clamp_target_chapter_words(cls, value: Any) -> Any:
-        """把每章目标字数**夹进** ``[200, 20000]``（读不出 ⇒ 2500）。"""
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            return 2500
-        return max(200, min(20_000, number))
+        """用**唯一入口**夹逼（不自己写一套区间/解析器）。"""
+        from application.core.chapter_target_limits import resolve_chapter_words
+
+        return resolve_chapter_words(value)
 
 
 class PlanAtomSpec(BaseModel):

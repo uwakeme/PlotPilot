@@ -660,6 +660,9 @@ const applyStylePreset = async () => {
 
   state.value.style_notes = preset.body
   showStylePresetModal.value = false
+  // 复审 S15：作者**手动应用**了某个预设 ⇒ AI 的「都不匹配」结论**已被消费**
+  //   ⇒ 清空它 ⇒ 之后再开弹窗会照常预选**当前文风**（而不是永远不预选）。
+  stylePresetSuggestion.value = null
 
   // Auto-save after applying preset
   await save()

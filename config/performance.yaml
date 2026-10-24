@@ -287,6 +287,20 @@ ai_participation:
   master_enabled: true
   disabled_features: []
 
+# J-02：文风预设语义匹配的**硬超时**（秒）。
+#
+# ⚠ 复审 S2：此前这个「30」是服务里的**硬编码字面量**，而前端那个「30」
+#   是 ``VITE_API_SHORT_TASK_TIMEOUT_MS``（env 可改）⇒ 同一个数字写在两处、
+#   **一处可配一处不可配** ⇒ 漂移风险（前端改成 60s 时，后端仍在 30s 放弃）。
+# ⇒ 现在后端也从配置读。
+# ⚠ 两边仍是**两个来源**（后端 YAML / 前端 env）⇒ 改的时候**必须一起改**，
+#   守卫 ``test_the_style_preset_timeout_is_thirty_seconds`` 会盯住这个值。
+# ⚠ 复审 B2：真实的模型调用上限在 **provider 层**（``LLM_MAX_TOTAL_ATTEMPTS`` ×
+#   ``Settings.timeout_seconds`` ⇒ 最坏 ~900s）⇒ 这个闸是**服务自己**加的提前放弃，
+#   目的是**与前端同时放弃**（用户 30s 看到失败，后端不再继续烧）。
+style_preset_match:
+  timeout_seconds: 30
+
 # D-02：上下文槽位权重。由 AI 判断本章最需要哪几类记忆并给出权重(0-1)，
 # 代码在 tier 预算内换算成 token。**只开 enabled 不会生效** ——
 # shadow 默认 true，权重只记录不施加。两条都要改才对。

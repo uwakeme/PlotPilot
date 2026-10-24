@@ -56,18 +56,37 @@ logger = logging.getLogger(__name__)
 #: ⇒ 守卫会把这条能力判成「没接闸」（假红）。
 FEATURE_ID = "style_preset_match"
 
-#: 本次模型调用的**硬上限**（秒）。
+#: 本次模型调用的**硬上限**（秒）—— **默认值**；实际值从
+#: ``config/performance.yaml`` 的 ``style_preset_match.timeout_seconds`` 读。
 #:
 #: ⚠ 复审 B2：``config/generation_profiles.yaml`` 里的 ``timeout_seconds`` / ``retries``
-#:   **全仓无人读**（``generation_config_from_profile`` 只读 model / max_tokens /
-#:   temperature / response_format）⇒ 改那两个键是**空操作**；
+#:   **全仓无人读** ⇒ 改那两个键是**空操作**；
 #:   真实上限在 **provider 层**（``LLM_MAX_TOTAL_ATTEMPTS = 3`` 次尝试 ×
 #:   ``Settings.timeout_seconds``（默认 300））⇒ **最坏约 900 秒**，
 #:   而前端 30 秒（``shortTaskTimeoutMs``）就放弃 ⇒ 用户看到失败，后端还在烧 token。
 #: ⇒ 这里**真的**加一道硬闸：超时 ⇒ 按「未评估」处理（**不编造**）。
 #:
-#: 数值与前端 ``shortTaskTimeoutMs``（30s）对齐：两边同时放弃。
-MATCH_TIMEOUT_SECONDS = 30
+#: ⚠ 复审 S2：此前这个「30」是**服务里的硬编码**，前端那个「30」是 env 可配
+#:   ⇒ 同一个数字两处、一处可配一处不可配 ⇒ 现在后端也从配置读
+#:   （但两边仍是两个来源 ⇒ 改的时候要一起改，守卫会盯住）。
+#:
+#: ⚠ 复审 S16：前后端**不是**严格同时 —— 后端这个钟从「DB 读取 + 提示词渲染之后」
+#:   才开始，前端从「发请求」就开始 ⇒ 后端实际会多跑一点。
+DEFAULT_TIMEOUT_SECONDS = 30
+
+
+def resolve_match_timeout_seconds() -> int:
+    """本次模型调用的硬上限（秒）—— 从配置读，读不到用默认值。"""
+    try:
+        from application.core.config.config_loader import get_config
+        from application.core.config.runtime_settings_utils import section_value
+
+        section = getattr(get_config(), "style_preset_match", None)
+        raw = section_value(section, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        value = int(raw)
+    except Exception:  # noqa: BLE001
+        value = DEFAULT_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_TIMEOUT_SECONDS
 
 
 class StylePresetMatcher:
@@ -100,6 +119,7 @@ class StylePresetMatcher:
             )
 
         candidates = "\n".join(preset.as_candidate_line() for preset in presets)
+        timeout_seconds = resolve_match_timeout_seconds()
 
         try:
             rendered = get_prompt_gateway().render(
@@ -115,21 +135,24 @@ class StylePresetMatcher:
                 },
             )
             config = generation_config_from_profile(FEATURE_ID)
+            timeout_seconds = resolve_match_timeout_seconds()
             result = await asyncio.wait_for(
                 self._llm.generate(rendered.prompt, config),
-                timeout=MATCH_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            # ⚠ 复审 B2：provider 层的真实上限是 ~900s ⇒ 这里自己加一道硬闸，
-            #   与前端的 30s 对齐 ⇒ 两边同时放弃（不再「用户看到失败、后端还在烧」）。
+            # ⚠ 复审 B2：provider 层的真实上限是 ~900s ⇒ 这里自己加一道硬闸。
+            #   ⚠ 复审 Q2：``wait_for`` 取消的是协程；provider 走 httpx 异步调用
+            #     ⇒ 取消会**断连**（不再等响应）⇒ 上游可能已经算完了但结果被丢弃
+            #     ⇒ 能省下的是「**继续重试/继续等**」的那部分，不是上游已花掉的算力。
             logger.warning(
                 "文风预设匹配超时（>%ss），按未评估处理 novel=%s",
-                MATCH_TIMEOUT_SECONDS,
+                timeout_seconds,
                 novel_id,
             )
             return StylePresetSuggestion(
                 source=SOURCE_NONE,
-                reason=f"模型调用超时（>{MATCH_TIMEOUT_SECONDS} 秒），未评估",
+                reason=f"模型调用超时（>{timeout_seconds} 秒），未评估",
             )
         except Exception as exc:
             logger.warning("文风预设匹配调用失败，按未评估处理 novel=%s: %s", novel_id, exc)

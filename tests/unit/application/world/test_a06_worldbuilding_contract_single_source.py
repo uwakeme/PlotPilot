@@ -230,16 +230,26 @@ def test_frontend_panel_field_bindings_match_the_contract():
 
 
 def test_the_frontend_panel_has_no_dead_bindings():
-    """⚠ 复审 S4：另一条逃逸是「把绑定包进 ``v-if="false"``」。
+    """⚠ 复审 S4/S9：表单里不许有**静态为假**的 ``v-if`` / ``v-show``。
 
     那种情况下绑定**文本还在** ⇒ 上一条照样绿 ⇒ 表单实际不渲染这些字段
     ⇒ 契约与表单**形状**对不上，却没有任何断言能发现。
-    ⇒ 直接禁止这种写法（当前该文件里一处都没有）。
-    """
-    source = FRONTEND_PANEL.read_text(encoding="utf-8")
 
-    assert 'v-if="false"' not in source, "表单里有被 v-if=\"false\" 关掉的绑定"
-    assert 'v-show="false"' not in source, "表单里有被 v-show=\"false\" 关掉的绑定"
+    ⚠ 复审 S9 的两处修正：
+      ① 先**剥注释**再扫（此前扫原始文件 ⇒ 注释里写一句 ``v-if="false"`` 会**假红**）；
+      ② 不只拒字面量 ``false`` ⇒ 静态为假的都拒（``0`` / ``null`` / ``undefined`` / 空串）。
+
+    ⚠ **已知局限**（写在这里，不假装它更强）：包在**条件**渲染里
+    （``v-if="!x"``）的绑定**检测不出来** —— 那要真正的模板解析。
+    """
+    source = _strip_vue_comments(FRONTEND_PANEL.read_text(encoding="utf-8"))
+
+    falsy = {"false", "0", "null", "undefined", "''", '""'}
+    for match in re.finditer(r'v-(?:if|show)="([^"]*)"', source):
+        value = match.group(1).strip()
+        assert value.lower() not in falsy, (
+            f"表单里有被 v-if=\"{value}\" 关掉的绑定"
+        )
 
 
 def test_frontend_panel_dimension_count_is_not_hardcoded():

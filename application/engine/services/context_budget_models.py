@@ -36,7 +36,7 @@ class ContextSlot:
     #:   而 FACT_LOCK 整段被截时**模型看不到「身份锁死」这一节存在**
     #:   ⇒ 对「一旦违背即为废稿」的硬约束块，**截掉整节比截断半截更危险**。
     #: ⇒ 声明了小节标题的槽位，截断后会说清「被截掉的小节：X、Y」。
-    section_headers: tuple = ()
+    section_headers: tuple[str, ...] = ()
 
     @property
     def is_mandatory(self) -> bool:
