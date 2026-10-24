@@ -135,7 +135,6 @@ class StylePresetMatcher:
                 },
             )
             config = generation_config_from_profile(FEATURE_ID)
-            timeout_seconds = resolve_match_timeout_seconds()
             result = await asyncio.wait_for(
                 self._llm.generate(rendered.prompt, config),
                 timeout=timeout_seconds,

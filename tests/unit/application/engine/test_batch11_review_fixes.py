@@ -103,10 +103,15 @@ async def test_the_route_works_with_the_real_di_factory():
 
     assert resp.novel_id == "n-1"
     # 没有 LLM key ⇒ 走 mock ⇒ 可能匹配上、也可能「AI 判都不匹配」或未评估；
-    # ⚠ 断言的是「**不许抛异常**」+ 三态自洽（不许编）。
+    # ⚠ 断言的是「**不许抛异常**」+ 独立的形状约束。
+    # ⚠ 复审 O4：不要写 ``assessed is (source == "ai")`` 那种**从 source 推**的断言
+    #   （那是自洽性，不是语义）⇒ 这里只断言**独立**的事实；
+    #   三态语义由 batch10 的路由级守卫（用**已知**判定）覆盖。
     assert resp.source in ("ai", ""), f"source 不是合法取值：{resp.source!r}"
-    assert resp.matched is (resp.source == "ai" and bool(resp.value))
-    assert resp.assessed is (resp.source == "ai")
+    assert resp.value is None or isinstance(resp.value, str)
+    assert resp.body == "" or resp.value is not None, (
+        "响应带了正文却没带命中的 value ⇒ 形状不自洽"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -165,6 +170,132 @@ def test_the_named_sections_are_at_the_front():
     )
 
 
+def _fact_lock_text_with_identity_in_window() -> str:
+    """构造一份 fact_lock 文本，使「身份锁死：」落在 **2000–2250 字**窗口内。
+
+    ⚠ 这个窗口是**硬常量**决定的：
+      分配器给 fact_lock 1500 tokens × 1.5 = **2250 字**；
+      正文 builder 每块上限 **2000 字** ⇒ 中间永远有 250 字的差。
+    ⇒ 落在这个窗口里的小节：**分配器保住、builder 切掉** ⇒
+    它是「模型看不见、也没被告知」的那一节。
+    """
+    names = "、".join(f"角色{i}" for i in range(360))
+    head = (
+        "【绝对事实边界（一旦违背即为废稿）】\n\n"
+        "角色白名单（只可使用以下有名字的角色）：\n"
+        f"   允许: {names}\n"
+        "   禁止: 创造任何其他有名字的角色！\n\n"
+    )
+    identity = "身份锁死：\n   乙 = 真实身份是丙\n\n"
+    timeline = "核心事件时间线（不可矛盾）：\n   [第 3 章] 丁已死\n"
+    return head + identity + timeline
+
+
+def test_the_real_prose_builder_names_the_sections_it_drops():
+    """⚠ **B-1′**：**真的调**真实 builder ⇒ 它自己切掉的小节必须被点名。
+
+    ⚠ 复审 B-1′：上一轮这条守卫**自己写了一遍** builder 的截断形状
+    ⇒ 真实 builder 路径上的命名完整性**零覆盖**
+    （变异：真实 builder 不再把 fact_lock 送进正文提示词 ⇒ 那条守卫照样绿）。
+
+    ⇒ 现在走**完整链路**：分配器的裁剪 → **真实的** ``ContextBuilder._build_hard_facts``。
+    ⚠ 纪律：**守卫要调用被测的那一层，而不是重写一遍它的形状。**
+    """
+    from application.engine.services.context_budget_models import BudgetAllocation
+    from application.engine.services.context_builder import ContextBuilder
+
+    original = _fact_lock_text_with_identity_in_window()
+    identity_at = original.index("身份锁死：")
+    assert 2000 < identity_at < 2250, (
+        f"样本前提变了（身份锁死落在 {identity_at} 字，不在 2000–2250 窗口里）"
+    )
+
+    # ── 分配器那一刀（真实函数） ────────────────────────────────
+    slot = ContextSlot(
+        name="绝对事实边界(FACT_LOCK)",
+        tier=PriorityTier.T0_CRITICAL,
+        content=original,
+        tokens=9999,
+        max_tokens=1500,
+        priority=120,
+        section_headers=FACT_LOCK_SECTION_HEADERS,
+    )
+    cap_slots_by_own_limit({"fact_lock": slot}, chars_per_token_zh=1.5)
+    assert "身份锁死：" in slot.content, "样本前提变了（分配器没保住身份锁死）"
+
+    # ── 正文 builder 那一刀（**真实函数**） ──────────────────────
+    allocation = BudgetAllocation(slots={"fact_lock": slot})
+    prose = ContextBuilder._build_hard_facts(allocation)
+
+    assert "身份锁死：" not in prose, (
+        "样本前提变了（builder 没切掉身份锁死 ⇒ 这条验不到东西）"
+    )
+    assert "被截掉的小节" in prose, (
+        "正文提示词里**看不到**哪一节被截了 ⇒ 模型不知道「身份锁」这一节不存在"
+    )
+    match = re.search(r"【被截掉的小节：(.+?)】", prose, re.S)
+    assert match, "点名块格式不对（外层应为【】）"
+    named = match.group(1)
+    assert "身份锁死" in named, "builder 自己切掉的那一节没有进点名"
+    # ⚠ 点名块**只能有一块**（复审 B-2′：二次截断不该叠加两块）
+    assert prose.count("【被截掉的小节：") == 1, "点名块叠成了多块"
+
+
+def test_the_naming_block_stays_one_after_a_second_truncation():
+    """⚠ **B-2′**：二次截断后点名块**只能有一块**（重新截断要**合并**，不是叠加）。
+
+    ⚠ 复审 B-2′：``_mark_truncated`` 此前每次都在最前面**再加**一个点名块
+    ⇒ T0 的第 2 步（按总预算再裁一次）会叠成两块
+    ⇒ 守卫自己的解析约定只认第一个 ⇒ 第二个名字被吞。
+
+    ⚠ 样本要**两层都裁**：第 1 步（按槽上限）先产出点名块，
+    第 2 步（按总预算）再裁一次 ⇒ 才会走到「重新标记」那条路径。
+    """
+    from application.engine.services.context_budget_policy import truncate_t0_slots
+
+    slot = ContextSlot(
+        name="fact_lock",
+        tier=PriorityTier.T0_CRITICAL,
+        content=_fake_fact_lock_text(),
+        tokens=9999,
+        max_tokens=1500,
+        priority=120,
+        section_headers=FACT_LOCK_SECTION_HEADERS,
+    )
+    # 第 1 步：按槽自己的上限裁（1500 tokens × 1.5 = 2250 字）
+    cap_slots_by_own_limit({"fact_lock": slot}, chars_per_token_zh=1.5)
+    assert slot.content.count("【被截掉的小节：") == 1, (
+        "样本前提变了（第 1 步没产出点名块 ⇒ 这条验不到东西）"
+    )
+
+    # 第 2 步：按**总预算**再裁一次（比槽上限更小 ⇒ 必然触发）
+    truncate_t0_slots({"fact_lock": slot}, budget=1000, chars_per_token_zh=1.5)
+
+    assert slot.content.count("【被截掉的小节：") == 1, (
+        "点名块叠成了多块 ⇒ 解析约定只认第一个 ⇒ 后面的名字被吞"
+    )
+    match = re.search(r"【被截掉的小节：(.+?)】", slot.content, re.S)
+    assert match, "点名块格式不对（外层应为【】）"
+    assert "身份锁死" in match.group(1), "合并后丢了已点名的名字"
+
+
+def test_the_unset_word_count_is_written_as_zero_not_as_the_default():
+    """⚠ **O2**：小说**没设**每章字数时，变量回填写 **0**（不是 2500）。
+
+    ⚠ 复审 O2：S8 把两处 ``or 0`` 改走唯一入口后，**没设**也变成了 2500
+    ⇒ 提示词里「每章字数」从「未设置（0）」变成「像作者设的 2500」⇒ 不诚实。
+    """
+    from application.core.chapter_target_limits import resolve_chapter_words_for_display
+
+    assert resolve_chapter_words_for_display(None) == 0
+    assert resolve_chapter_words_for_display(0) == 0
+    assert resolve_chapter_words_for_display("") == 0
+    # 设了 ⇒ 夹逼后的值
+    assert resolve_chapter_words_for_display(3000) == 3000
+    assert resolve_chapter_words_for_display(99999) == 20_000
+    assert resolve_chapter_words_for_display(10) == 500
+
+
 def test_the_named_sections_survive_the_prose_side_cut():
     """⚠ **B-1**（端到端）：走**真实的两级上限** ⇒ 点名必须仍在。
 
@@ -191,13 +322,18 @@ def test_the_named_sections_survive_the_prose_side_cut():
     )
     assert "身份锁死：" not in slot.content, "样本前提变了（身份锁死没被截掉）"
 
-    # 正文链路的二次截断（与 context_builder._build_hard_facts 同一形状）
-    prose_content = slot.content[:DEFAULT_MAX_CHARS_PER_SLOT].rstrip() + "\n（本块已按上限截断）"
+    # 正文链路的二次截断（**真实**的 builder，不是自己复刻一遍）
+    from application.engine.services.context_budget_models import BudgetAllocation
+    from application.engine.services.context_builder import ContextBuilder
 
-    assert "被截掉的小节" in prose_content, (
+    prose = ContextBuilder._build_hard_facts(
+        BudgetAllocation(slots={"fact_lock": slot})
+    )
+
+    assert "被截掉的小节" in prose, (
         "正文提示词里**看不到**哪一节被截了 ⇒ 模型不知道「身份锁」这一节不存在"
     )
-    match = re.search(r"【被截掉的小节：(.+?)】", prose_content, re.S)
+    match = re.search(r"【被截掉的小节：(.+?)】", prose, re.S)
     assert match, "标记格式不对（外层应为【】）"
     named = match.group(1)
     assert "身份锁死" in named, "点名里没有「身份锁死」"
@@ -311,6 +447,39 @@ def test_the_style_preset_timeout_is_thirty_seconds():
     )
     assert DEFAULT_TIMEOUT_SECONDS == 30
     assert resolve_match_timeout_seconds() == 30, "解析出来的超时不是 30"
+
+
+def test_the_style_preset_timeout_really_comes_from_the_config():
+    """⚠ **B-3′**：「值是 30」与「值**来自配置**」是两件事。
+
+    ⚠ 复审 B-3′：上一条断言的是「YAML 里是 30」+「解析出来是 30」，
+    而**默认值恰好也是 30** ⇒ 两者**无法区分** ⇒ 复审的变异
+    （把配置读取路径打断 ⇒ ``section = None``）**全绿**。
+
+    ⇒ 这条**改配置、让解析值跟着变** ⇒ 「来自配置」这条承诺才有人守。
+    """
+    from application.core.config.config_loader import reload_config
+    from application.world.services.style_preset_matcher import (
+        resolve_match_timeout_seconds,
+    )
+
+    original = PERFORMANCE_YAML.read_text(encoding="utf-8")
+    tmp = PERFORMANCE_YAML.with_name("performance.__j02_test__.yaml")
+    try:
+        tmp.write_text(
+            original.replace(
+                "style_preset_match:\n  timeout_seconds: 30",
+                "style_preset_match:\n  timeout_seconds: 45",
+            ),
+            encoding="utf-8",
+        )
+        reload_config(str(tmp))
+        assert resolve_match_timeout_seconds() == 45, (
+            "改了配置但解析值没跟着变 ⇒ 超时**不是**从配置读的"
+        )
+    finally:
+        tmp.unlink(missing_ok=True)
+        reload_config()  # 恢复默认配置（别把测试环境留在临时文件上）
 
 
 def test_the_real_config_disables_no_features():

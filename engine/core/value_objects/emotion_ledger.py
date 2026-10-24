@@ -286,7 +286,7 @@ class EmotionLedger:
             #   这里是「**写入时即被丢弃**」（它根本不在账本里）
             #   ⇒ 两句长得像会让模型把「从账本里被丢掉」与「这次没列」混为一谈。
             lines.append(
-                f"（账本规模上限：另有 {self.trimmed_items} 条记录在**写入账本时**"
+                f"（账本规模上限：另有 {self.trimmed_items} 条记录在【写入账本时】"
                 f"即被丢弃，未保留在本账本中）"
             )
         return "\n".join(lines)

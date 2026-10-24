@@ -547,9 +547,12 @@ def test_the_write_side_trim_count_is_shown():
     assert "未保留" in section, "写入侧丢弃的条数没有在注入文本里说出来"
     # ⚠ 复审 S11：措辞要与注入侧那两句**区分开**
     #   （「写入时即被丢弃」≠「这次没列」）⇒ 断言关键的区分词。
-    assert "另有 5 条记录在**写入账本时**即被丢弃" in section, (
+    # ⚠ 复审 O3：这段是**进模型可见文本**的 ⇒ 不许用 markdown 记号 ``**``
+    #   （项目其余提示词文本没有这个风格）⇒ 用【】。
+    assert "另有 5 条记录在【写入账本时】即被丢弃" in section, (
         f"没说清丢了几条、也没与「未列」区分开：{section.splitlines()[-1]}"
     )
+    assert "**" not in section.splitlines()[-1], "模型可见文本里不该有 markdown 记号"
 
 
 def test_a_null_value_means_the_ai_said_no_match():

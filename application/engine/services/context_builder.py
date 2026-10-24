@@ -35,6 +35,10 @@ from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepo
 from domain.ai.services.vector_store import VectorStore
 from domain.ai.services.embedding_service import EmbeddingService
 from application.engine.services.context_budget_allocator import ContextBudgetAllocator
+from application.engine.services.context_budget_policy import (
+    NAMING_RESERVE_CHARS,
+    mark_truncated,
+)
 from application.engine.dag.plan.schema import ChapterExecutionPlan
 
 logger = logging.getLogger(__name__)
@@ -380,15 +384,39 @@ class ContextBuilder:
                 continue
             cap = settings.max_chars_per_slot
             if cap > 0 and len(content) > cap:
-                content = content[:cap].rstrip() + "\n（本块已按上限截断）"
+                # ⚠ 复审 B-1：这里**自己**截一刀 ⇒ 分配器那层算出来的点名
+                #   **相对最终内容是陈旧的**（事实锁的「身份锁死」正好落在这个窗口里
+                #   ⇒ 模型既看不到它、也没被告知它没了）。
+                # ⇒ 改成复用**同一个**截断函数并把 ``section_headers`` 传进来
+                #   ⇒ 命名与截断在**同一层**算 ⇒ 不可能陈旧。
+                content = mark_truncated(
+                    content,
+                    cap,
+                    section_headers=getattr(slot, "section_headers", ()),
+                )
             header = f"=== {slot.name.upper()} ===\n"
             remaining = total_cap - used - len(header) if total_cap > 0 else 0
             if total_cap > 0 and remaining <= 0:
                 break
             if total_cap > 0 and len(content) > remaining:
                 # 放不下这一块 ⇒ 按**剩余额度**截，并保留逐块标记
-                keep = max(0, remaining - len("\n（本块已按上限截断）"))
-                content = content[:keep].rstrip() + "\n（本块已按上限截断）"
+                # ⚠ 复审 B-1/B-2′：同样复用**同一个**截断函数（命名与截断同层），
+                #   且点名块**幂等**（替换而不是叠加）。
+                keep = max(0, remaining - NAMING_RESERVE_CHARS)
+                content = mark_truncated(
+                    content,
+                    keep,
+                    section_headers=getattr(slot, "section_headers", ()),
+                )
+                # ⚠ 点名块的长度随「缺了几节」变化 ⇒ 实测一次，装不下就再收一点
+                #   （保证「总上限」这个不变量不被点名块挤破）。
+                while len(content) > remaining and keep > 0:
+                    keep = max(0, keep - (len(content) - remaining))
+                    content = mark_truncated(
+                        content,
+                        keep,
+                        section_headers=getattr(slot, "section_headers", ()),
+                    )
                 parts.append(f"{header}{content}")
                 used += len(header) + len(content)
                 break

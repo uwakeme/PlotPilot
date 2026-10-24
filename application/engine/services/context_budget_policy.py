@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List, Mapping, Optional
 
 from application.engine.services.context_budget_models import ContextSlot
@@ -40,6 +41,25 @@ _MISSING_SECTIONS_PREFIX = "【被截掉的小节："
 #: ⚠ 外层用 **【】**（不是 ``（）``）—— 小节标题本身含「）」（如
 #:   「核心事件时间线（不可矛盾）：」）⇒ 用圆括号做外层会让标记**无法被无歧义解析**。
 _MISSING_SECTIONS_SUFFIX = "】\n"
+#: 开头那个点名块（用于**替换**而不是叠加 ⇒ 幂等）。
+_MISSING_SECTIONS_RE = re.compile(r"^【被截掉的小节：(.+?)】\n?", re.S)
+#: 点名块的**预留**字符数（上层按剩余额度裁时要给它留位置）。
+#:
+#: ⚠ 实际长度随「缺了几节」变化 ⇒ 上层还要**实测一次**再收（见 context_builder）。
+NAMING_RESERVE_CHARS = 120
+
+
+def _already_named_sections(content: str) -> list:
+    """原文开头**已经**点名过的小节（去掉结尾冒号的形式）。"""
+    match = _MISSING_SECTIONS_RE.match(content or "")
+    if not match:
+        return []
+    return [part.strip() for part in match.group(1).split("、") if part.strip()]
+
+
+def _strip_naming_block(content: str) -> str:
+    """去掉开头那个点名块（重新截断时**替换**而不是叠加）。"""
+    return _MISSING_SECTIONS_RE.sub("", content or "", count=1)
 
 
 def _missing_sections(content: str, kept: str, section_headers) -> list:
@@ -55,7 +75,7 @@ def _missing_sections(content: str, kept: str, section_headers) -> list:
     return missing
 
 
-def _mark_truncated(content: str, target_chars: int, *, section_headers=()) -> str:
+def mark_truncated(content: str, target_chars: int, *, section_headers=()) -> str:
     """按上限截断，并**附上说明**（不许裸 ``...``）。
 
     ⚠ 复审发现（§4）：标记只说「仅是部分内容」⇒ 模型不知道**哪一节**没了。
@@ -63,16 +83,31 @@ def _mark_truncated(content: str, target_chars: int, *, section_headers=()) -> s
 
     ⚠ 复审 B-1：**点名放在开头**（见 :data:`_MISSING_SECTIONS_PREFIX` 的说明），
     否则会被下游的二次截断切没 ⇒ 模型在正文提示词里又看不见了。
+
+    ⚠ 复审 B-2′：点名块**幂等** —— 重新截断时**替换/合并**已存在的那块，
+    不叠加（否则两层截断会留下两个块，而解析约定只认第一个）。
+
+    ⚠ 复审 §2.2：命名与截断**必须在同一层**算 ⇒ 上层（正文 builder）也必须
+    复用本函数并把 ``section_headers`` 传进来，否则它那一刀丢掉的小节
+    「相对最终内容是陈旧的」。
     """
     if target_chars <= 0:
         return ""
-    kept = content[:target_chars].rstrip()
-    missing = _missing_sections(content, kept, section_headers)
+    already = _already_named_sections(content)
+    body = _strip_naming_block(content)
+    kept = body[:target_chars].rstrip()
+    missing = _missing_sections(body, kept, section_headers)
+    names = list(
+        dict.fromkeys([*already, *(str(h).rstrip("：:") for h in missing)])
+    )
     notice = ""
-    if missing:
-        names = "、".join(str(h).rstrip("：:") for h in missing)
-        notice = f"{_MISSING_SECTIONS_PREFIX}{names}{_MISSING_SECTIONS_SUFFIX}"
+    if names:
+        notice = f"{_MISSING_SECTIONS_PREFIX}{'、'.join(names)}{_MISSING_SECTIONS_SUFFIX}"
     return f"{notice}{kept}{TRUNCATION_MARKER}"
+
+
+#: 兼容旧名（内部曾用下划线前缀）。
+_mark_truncated = mark_truncated
 
 
 def cap_slots_by_own_limit(

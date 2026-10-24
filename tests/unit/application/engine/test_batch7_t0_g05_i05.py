@@ -28,7 +28,9 @@ I-05 · 每章字数的兜底只有一个入口，且**必须经过钳制**
 """
 from __future__ import annotations
 
+import ast
 import re
+import warnings
 from pathlib import Path
 
 from application.core.chapter_target_limits import (
@@ -256,6 +258,82 @@ CHAPTER_TARGET_FIELDS = (
 )
 
 
+def _is_chapter_target_access(node) -> bool:
+    """这个表达式**就是**「章目标字数」的取值（不是仅仅**提到**它）。
+
+    ⚠ 不能用「AST dump 的文本里含这个名字」—— 那会命中**字符串字面量**
+    （例如 ``alias == 'target_chapter_words'`` 这种**比较字符串**）⇒ 大量误报
+    （复审前一轮就踩过：把 ``row`` 误认成章目标字数别名 ⇒ 满屏假阳性）。
+
+    ⇒ 只认三种**取值**形态：
+      ① 属性访问：``novel.target_words_per_chapter``；
+      ② ``getattr(x, "target_words_per_chapter")``；
+      ③ ``x.get("chapter_target_words")``。
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr in CHAPTER_TARGET_FIELDS
+    if isinstance(node, ast.Call):
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        # ⚠ ``getattr(x, "field")`` 的字段名在**第 2** 个参数；
+        #   ``x.get("field")`` 的在**第 1** 个 ⇒ 位置不同，要分开取。
+        if name == "getattr" and len(node.args) >= 2:
+            arg = node.args[1]
+        elif name == "get" and len(node.args) >= 1:
+            arg = node.args[0]
+        else:
+            return False
+        if (
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and arg.value in CHAPTER_TARGET_FIELDS
+        ):
+            return True
+    return False
+
+
+def _fallback_value(node):
+    """这个节点是不是一个「兜底默认值」？返回它的描述（不是则 None）。
+
+    ⚠ ``0`` / ``None`` / ``False`` **不算**：它们的语义是「没设置」，不是「兜底成某个字数」。
+    ⚠ **Call** 只在**名字里带 default** 时才算
+    （``or get_default_words()`` 是兜底；``or context.get("target_chapter_words")``
+    是**另一个来源**，不是兜底 ⇒ 别误报）。
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or node.value is None:
+            return None
+        if node.value == 0:
+            return None
+        return repr(node.value)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return ast.unparse(node)
+    if isinstance(node, ast.Call):
+        text = ast.unparse(node)
+        if "default" in text.lower():
+            return text
+        return None
+    return None
+
+
+def _or_chain_fallbacks(node) -> list[str]:
+    """这个子树里**嵌套的** ``or`` 链上的兜底默认值。
+
+    ⚠ 例：``x or (a // 2 or 3000)`` ⇒ 兜底 3000 藏在右值的 ``or`` 链里
+    ⇒ 只看右值的**直接**形态会漏。
+    """
+    out: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.BoolOp) and isinstance(child.op, ast.Or):
+            for value in child.values[1:]:
+                fallback = _fallback_value(value)
+                if fallback is not None:
+                    out.append(fallback)
+    return out
+
+
 def _chapter_target_fallbacks(code: str) -> list[str]:
     """AST 扫描：章目标字数上的「``or <非零数字/常量>``」兜底。
 
@@ -265,38 +343,118 @@ def _chapter_target_fallbacks(code: str) -> list[str]:
       ③ 剥注释把**整除符 ``//``** 和**字符串里的 ``#``** 当注释吃掉
          （``a // 2 or 3000``、``v = "#tag" or 3000``）⇒ 逃逸；
       ④ ``or <命名常量>`` ⇒ 永远抓不到。
-    ⇒ 现在用 **AST**：
-      - 语句级的 ``or``（不看行 ⇒ 换行写法也抓得到）；
-      - 字段名出现在**左值**里（属性名 / 字符串常量都算 ⇒ ``data.get("chapter_target_words")`` 抓得到）；
-      - 右值是**非零数字**或**命名常量** ⇒ 一律算兜底；
-      - **不剥注释**（AST 天然看不见注释 ⇒ ③ 消失）。
-    """
-    import ast
+    ⚠ 复审 B-4′：改成 AST 后**仍有 4 个口子**：
+      ① **别名**：``_raw = getattr(novel, "target_words_per_chapter", None)``
+         换行后 ``return _raw or 3000`` ⇒ 字段名不在 ``or`` 的**直接左操作数**里；
+      ② 右值是 **Attribute**（``limits.DEFAULT_CHAPTER_WORDS``）；
+      ③ 右值是 **Call**（``get_default_words()``）；
+      ④ **三元兜底**（``3000 if _raw is None else _raw``）⇒ 压根不是 BoolOp。
 
+    ⇒ 现在：
+      - **别名表**：被赋值为「章目标字数**取值**」的变量名，也算章目标字数
+        （迭代到不动点，支持多级别名）；
+      - 右值认 Constant / Name / Attribute / Call（Call 只认名字带 default 的）；
+      - 额外扫 **IfExp**（三元兜底）；
+      - ``ast.parse`` 失败 ⇒ **告警**（此前静默 return [] ⇒ 文件坏了就不扫了），
+        且**先剥 BOM**（带 BOM 的文件此前直接解析失败 ⇒ 整份文件被跳过）。
+    """
     try:
-        tree = ast.parse(code)
-    except SyntaxError:
+        tree = ast.parse(code.lstrip("\ufeff"))
+    except SyntaxError as exc:
+        warnings.warn(
+            f"AST 扫描跳过：文件解析失败（{exc}）⇒ 兜底检查在这份文件上失效",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
+
+    # ── 别名表（迭代到不动点） ───────────────────────────────────
+    aliases: set[str] = set()
+    for _ in range(5):
+        grew = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            value_is_target = _is_chapter_target_access(node.value) or (
+                isinstance(node.value, ast.Name) and node.value.id in aliases
+            )
+            if not value_is_target:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    grew = True
+        if not grew:
+            break
+
+    def _is_target(node) -> bool:
+        if _is_chapter_target_access(node):
+            return True
+        return isinstance(node, ast.Name) and node.id in aliases
 
     hits: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
-            continue
-        left_text = ast.dump(node.values[0])
-        if not any(field in left_text for field in CHAPTER_TARGET_FIELDS):
-            continue
-        for value in node.values[1:]:
-            if (
-                isinstance(value, ast.Constant)
-                and isinstance(value.value, (int, float))
-                and not isinstance(value.value, bool)
+        # ① ``x or <兜底>``
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            if not _is_target(node.values[0]):
+                continue
+            for value in node.values[1:]:
+                fallback = _fallback_value(value)
+                if fallback is not None:
+                    hits.append(f"line {node.lineno}: {ast.unparse(node)}")
+                    continue
+                # ⚠ 兜底可能**嵌在**右值的 ``or`` 链里
+                #   （``x or (a // 2 or 3000)``）⇒ 顺着链往下找。
+                for nested in _or_chain_fallbacks(value):
+                    hits.append(f"line {node.lineno}: {ast.unparse(node)}")
+                    break
+        # ② 三元兜底：``<兜底> if <条件> else <值>``
+        elif isinstance(node, ast.IfExp):
+            if not (
+                _is_target(node.test)
+                or _is_target(node.body)
+                or _is_target(node.orelse)
             ):
-                if value.value == 0:
-                    continue  # 0 = 「未设置」，不是兜底默认值
-                hits.append(f"line {node.lineno}: {ast.unparse(node)}")
-            elif isinstance(value, ast.Name):
-                hits.append(f"line {node.lineno}: {ast.unparse(node)}")
+                continue
+            for branch in (node.body, node.orelse):
+                fallback = _fallback_value(branch)
+                # ⚠ 三元里只认**字面量/属性/调用**当兜底 ——
+                #   ``else <变量>`` 那一支通常是「保留原值」，不是兜底。
+                if fallback is not None and not isinstance(branch, ast.Name):
+                    hits.append(f"line {node.lineno}: {ast.unparse(node)}")
     return hits
+
+
+def test_the_ast_scan_catches_the_known_escape_shapes():
+    """扫描器**自己**的守卫：复审实测过的逃逸形态，一个都不许漏。
+
+    ⚠ 复审 B-4′：上一版 AST 扫描仍有 4 个口子（别名 / Attribute 右值 /
+    Call 右值 / 三元兜底）；更早还有换行写法、``//`` 整除符、字符串里的 ``#``。
+    ⇒ 这里把**全部**形态钉成用例（漏一个就会红）。
+
+    ⚠ 也要钉住「**不该**报」的形态 ⇒ 否则收紧口径时会误伤合法写法。
+    """
+    escapes = {
+        "别名": 'def f(novel):\n    _raw = getattr(novel, "target_words_per_chapter", None)\n    return _raw or 3000\n',
+        "get字段": 'def f(d):\n    return d.get("chapter_target_words") or 3000\n',
+        "Attribute右值": 'def f(novel):\n    return novel.target_words_per_chapter or limits.DEFAULT_CHAPTER_WORDS\n',
+        "Call右值": 'def f(novel):\n    return novel.target_words_per_chapter or get_default_words()\n',
+        "命名常量右值": 'def f(novel):\n    return novel.target_words_per_chapter or SOME_DEFAULT_WORDS\n',
+        "三元兜底": 'def f(novel):\n    _raw = getattr(novel, "target_words_per_chapter", None)\n    return 3000 if _raw is None else _raw\n',
+        "换行写法": 'def f(novel):\n    return novel.target_words_per_chapter or \\\n        3000\n',
+        "整除符": 'def f(a, novel):\n    return novel.target_words_per_chapter or (a // 2 or 3000)\n',
+        "字符串里的#": 'def f(novel):\n    return novel.target_words_per_chapter or ("#tag" or 3000)\n',
+    }
+    for name, code in escapes.items():
+        assert _chapter_target_fallbacks(code), f"扫描漏了这个逃逸形态：{name}"
+
+    legit = {
+        "另一来源": 'def f(ctx):\n    return ctx.get("target_chapter_words") or ctx.get("target_chapter_words")\n',
+        "或0": 'def f(novel):\n    return int(getattr(novel, "target_words_per_chapter", 0) or 0)\n',
+        "比较字符串": 'def f(alias):\n    return 2500 if alias == "target_chapter_words" else None\n',
+    }
+    for name, code in legit.items():
+        assert not _chapter_target_fallbacks(code), f"扫描误报了合法写法：{name}"
 
 
 def test_no_scattered_word_count_fallbacks_remain():

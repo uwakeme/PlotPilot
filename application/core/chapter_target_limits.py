@@ -40,6 +40,30 @@ def clamp_chapter_target_words(w: int) -> int:
     return max(CHAPTER_TARGET_WORDS_MIN, min(CHAPTER_TARGET_WORDS_MAX, int(w)))
 
 
+def resolve_chapter_words_for_display(value: Any) -> int:
+    """变量回填用的「每章目标字数」—— **没设就写 0**（不是兜底值）。
+
+    ⚠ 复审 O2：这两处此前写的是 ``or 0``（没设 ⇒ 0）⇒ 提示词里
+    「每章字数」= 0，读者知道**作者没设**。
+    ⇒ 改成走唯一入口后，没设变成了 2500 ⇒ 提示词里**像作者设的 2500**
+    ⇒ 那是**不诚实的回显**。
+    ⇒ 所以：**没设 ⇒ 写 0**；设了 ⇒ 写**夹逼后**的值（越界值不再进提示词）。
+
+    与 :func:`resolve_chapter_words` 的区别只有一个：**没设时写 0 还是 2500**。
+    """
+    if value is None:
+        return 0
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        number = int(float(str(value).strip()))
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        return 0
+    if number <= 0:
+        return 0
+    return clamp_chapter_target_words(number)
+
+
 def resolve_chapter_words(
     value: Any,
     *,
