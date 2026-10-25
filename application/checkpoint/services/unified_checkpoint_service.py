@@ -326,6 +326,10 @@ class UnifiedCheckpointService:
         head_id: Optional[str] = None
 
         try:
+            # 世界状态切片：按锚点章节取该 checkpoint 所在的世界切片。
+            # ⚠ 之前这里漏了赋值 ⇒ ``slices`` 在本方法里**从未定义** ⇒ NameError
+            # ⇒ 被下面的 except 吞掉 ⇒ 世界线可视化**静默返回空图**（只留一条 error 日志）。
+            slices = self._world_slices_by_chapter(novel_id)
             rows = self.db.fetch_all(
                 """SELECT id, name, trigger_type, branch_name, created_at, parent_id, anchor_chapter, story_state
                    FROM novel_checkpoints

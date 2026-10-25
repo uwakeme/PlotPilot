@@ -13,6 +13,12 @@ from application.engine.services.prose_context_settings import (
     get_prose_context_runtime_settings,
     prose_context_total_cap,
 )
+# E-07：温度来自单一来源（config/performance.yaml 的 prose_sampling 段）。
+# ⚠ 必须是**模块级** import：之前它只在 ``_build_config`` 里做了局部 import，
+# 而 ``compose``（另一个方法）也用了 ``prose_temperature()`` ⇒ 运行时 NameError
+# ⇒ 整章正文**永远生成不出来**（真实跑一本真书时炸出来的）。
+#   ⇒ 「局部 import 只覆盖那个函数」是个陷阱：同名函数在别的方法里用就炸。
+from application.engine.services.prose_sampling_settings import prose_temperature
 from application.core.chapter_target_limits import resolve_chapter_words
 from infrastructure.ai.prompt_keys import CHAPTER_PROSE_GENERATION
 from engine.runtime.generation_token_policy import CHAPTER_PROSE_MAX_TOKENS
@@ -130,11 +136,7 @@ class ChapterProseInvocationComposer:
     def _build_config(request: ProseCompositionRequest):
         from domain.ai.services.llm_service import GenerationConfig
 
-        # E-07：温度来自单一来源（config/performance.yaml 的 prose_sampling 段）。
-        from application.engine.services.prose_sampling_settings import (
-            prose_temperature,
-        )
-
+        # E-07：温度来自单一来源（模块级 import，见文件头注释）。
         return GenerationConfig(
             max_tokens=ChapterProseInvocationComposer._max_output_tokens(request),
             temperature=prose_temperature(),

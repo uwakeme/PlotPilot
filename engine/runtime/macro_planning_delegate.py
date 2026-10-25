@@ -82,6 +82,38 @@ def _write_macro_variables(*, novel_id: str, variables: Mapping[str, Any], node_
         )
 
 
+def _build_macro_story_context_variables(variables: Mapping[str, Any]) -> dict[str, Any]:
+    """把 ``build_quick_macro_variables`` 的产出映射成**模板声明的 alias**。
+
+    模板（``planning-quick-macro/user.md``）用点号访问故事上下文：
+    ``{{worldbuilding.content}}`` / ``{{locations.list}}`` / ``{{characters}}``；
+    而 ``build_quick_macro_variables`` 给的是**根**形态（``worldbuilding`` /
+    ``locations`` 是 dict，``characters`` 是文本）。
+
+    ⚠ 为什么必须在这里摊平（真实跑章实测出来的坑，不是推演）：
+      * invocation 解析器按 **binding.alias**（点号形态）匹配显式变量，
+        根形态的 key 匹配不上 ⇒ 取不到值；
+      * ``characters`` 是**必填**变量 ⇒ 取不到就报「必填变量缺失」⇒ 会话直接 blocked，
+        **模型根本没被调用**（实测：attempt 记录为空）；
+      * ``worldbuilding.content`` / ``locations.list`` 不是必填 ⇒ 取不到就**静默渲染成空串**，
+        模型拿到的是「没有世界观、没有地点」的结构提案（更隐蔽的坑）。
+
+    ⇒ 故事上下文由**调用方在调用时**提供（与 ``act_planning_delegate`` 同一套路），
+    中枢只留结构类事实（planning_depth / rec_* 等）。
+    """
+    worldbuilding = variables.get("worldbuilding")
+    locations = variables.get("locations")
+    return {
+        "characters": str(variables.get("characters") or ""),
+        "worldbuilding.content": (
+            str(worldbuilding.get("content") or "") if isinstance(worldbuilding, Mapping) else ""
+        ),
+        "locations.list": (
+            str(locations.get("list") or "") if isinstance(locations, Mapping) else ""
+        ),
+    }
+
+
 def _pause_for_invocation(host: "DaemonHostProtocol", novel: Novel, outcome) -> None:
     session = outcome.payload.get("session") if isinstance(outcome.payload, Mapping) else None
     policy_value = getattr(getattr(session, "policy", ""), "value", "") or "AUTOPILOT_PAUSE"
@@ -153,6 +185,10 @@ async def _request_macro_invocation(host: "DaemonHostProtocol", novel: Novel, *,
         )
         if alias in variables
     }
+    # 故事上下文（角色 / 世界观 / 地点）**由调用方提供**：
+    # 这几个 alias 在契约里是「调用方提供」口径，不绑中枢键
+    # （中枢里根本没有它们 —— `novel.characters.list` 只有手动回填接口会写）。
+    story_context_variables = _build_macro_story_context_variables(variables)
     ensure_invocation_contract("autopilot.macro.plan", PLANNING_QUICK_MACRO, get_database())
     _write_macro_variables(
         novel_id=novel.novel_id.value,
@@ -173,7 +209,7 @@ async def _request_macro_invocation(host: "DaemonHostProtocol", novel: Novel, *,
             operation="autopilot.macro.plan",
             node_key=PLANNING_QUICK_MACRO,
             context={"novel_id": novel.novel_id.value, "target_chapters": target_chapters},
-            explicit_variables={},
+            explicit_variables=story_context_variables,
             continuation_handler_key="autopilot_macro_plan",
             policy_hint=policy,
             metadata={"source": "macro_planning_delegate"},

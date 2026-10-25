@@ -491,7 +491,23 @@ class VariableResolver:
                 required_missing.append(binding.alias)
                 diagnostics.append(f"必填变量缺失: {binding.alias}")
 
-            if binding.variable_key:
+            if binding.alias in explicit_variables:
+                # 调用方显式提供 ⇒ 如实记成「已解析 / 来源 explicit」。
+                # 此前这类 binding（没有中枢键）一律被记成 ``invalid`` ——
+                # 那是**谎报**：值明明就在（``aliases`` 里已经是它了），
+                # 面板上却显示「无效」，排查时会被带偏。
+                resolution_items.append(
+                    self._resolution_item(
+                        binding=binding,
+                        display_name=self._public_display_name(binding, definition),
+                        status="resolved",
+                        value=raw_aliases.get(binding.alias),
+                        version_number=0,
+                        source="explicit",
+                        context_key=context_key,
+                    )
+                )
+            elif binding.variable_key:
                 resolution_items.append(
                     self._resolution_item(
                         binding=binding,

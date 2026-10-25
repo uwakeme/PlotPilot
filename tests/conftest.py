@@ -48,6 +48,34 @@ def _reset_process_level_caches():
     _clear_all()
 
 
+@pytest.fixture(autouse=True)
+def _restore_prompt_singletons():
+    """还原 CPMS 全局单例（``_manager_instance`` / ``_registry_instance``）。
+
+    多个用例会**临时**把这两个模块级全局指向自己的临时库，用完把库关了
+    却没还原 ⇒ 全局单例就此指向一个**已关闭的库** ⇒ 后面任何用到
+    ``get_prompt_registry()`` / ``get_prompt_manager()`` 的用例都会炸
+    「sqlite3.ProgrammingError: Cannot operate on a closed database」。
+
+    这不是某个用例的 bug，是**全局状态泄漏**：谁改了全局谁负责还原，
+    但漏一处就要炸后面一串。与其逐个文件记得还原，不如在这里统一兜底。
+    """
+    try:
+        import infrastructure.ai.prompt_manager as prompt_manager_module
+        import infrastructure.ai.prompt_registry as prompt_registry_module
+    except Exception:  # pragma: no cover - 导入失败时不该挡住整个套件
+        yield
+        return
+
+    prev_manager = prompt_manager_module._manager_instance
+    prev_registry = prompt_registry_module._registry_instance
+    try:
+        yield
+    finally:
+        prompt_manager_module._manager_instance = prev_manager
+        prompt_registry_module._registry_instance = prev_registry
+
+
 def _clear_all():
     try:
         from interfaces.api.settings import reset_backend_settings_cache
