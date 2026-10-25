@@ -463,8 +463,18 @@ def test_the_style_preset_timeout_really_comes_from_the_config():
         resolve_match_timeout_seconds,
     )
 
+    # ⚠ 复审 S8：临时 YAML **不许写进 `config/` 目录**
+    #   （`config/` 不在 .gitignore 里 ⇒ 进程被杀就留下未跟踪文件，有被误提交的风险）
+    #   ⇒ 写到系统临时目录。
+    import shutil
+    import tempfile
+
     original = PERFORMANCE_YAML.read_text(encoding="utf-8")
-    tmp = PERFORMANCE_YAML.with_name("performance.__j02_test__.yaml")
+    tmp_dir = tempfile.mkdtemp(prefix="plotpilot_j02_")
+    tmp = Path(tmp_dir) / "performance.yaml"
+    # ⚠ 复审 S8：临时文件**不许落在仓库的 config/ 目录里**
+    #   （`config/` 不在 .gitignore 里 ⇒ 进程被杀就留下未跟踪文件，有被误提交的风险）
+    assert (ROOT / "config") not in tmp.parents, "临时 YAML 写进了仓库的 config/ 目录"
     try:
         tmp.write_text(
             original.replace(
@@ -478,8 +488,8 @@ def test_the_style_preset_timeout_really_comes_from_the_config():
             "改了配置但解析值没跟着变 ⇒ 超时**不是**从配置读的"
         )
     finally:
-        tmp.unlink(missing_ok=True)
         reload_config()  # 恢复默认配置（别把测试环境留在临时文件上）
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_the_real_config_disables_no_features():

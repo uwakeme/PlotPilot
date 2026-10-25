@@ -258,6 +258,19 @@ CHAPTER_TARGET_FIELDS = (
 )
 
 
+def _dotted_name(node) -> str:
+    """``self.words`` ⇒ ``"self.words"``；不是属性链就返回空串。"""
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
 def _is_chapter_target_access(node) -> bool:
     """这个表达式**就是**「章目标字数」的取值（不是仅仅**提到**它）。
 
@@ -265,13 +278,25 @@ def _is_chapter_target_access(node) -> bool:
     （例如 ``alias == 'target_chapter_words'`` 这种**比较字符串**）⇒ 大量误报
     （复审前一轮就踩过：把 ``row`` 误认成章目标字数别名 ⇒ 满屏假阳性）。
 
-    ⇒ 只认三种**取值**形态：
+    ⇒ 只认四种**取值**形态：
       ① 属性访问：``novel.target_words_per_chapter``；
       ② ``getattr(x, "target_words_per_chapter")``；
-      ③ ``x.get("chapter_target_words")``。
+      ③ ``x.get("chapter_target_words")``；
+      ④ **下标取值**（复审 §3.1 补的第 3 种现实形态）：
+         ``d["target_words_per_chapter"]``（键是**字面量字符串**时）。
     """
     if isinstance(node, ast.Attribute):
         return node.attr in CHAPTER_TARGET_FIELDS
+    if isinstance(node, ast.Subscript):
+        # ⚠ 键必须是**字面量字符串**（``d[some_var]`` 认不出来）
+        key = node.slice
+        if (
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and key.value in CHAPTER_TARGET_FIELDS
+        ):
+            return True
+        return False
     if isinstance(node, ast.Call):
         func = node.func
         name = getattr(func, "attr", None) or getattr(func, "id", None)
@@ -373,16 +398,29 @@ def _chapter_target_fallbacks(code: str) -> list[str]:
     for _ in range(5):
         grew = False
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
+            # ⚠ 复审 §3.1 补的两种现实形态：
+            #   ① **带注解的赋值**：``_raw: int = getattr(...)``（``ast.AnnAssign``）
+            #   ② **属性目标**：``self.words = getattr(...)``
+            if isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+                value = node.value
+            elif isinstance(node, ast.Assign):
+                targets = list(node.targets)
+                value = node.value
+            else:
                 continue
-            value_is_target = _is_chapter_target_access(node.value) or (
-                isinstance(node.value, ast.Name) and node.value.id in aliases
+            value_is_target = _is_chapter_target_access(value) or (
+                isinstance(value, ast.Name) and value.id in aliases
             )
             if not value_is_target:
                 continue
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id not in aliases:
-                    aliases.add(target.id)
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    key = target.id
+                else:
+                    key = _dotted_name(target)
+                if key and key not in aliases:
+                    aliases.add(key)
                     grew = True
         if not grew:
             break
@@ -390,7 +428,9 @@ def _chapter_target_fallbacks(code: str) -> list[str]:
     def _is_target(node) -> bool:
         if _is_chapter_target_access(node):
             return True
-        return isinstance(node, ast.Name) and node.id in aliases
+        if isinstance(node, ast.Name) and node.id in aliases:
+            return True
+        return _dotted_name(node) in aliases
 
     hits: list[str] = []
     for node in ast.walk(tree):
@@ -444,6 +484,10 @@ def test_the_ast_scan_catches_the_known_escape_shapes():
         "换行写法": 'def f(novel):\n    return novel.target_words_per_chapter or \\\n        3000\n',
         "整除符": 'def f(a, novel):\n    return novel.target_words_per_chapter or (a // 2 or 3000)\n',
         "字符串里的#": 'def f(novel):\n    return novel.target_words_per_chapter or ("#tag" or 3000)\n',
+        # ⚠ 复审 §3.1 补的三种**现实**形态：
+        "下标取值": 'def f(d):\n    return d["target_words_per_chapter"] or 3000\n',
+        "带注解的别名": 'def f(novel):\n    _raw: int = getattr(novel, "target_words_per_chapter", None)\n    return _raw or 3000\n',
+        "属性目标的别名": 'def f(self, novel):\n    self.words = getattr(novel, "target_words_per_chapter", None)\n    return self.words or 3000\n',
     }
     for name, code in escapes.items():
         assert _chapter_target_fallbacks(code), f"扫描漏了这个逃逸形态：{name}"
