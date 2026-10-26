@@ -17,6 +17,36 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 
 
+# ── N-1：中文正文夹带英文词（可机检） ──────────────────────────────
+#
+#: 拉丁单词（≥2 字母；``a`` / ``I`` 这类不算）。
+_LATIN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+#: 中文字符（用于判定「这个英文词处在中文语境里」）。
+_HAS_CJK = re.compile(r"[一-鿿]")
+#: 判定「中文语境」时，英文词左右各看多少字。
+_ENGLISH_CONTEXT_CHARS = 8
+#: 引号/书名号/括号 —— 里面的外文是**引文**，不是「夹带」。
+_ENGLISH_EXEMPT_PAIRS: Tuple[Tuple[str, str], ...] = (
+    ("“", "”"),
+    ("「", "」"),
+    ("『", "』"),
+    ("《", "》"),
+    ("（", "）"),
+    ("(", ")"),
+    ("【", "】"),
+    ("[", "]"),
+)
+#: 常见专名/缩写白名单（**全小写**比较）。
+#:
+#: ⚠ 白名单是**封闭清单** ⇒ 不在表里的专名会被标记（info 级，代价低）。
+#:   遇到真被误伤的专名，往这里加即可。
+ENGLISH_PROPER_NOUN_ALLOWLIST: frozenset = frozenset({
+    "dna", "fbi", "cnn", "bbc", "tv", "cd", "dvd", "usb", "pdf", "id",
+    "ceo", "cfo", "vip", "sos", "mri", "ct", "ai", "iq", "eq", "usa", "uk",
+    "un", "ok", "no", "vs", "inc", "ltd", "co", "mr", "mrs", "ms", "dr",
+})
+
+
 @dataclass
 class ClicheHit:
     """俗套句式命中结果（增强版）"""
@@ -208,10 +238,94 @@ class ClicheScanner:
                 )
                 hits.append(hit)
 
+        # N-1：中文正文里夹带的英文词（**专用检查**，不是正则表的一行 ——
+        # 「孤立/在中文语境里」是跨全文的语义，单条正则表达不了）。
+        hits.extend(self._scan_english_in_chinese(text))
+
         # 按位置排序
         hits.sort(key=lambda h: h.start)
 
         return hits
+
+    # ── N-1：中文正文夹带英文词 ────────────────────────────────
+    #
+    # ⚠ 为什么要单独一个检查函数（而不是往 ``AI_CLICHE_PATTERNS_ENHANCED``
+    #   里加一行正则）：
+    #   「这个词是不是不该出现在中文正文里」要看**上下文**（是不是引文、
+    #   是不是专名、是不是纯外文段落），而规则表那一行只能表达「模式」，
+    #   表达不了「语境」。
+    #   ⇒ 这里产出**标准** ``ClicheHit``，于是 score / hits / assessment /
+    #     落库 / API 这条链路**自动生效**，三个消费方（章后审计 / 流式 AC
+    #     扫描 / 分块缓冲扫描）也自动覆盖（它们都调 ``scan_cliches``）。
+    #
+    # ⚠ 严重性取 **info**：这是**低噪声**的机检规则（正文里不会成片出现），
+    #   用 warning 会让每章凭空跳到「中等」。
+
+    def _scan_english_in_chinese(self, text: str) -> List[ClicheHit]:
+        """中文正文里夹带的英文单词。
+
+        判据（逐条都可机检，不依赖 LLM）：
+
+        1. 词长 ≥ 2 的拉丁单词（``a`` / ``I`` 不算）；
+        2. **在中文语境里** —— 词的左右各 8 字内出现中文字符
+           ⇒ 纯外文段落（英文信函、外文引文）不算「夹带」；
+        3. 不在**引号/书名号/括号**内 ⇒ 引文里的外文是引文，不是夹带；
+        4. 不在**专名白名单**里（见 ``ENGLISH_PROPER_NOUN_ALLOWLIST``）。
+
+        「孤立」体现在**提示语**上：全文只出现一次的，更可能是机械翻译残留。
+        """
+        if not text:
+            return []
+        exempt = self._exempt_spans(text)
+        counts: Dict[str, int] = {}
+        for match in _LATIN_WORD_RE.finditer(text):
+            counts[match.group(0).lower()] = counts.get(match.group(0).lower(), 0) + 1
+
+        hits: List[ClicheHit] = []
+        for match in _LATIN_WORD_RE.finditer(text):
+            word = match.group(0)
+            if word.lower() in ENGLISH_PROPER_NOUN_ALLOWLIST:
+                continue
+            if any(start <= match.start() < end for start, end in exempt):
+                continue
+            left = text[max(0, match.start() - _ENGLISH_CONTEXT_CHARS):match.start()]
+            right = text[match.end():match.end() + _ENGLISH_CONTEXT_CHARS]
+            if not _HAS_CJK.search(left) and not _HAS_CJK.search(right):
+                continue
+            isolated = counts[word.lower()] == 1
+            hits.append(
+                ClicheHit(
+                    pattern="中文正文夹带英文词",
+                    text=word,
+                    start=match.start(),
+                    end=match.end(),
+                    severity="info",
+                    category="语言混杂",
+                    replacement_hint=(
+                        "疑似机械翻译残留，改用中文"
+                        if isolated
+                        else "若为专名请加进白名单；否则改用中文"
+                    ),
+                )
+            )
+        return hits
+
+    @staticmethod
+    def _exempt_spans(text: str) -> List[Tuple[int, int]]:
+        """引号/书名号/括号内部的区间（里面的外文是引文，不算「夹带」）。"""
+        spans: List[Tuple[int, int]] = []
+        for open_ch, close_ch in _ENGLISH_EXEMPT_PAIRS:
+            start = 0
+            while True:
+                left = text.find(open_ch, start)
+                if left < 0:
+                    break
+                right = text.find(close_ch, left + len(open_ch))
+                if right < 0:
+                    break
+                spans.append((left, right + len(close_ch)))
+                start = right + len(close_ch)
+        return spans
 
     def scan_by_category(self, text: str) -> Dict[str, List[ClicheHit]]:
         """按分类统计扫描结果"""

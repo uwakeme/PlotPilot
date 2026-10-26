@@ -528,170 +528,222 @@ class AutoBibleGenerator:
 
         # 2. 根据阶段生成不同内容
         if stage == "all":
-            # 一次性生成所有内容（向后兼容）
-            bible_data = await self._generate_bible_data(premise, target_chapters)
-            await self._save_to_bible(novel_id, bible_data)
-            if self.worldbuilding_service and "worldbuilding" in bible_data:
-                await self._save_worldbuilding(novel_id, bible_data["worldbuilding"])
+            # 「一次性」= 依次跑三个分阶段（**唯一一条生成路径**）。
+            #
+            # ⚠ 此前这里走 ``bible-all`` 一次性提示词，而那个提示词**没有输出
+            #   schema**（``package.yaml`` 指向的契约模块压根不存在）⇒ 模型自由发挥
+            #   ⇒ 返回形状每次都不一样 ⇒ 落库再全也落不全（实测：一次连角色都没有）。
+            #   而三个分阶段提示词**各自都有完整 schema** ⇒ 形状稳定、字段齐全。
+            worldbuilding_data = await self._run_stage_worldbuilding(
+                novel_id, premise, target_chapters
+            )
+            characters_data = await self._run_stage_characters(
+                novel_id, premise, target_chapters
+            )
+            locations_data = await self._run_stage_locations(
+                novel_id, premise, target_chapters
+            )
+            bible_data = {**worldbuilding_data, **characters_data, **locations_data}
 
         elif stage == "worldbuilding":
-            logger.debug("Stage worldbuilding - checking Bible record")
-            # 确保Bible记录存在
-            try:
-                self.bible_service.get_bible_by_novel(novel_id)
-            except EntityNotFoundError:
-                bible_id = f"{novel_id}-bible"
-                self.bible_service.create_bible(bible_id, novel_id)
-                logger.info(f"Created Bible record: {bible_id}")
-
-            logger.debug("Calling _generate_worldbuilding_and_style")
-            # 只生成世界观和文风
-            bible_data = await self._generate_worldbuilding_and_style(premise, target_chapters)
-            logger.debug("_generate_worldbuilding_and_style completed, keys=%s", list(bible_data.keys()))
-            logger.debug("Has 'worldbuilding' key: %s, worldbuilding_service is None: %s", 'worldbuilding' in bible_data, self.worldbuilding_service is None)
-            # 保存文风
-            if "style" in bible_data:
-                style_id = f"{novel_id}-style-1"
-                try:
-                    self.bible_service.add_style_note(
-                        novel_id=novel_id,
-                        note_id=style_id,
-                        category="文风公约",
-                        content=bible_data["style"]
-                    )
-                    logger.info(f"Style note saved: {style_id}")
-                except Exception as e:
-                    if "already exists" in str(e):
-                        logger.info(f"Style note {style_id} already exists, skipping")
-                    else:
-                        logger.error(f"Failed to save style note: {e}")
-                        raise
-            # 保存世界观
-            if self.worldbuilding_service and "worldbuilding" in bible_data:
-                await self._save_worldbuilding(novel_id, bible_data["worldbuilding"])
+            bible_data = await self._run_stage_worldbuilding(novel_id, premise, target_chapters)
 
         elif stage == "characters":
-            # 确保Bible记录存在
-            try:
-                self.bible_service.get_bible_by_novel(novel_id)
-            except EntityNotFoundError:
-                bible_id = f"{novel_id}-bible"
-                self.bible_service.create_bible(bible_id, novel_id)
-                logger.info(f"Created Bible record: {bible_id}")
-
-            # 基于已有世界观生成人物
-            existing_worldbuilding = self._load_worldbuilding(novel_id)
-            bible_data = await self._generate_characters(premise, target_chapters, existing_worldbuilding)
-            chars_payload = bible_data.get("characters") or []
-            if not chars_payload:
-                raise ValueError(
-                    "角色生成未得到任何人物：多为模型输出非 JSON、截断或解析失败。"
-                    "请确认 AI 控制台模型可用并适当增大超时；也可查看服务端日志中的 LLM 原始片段。"
-                )
-            # 保存人物
-            character_ids = []
-            used_char_ids = set()  # 用于跟踪已使用的人物ID
-            for idx, char_data in enumerate(bible_data.get("characters", [])):
-                character_id = f"{novel_id}-char-{idx+1}"
-                
-                # 检查并处理重复ID
-                if character_id in used_char_ids:
-                    logger.info(f"Character ID {character_id} already exists, generating new ID")
-                    character_id = f"{novel_id}-char-{idx+1}-{len(used_char_ids)}"
-                
-                used_char_ids.add(character_id)
-                try:
-                    self.bible_service.add_character(
-                        novel_id=novel_id,
-                        character_id=character_id,
-                        name=char_data["name"],
-                        description=f"{char_data['role']} - {char_data['description']}",
-                        relationships=char_data.get("relationships", []),
-                        gender=char_data.get("gender") or "",
-                        age=char_data.get("age") or "",
-                        appearance=char_data.get("appearance") or "",
-                        personality=char_data.get("personality") or char_data.get("flaw") or "",
-                        background=char_data.get("background") or char_data.get("ghost") or "",
-                        core_motivation=char_data.get("core_motivation") or char_data.get("want") or "",
-                        inner_lack=char_data.get("inner_lack") or char_data.get("need") or "",
-                        public_profile=char_data.get("public_profile") or "",
-                        hidden_profile=char_data.get("hidden_profile") or "",
-                        reveal_chapter=char_data.get("reveal_chapter"),
-                        mental_state=char_data.get("mental_state") or "NORMAL",
-                        mental_state_reason=char_data.get("mental_state_reason") or "",
-                        verbal_tic=char_data.get("verbal_tic") or "",
-                        idle_behavior=char_data.get("idle_behavior") or "",
-                        core_belief=char_data.get("core_belief") or "",
-                        moral_taboos=char_data.get("moral_taboos") or [],
-                        voice_profile=char_data.get("voice_profile") or {},
-                        active_wounds=char_data.get("active_wounds") or [],
-                    )
-                    character_ids.append((character_id, char_data))
-                    logger.info(f"Character saved: {character_id}")
-                except Exception as e:
-                    if "already exists" in str(e):
-                        logger.info(f"Character {character_id} already exists, skipping")
-                    else:
-                        logger.error(f"Failed to save character: {e}")
-                        raise
-
-            # 从人物关系生成三元组
-            if self.triple_repository:
-                await self._generate_character_triples(novel_id, character_ids)
+            bible_data = await self._run_stage_characters(novel_id, premise, target_chapters)
 
         elif stage == "locations":
-            # 确保Bible记录存在
-            try:
-                self.bible_service.get_bible_by_novel(novel_id)
-            except EntityNotFoundError:
-                bible_id = f"{novel_id}-bible"
-                self.bible_service.create_bible(bible_id, novel_id)
-                logger.info(f"Created Bible record: {bible_id}")
-
-            # 基于已有世界观和人物生成地点
-            existing_worldbuilding = self._load_worldbuilding(novel_id)
-            existing_characters = self._load_characters(novel_id)
-            bible_data = await self._generate_locations(premise, target_chapters, existing_worldbuilding, existing_characters)
-            locs_payload = bible_data.get("locations") or []
-            if not locs_payload:
-                raise ValueError(
-                    "地点生成未得到任何地点：多为模型输出非 JSON、截断或解析失败。"
-                    "请确认 AI 控制台模型可用并适当增大超时；也可查看服务端日志中的 LLM 原始片段。"
-                )
-            # 保存地点
-            location_ids = []
-            for loc_data in self._prepare_locations_for_save(novel_id, bible_data.get("locations", [])):
-                try:
-                    self.bible_service.add_location(
-                        novel_id=novel_id,
-                        location_id=loc_data["location_id"],
-                        name=loc_data["name"],
-                        description=loc_data["description"],
-                        location_type=loc_data["location_type"],
-                        connections=loc_data["connections"],
-                        parent_id=loc_data["parent_id"],
-                    )
-                    location_ids.append((loc_data["location_id"], loc_data))
-                    logger.info(f"Location saved: {loc_data['location_id']}")
-                except Exception as e:
-                    if "already exists" in str(e):
-                        logger.info(f"Location {loc_data['location_id']} already exists, skipping")
-                    else:
-                        logger.error(f"Failed to save location: {e}")
-                        raise
-
-            # 从地点连接生成三元组
-            if self.triple_repository:
-                await self._generate_location_triples(novel_id, location_ids)
+            bible_data = await self._run_stage_locations(novel_id, premise, target_chapters)
 
         else:
             raise ValueError(f"Unknown stage: {stage}")
-
         logger.info(f"Bible generation completed for {novel_id} (stage: {stage})")
         return bible_data
 
+    async def _run_stage_worldbuilding(
+        self,
+        novel_id: str,
+        premise: str,
+        target_chapters: int,
+    ) -> Dict[str, Any]:
+        """生成阶段：世界观 + 文风公约。"""
+        logger.debug("Stage worldbuilding - checking Bible record")
+        # 确保Bible记录存在
+        try:
+            self.bible_service.get_bible_by_novel(novel_id)
+        except EntityNotFoundError:
+            bible_id = f"{novel_id}-bible"
+            self.bible_service.create_bible(bible_id, novel_id)
+            logger.info(f"Created Bible record: {bible_id}")
+
+        logger.debug("Calling _generate_worldbuilding_and_style")
+        # 只生成世界观和文风
+        bible_data = await self._generate_worldbuilding_and_style(premise, target_chapters)
+        logger.debug("_generate_worldbuilding_and_style completed, keys=%s", list(bible_data.keys()))
+        logger.debug("Has 'worldbuilding' key: %s, worldbuilding_service is None: %s", 'worldbuilding' in bible_data, self.worldbuilding_service is None)
+        # 保存文风
+        if "style" in bible_data:
+            style_id = f"{novel_id}-style-1"
+            try:
+                self.bible_service.add_style_note(
+                    novel_id=novel_id,
+                    note_id=style_id,
+                    category="文风公约",
+                    content=bible_data["style"]
+                )
+                logger.info(f"Style note saved: {style_id}")
+            except Exception as e:
+                if "already exists" in str(e):
+                    logger.info(f"Style note {style_id} already exists, skipping")
+                else:
+                    logger.error(f"Failed to save style note: {e}")
+                    raise
+        # 保存世界观
+        if self.worldbuilding_service and "worldbuilding" in bible_data:
+            await self._save_worldbuilding(novel_id, bible_data["worldbuilding"])
+        return bible_data
+
+    async def _run_stage_characters(
+        self,
+        novel_id: str,
+        premise: str,
+        target_chapters: int,
+    ) -> Dict[str, Any]:
+        """生成阶段：人物阵容（依赖已落库的世界观）。"""
+        # 确保Bible记录存在
+        try:
+            self.bible_service.get_bible_by_novel(novel_id)
+        except EntityNotFoundError:
+            bible_id = f"{novel_id}-bible"
+            self.bible_service.create_bible(bible_id, novel_id)
+            logger.info(f"Created Bible record: {bible_id}")
+
+        # 基于已有世界观生成人物
+        existing_worldbuilding = self._load_worldbuilding(novel_id)
+        bible_data = await self._generate_characters(premise, target_chapters, existing_worldbuilding)
+        chars_payload = bible_data.get("characters") or []
+        if not chars_payload:
+            raise ValueError(
+                "角色生成未得到任何人物：多为模型输出非 JSON、截断或解析失败。"
+                "请确认 AI 控制台模型可用并适当增大超时；也可查看服务端日志中的 LLM 原始片段。"
+            )
+        # 保存人物
+        character_ids = []
+        used_char_ids = set()  # 用于跟踪已使用的人物ID
+        for idx, char_data in enumerate(bible_data.get("characters", [])):
+            character_id = f"{novel_id}-char-{idx+1}"
+
+            # 检查并处理重复ID
+            if character_id in used_char_ids:
+                logger.info(f"Character ID {character_id} already exists, generating new ID")
+                character_id = f"{novel_id}-char-{idx+1}-{len(used_char_ids)}"
+
+            used_char_ids.add(character_id)
+            try:
+                self.bible_service.add_character(
+                    novel_id=novel_id,
+                    character_id=character_id,
+                    name=char_data["name"],
+                    description=f"{char_data['role']} - {char_data['description']}",
+                    relationships=char_data.get("relationships", []),
+                    gender=char_data.get("gender") or "",
+                    age=char_data.get("age") or "",
+                    appearance=char_data.get("appearance") or "",
+                    personality=char_data.get("personality") or char_data.get("flaw") or "",
+                    background=char_data.get("background") or char_data.get("ghost") or "",
+                    core_motivation=char_data.get("core_motivation") or char_data.get("want") or "",
+                    inner_lack=char_data.get("inner_lack") or char_data.get("need") or "",
+                    public_profile=char_data.get("public_profile") or "",
+                    hidden_profile=char_data.get("hidden_profile") or "",
+                    reveal_chapter=char_data.get("reveal_chapter"),
+                    mental_state=char_data.get("mental_state") or "NORMAL",
+                    mental_state_reason=char_data.get("mental_state_reason") or "",
+                    verbal_tic=char_data.get("verbal_tic") or "",
+                    idle_behavior=char_data.get("idle_behavior") or "",
+                    core_belief=char_data.get("core_belief") or "",
+                    moral_taboos=char_data.get("moral_taboos") or [],
+                    voice_profile=char_data.get("voice_profile") or {},
+                    active_wounds=char_data.get("active_wounds") or [],
+                )
+                character_ids.append((character_id, char_data))
+                logger.info(f"Character saved: {character_id}")
+            except Exception as e:
+                if "already exists" in str(e):
+                    logger.info(f"Character {character_id} already exists, skipping")
+                else:
+                    logger.error(f"Failed to save character: {e}")
+                    raise
+
+        # 从人物关系生成三元组
+        if self.triple_repository:
+            await self._generate_character_triples(novel_id, character_ids)
+        return bible_data
+
+    async def _run_stage_locations(
+        self,
+        novel_id: str,
+        premise: str,
+        target_chapters: int,
+    ) -> Dict[str, Any]:
+        """生成阶段：地点（依赖已落库的世界观与人物）。"""
+        # 确保Bible记录存在
+        try:
+            self.bible_service.get_bible_by_novel(novel_id)
+        except EntityNotFoundError:
+            bible_id = f"{novel_id}-bible"
+            self.bible_service.create_bible(bible_id, novel_id)
+            logger.info(f"Created Bible record: {bible_id}")
+
+        # 基于已有世界观和人物生成地点
+        existing_worldbuilding = self._load_worldbuilding(novel_id)
+        existing_characters = self._load_characters(novel_id)
+        bible_data = await self._generate_locations(premise, target_chapters, existing_worldbuilding, existing_characters)
+        locs_payload = bible_data.get("locations") or []
+        if not locs_payload:
+            raise ValueError(
+                "地点生成未得到任何地点：多为模型输出非 JSON、截断或解析失败。"
+                "请确认 AI 控制台模型可用并适当增大超时；也可查看服务端日志中的 LLM 原始片段。"
+            )
+        # 保存地点
+        location_ids = []
+        for loc_data in self._prepare_locations_for_save(novel_id, bible_data.get("locations", [])):
+            try:
+                self.bible_service.add_location(
+                    novel_id=novel_id,
+                    location_id=loc_data["location_id"],
+                    name=loc_data["name"],
+                    description=loc_data["description"],
+                    location_type=loc_data["location_type"],
+                    connections=loc_data["connections"],
+                    parent_id=loc_data["parent_id"],
+                )
+                location_ids.append((loc_data["location_id"], loc_data))
+                logger.info(f"Location saved: {loc_data['location_id']}")
+            except Exception as e:
+                if "already exists" in str(e):
+                    logger.info(f"Location {loc_data['location_id']} already exists, skipping")
+                else:
+                    logger.error(f"Failed to save location: {e}")
+                    raise
+
+        # 从地点连接生成三元组
+        if self.triple_repository:
+            await self._generate_location_triples(novel_id, location_ids)
+        return bible_data
+
     async def _generate_bible_data(self, premise: str, target_chapters: int) -> Dict[str, Any]:
-        """使用 LLM 生成 Bible 数据和世界观"""
+        """使用 LLM 生成 Bible 数据和世界观（``bible-all`` 节点的封装）。
+
+        ⚠ **``stage="all"`` 已不再走这里** —— 那个一次性提示词**没有输出 schema**
+        （``package.yaml`` 指向的契约模块 ``application.ai.bible_llm_contract``
+        **压根不存在**）⇒ 模型自由发挥 ⇒ 返回形状**每次都不一样**
+        （实测：一次返回 7 个角色 + 4 个地点；另一次顶层只有
+        ``title/alternate_title/topics_shell/theme_shell/worldbuilding``，
+        **一个角色都没有**）⇒ 落库再全也落不全。
+        ⇒ 「一次性」现在 = 依次跑三个分阶段（``_run_stage_*``）。
+
+        保留本方法：① ``bible-all`` 这个 CPMS 节点仍被 DAG 的 ``world_bible_all``
+        节点使用；② 它的「空内容 ⇒ 显式失败、不代写兜底」纪律有测试守着（A-05）。
+        """
 
         prompt = _render_required_bible_prompt(
             BIBLE_ALL,

@@ -122,13 +122,37 @@ class MemoryDeltaPayload(BaseModel):
 #: 2. 槽位被截断时**点名被截掉的小节**（复审 §4：此前截断只说「仅是部分内容」，
 #:    而 FACT_LOCK 整段被截时**模型看不到「身份锁死」这一节存在**
 #:    ⇒ 对「一旦违背即为废稿」的硬约束块，截掉整节比截断半截更危险）。
+#:
+#: ⚠ 用**具名常量**而不是下标：此前是 ``FACT_LOCK_SECTION_HEADERS[0..4]``，
+#: 而插入新节会让后面全部错位 ⇒ 新节一旦加错位置，
+#: 「身份锁死」的内容会被贴到「死亡锁」标题下，而**守卫仍然是绿的**
+#: （守卫只查「标题在不在 tuple 里」）。
+FACT_LOCK_HEADER_WHITELIST = "角色白名单（只可使用以下有名字的角色）："
+FACT_LOCK_HEADER_CHARACTER_SETTINGS = "角色设定（不可更改）："
+FACT_LOCK_HEADER_DEAD = "已死亡角色（绝对不可复活、不可在当下时间线中出现）："
+FACT_LOCK_HEADER_RELATIONS = "核心关系（不可更改）："
+FACT_LOCK_HEADER_IDENTITY = "身份锁死："
+FACT_LOCK_HEADER_TIMELINE = "核心事件时间线（不可矛盾）："
+
 FACT_LOCK_SECTION_HEADERS: tuple = (
-    "角色白名单（只可使用以下有名字的角色）：",
-    "已死亡角色（绝对不可复活、不可在当下时间线中出现）：",
-    "核心关系（不可更改）：",
-    "身份锁死：",
-    "核心事件时间线（不可矛盾）：",
+    FACT_LOCK_HEADER_WHITELIST,
+    FACT_LOCK_HEADER_CHARACTER_SETTINGS,
+    FACT_LOCK_HEADER_DEAD,
+    FACT_LOCK_HEADER_RELATIONS,
+    FACT_LOCK_HEADER_IDENTITY,
+    FACT_LOCK_HEADER_TIMELINE,
 )
+
+#: 「角色设定」里**每个角色**最多给多少字。
+#:
+#: ⚠ 事实锁整块在正文提示词里只有 2000 字
+#: （``prose_context_settings.DEFAULT_MAX_CHARS_PER_SLOT``），
+#: 而角色数会随篇幅增长 ⇒ 不限长就会把「白名单 / 死亡锁」这些**更硬的**约束挤掉。
+#: ⇒ 只给「职能 + 一句话定位」，超长截断（且如实留痕）。
+CHARACTER_SETTING_MAX_CHARS = 60
+#: 「角色设定」最多给多少个角色（超出的**如实点名**，不静默丢）。
+CHARACTER_SETTING_MAX_CHARACTERS = 12
+
 
 
 class FactLockBuilder:
@@ -184,7 +208,7 @@ class FactLockBuilder:
             return []
 
     def _facts_from_bible(self, bible, current_chapter: int) -> List[str]:
-        """把 ``_build_from_bible`` 的那五组推导，逐条摊成清单。"""
+        """把 ``_build_from_bible`` 的那几组推导，逐条摊成清单。"""
         facts: List[str] = []
         characters = bible.characters
 
@@ -193,6 +217,9 @@ class FactLockBuilder:
             facts.append(
                 "角色白名单（只可使用以下有名字的角色）：" + "、".join(names)
             )
+
+        for sl in self._build_character_setting_lines(characters):
+            facts.append(f"角色设定：{sl}")
 
         for dc in self._extract_dead_characters(characters):
             facts.append(
@@ -219,42 +246,99 @@ class FactLockBuilder:
         characters = bible.characters
         if characters:
             names = [c.name for c in characters]
-            lines.append(FACT_LOCK_SECTION_HEADERS[0])
+            lines.append(FACT_LOCK_HEADER_WHITELIST)
             lines.append(f"   允许: {', '.join(names)}")
             lines.append("   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！\n")
 
-        # ── 2. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
+        # ── 2. 角色设定（谁是谁、干什么的）—— N-0 的关键一节 ──
+        # ⚠ 此前事实锁**只有名字**（白名单），没有任何一节装角色的职能/身份
+        # ⇒ 正文提示词里模型只知道「有这个人」，不知道「他是干什么的」
+        # ⇒ 只能靠名字+梗概+大纲去猜 ⇒ 人设必然漂移
+        # （真实跑一本真书实测：7 个角色里 4 个被重定义，
+        #   连 Bible 里的「白塔旧案主谋」都被写成了报社好领导）。
+        setting_lines = self._build_character_setting_lines(characters)
+        if setting_lines:
+            lines.append(FACT_LOCK_HEADER_CHARACTER_SETTINGS)
+            for sl in setting_lines:
+                lines.append(f"   {sl}")
+            lines.append("")
+
+        # ── 3. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
         dead_chars = self._extract_dead_characters(characters)
         if dead_chars:
-            lines.append(FACT_LOCK_SECTION_HEADERS[1])
+            lines.append(FACT_LOCK_HEADER_DEAD)
             for dc in dead_chars:
                 lines.append(f"   禁止: {dc['name']}({dc.get('role', '未知')}) - {dc.get('cause', '原因不详')}（死于{dc.get('when', '未知时间')}）")
             lines.append("")
 
-        # ── 3. 核心关系图谱 ──
+        # ── 4. 核心关系图谱 ──
         relations = self._build_relation_lines(characters)
         if relations:
-            lines.append(FACT_LOCK_SECTION_HEADERS[2])
+            lines.append(FACT_LOCK_HEADER_RELATIONS)
             for rel in relations:
                 lines.append(f"   {rel}")
             lines.append("")
 
-        # ── 4. 身份锁死 ──
+        # ── 5. 身份锁死 ──
         identity_lines = self._build_identity_lines(characters, current_chapter)
         if identity_lines:
-            lines.append(FACT_LOCK_SECTION_HEADERS[3])
+            lines.append(FACT_LOCK_HEADER_IDENTITY)
             for il in identity_lines:
                 lines.append(f"   {il}")
             lines.append("")
 
-        # ── 5. 时间线锁定 ──
+        # ── 6. 时间线锁定 ──
         timeline_lines = self._build_timeline_lines(bible)
         if timeline_lines:
-            lines.append(FACT_LOCK_SECTION_HEADERS[4])
+            lines.append(FACT_LOCK_HEADER_TIMELINE)
             for tl in timeline_lines:
                 lines.append(f"   {tl}")
 
         return "\n".join(lines)
+
+    def _build_character_setting_lines(self, characters: list) -> List[str]:
+        """角色的**公开设定**（谁是谁、干什么的）—— 事实锁「角色设定」节。
+
+        数据来源：``description``（AI 路径下是「定位 - 描述」，**定位在最前**）
+        + ``public_profile``（公开面）。
+
+        ⚠ 为什么要这一节（真实跑一本真书才暴露出来的问题）：
+        事实锁原先只有「白名单（名字）/ 死亡锁 / 关系锁 / 身份锁 / 时间线锁」，
+        **没有任何一节装角色的职能** ⇒ 正文提示词里只有角色名，
+        模型无从知道「贺鸣珂是白塔前放映师」⇒ 只能猜 ⇒ 人设漂移。
+
+        ⚠ 预算：整块事实锁在正文提示词里只有 2000 字 ⇒ 逐角色不限长会挤掉
+        「白名单 / 死亡锁」这些**更硬**的约束 ⇒ 每行限长、角色数上限，
+        且**超出的如实点名**（不静默丢）。
+        """
+        lines: List[str] = []
+        omitted: List[str] = []
+        for char in characters or []:
+            name = str(getattr(char, "name", "") or "").strip()
+            if not name:
+                continue
+            parts: List[str] = []
+            description = str(getattr(char, "description", "") or "").strip()
+            if description:
+                parts.append(description[:CHARACTER_SETTING_MAX_CHARS])
+            public_profile = str(getattr(char, "public_profile", "") or "").strip()
+            if public_profile:
+                parts.append(public_profile[:CHARACTER_SETTING_MAX_CHARS])
+            if not parts:
+                continue
+            if len(lines) >= CHARACTER_SETTING_MAX_CHARACTERS:
+                omitted.append(name)
+                continue
+            lines.append(f"{name} = {'；'.join(parts)}")
+        if not lines:
+            # 一个角色的设定都没有 ⇒ 如实说「没有」，但**不许**暗示「没有约束」。
+            return ["（本节暂无角色设定可锁：角色只有名字，没有身份/职能信息）"]
+        if omitted:
+            lines.append(
+                f"（另有 {len(omitted)} 个角色的设定未注入，受事实锁篇幅限制："
+                f"{'、'.join(omitted[:8])}）"
+            )
+        return lines
 
     def _extract_dead_characters(self, characters: list) -> list[Dict]:
         """从角色列表中推断已死亡角色
