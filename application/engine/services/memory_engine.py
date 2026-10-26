@@ -130,16 +130,26 @@ class MemoryDeltaPayload(BaseModel):
 FACT_LOCK_HEADER_WHITELIST = "角色白名单（只可使用以下有名字的角色）："
 FACT_LOCK_HEADER_CHARACTER_SETTINGS = "角色设定（不可更改）："
 FACT_LOCK_HEADER_DEAD = "已死亡角色（绝对不可复活、不可在当下时间线中出现）："
-FACT_LOCK_HEADER_RELATIONS = "核心关系（不可更改）："
 FACT_LOCK_HEADER_IDENTITY = "身份锁死："
+FACT_LOCK_HEADER_RELATIONS = "核心关系（不可更改）："
 FACT_LOCK_HEADER_TIMELINE = "核心事件时间线（不可矛盾）："
 
+#: ⚠ **顺序 = 截断时的存活优先级**（正文侧那把刀是从**尾部**切的）。
+#:
+#: 实测（生产书真实数据）：事实锁原始 3788 字 → 正文侧上限 2000 字 ⇒
+#: 尾部三节被切。此前「核心关系」排在「身份锁死」**前面**
+#: ⇒ 被切掉的是**身份锁死**（已揭露的秘密 + **POV 防火墙**）
+#: —— 那恰恰是**最硬的**叙事约束（违反即人物失格）。
+#:
+#: ⇒ 硬约束在前、软约束在后：**白名单 → 角色设定 → 死亡锁 → 身份锁死
+#: → 核心关系 → 时间线**。
+#: ⇒ 仍会被切的是**软**的（关系/时间线）⇒ 可接受（它们还能从别处推）。
 FACT_LOCK_SECTION_HEADERS: tuple = (
     FACT_LOCK_HEADER_WHITELIST,
     FACT_LOCK_HEADER_CHARACTER_SETTINGS,
     FACT_LOCK_HEADER_DEAD,
-    FACT_LOCK_HEADER_RELATIONS,
     FACT_LOCK_HEADER_IDENTITY,
+    FACT_LOCK_HEADER_RELATIONS,
     FACT_LOCK_HEADER_TIMELINE,
 )
 
@@ -238,11 +248,11 @@ class FactLockBuilder:
                 f"（{dc.get('cause', '原因不详')}）—— 不可复活、不可出现在当下时间线"
             )
 
-        for rel in self._build_relation_lines(characters):
-            facts.append(f"关系锁：{rel}")
-
         for il in self._build_identity_lines(characters, current_chapter):
             facts.append(f"身份锁：{il}")
+
+        for rel in self._build_relation_lines(characters):
+            facts.append(f"关系锁：{rel}")
 
         for tl in self._build_timeline_lines(bible):
             facts.append(f"时间线锁：{tl}")
@@ -282,20 +292,22 @@ class FactLockBuilder:
                 lines.append(f"   禁止: {dc['name']}({dc.get('role', '未知')}) - {dc.get('cause', '原因不详')}（死于{dc.get('when', '未知时间')}）")
             lines.append("")
 
-        # ── 4. 核心关系图谱 ──
-        relations = self._build_relation_lines(characters)
-        if relations:
-            lines.append(FACT_LOCK_HEADER_RELATIONS)
-            for rel in relations:
-                lines.append(f"   {rel}")
-            lines.append("")
-
-        # ── 5. 身份锁死 ──
+        # ── 4. 身份锁死（已揭露的秘密 / POV 防火墙 —— **硬约束**）──
+        # ⚠ 排在「核心关系」**之前**：正文侧那把刀从尾部切，
+        #    硬约束必须先活下来（关系/时间线是软的，砍了还能从别处推）。
         identity_lines = self._build_identity_lines(characters, current_chapter)
         if identity_lines:
             lines.append(FACT_LOCK_HEADER_IDENTITY)
             for il in identity_lines:
                 lines.append(f"   {il}")
+            lines.append("")
+
+        # ── 5. 核心关系图谱 ──
+        relations = self._build_relation_lines(characters)
+        if relations:
+            lines.append(FACT_LOCK_HEADER_RELATIONS)
+            for rel in relations:
+                lines.append(f"   {rel}")
             lines.append("")
 
         # ── 6. 时间线锁定 ──
