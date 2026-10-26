@@ -123,8 +123,9 @@ def test_the_hit_flows_into_the_audit_metrics():
     without_english = auditor.scan_chapter("c1", baseline)
 
     assert with_english.metrics.total_hits == without_english.metrics.total_hits + 1
+    # ⚠ 归一化口径是「**每千字**加权命中数」（第 16 批改的）⇒ 期望值用 1000 而不是 10000。
     expected_delta = (
-        SEVERITY_WEIGHTS["info"] * 10000 / max(len(content), 1)
+        SEVERITY_WEIGHTS["info"] * 1000 / max(len(content), 1)
     )
     delta = with_english.metrics.severity_score - without_english.metrics.severity_score
     assert abs(delta - expected_delta) < 1.0, (

@@ -13,6 +13,97 @@ from application.ai_invocation.autopilot.shared_state import write_autopilot_sha
 logger = logging.getLogger(__name__)
 
 
+def _position_bucket(start: int, total: int) -> str:
+    """命中位置的大致段落（与 LLM 通道的措辞对齐）。"""
+    if total <= 0:
+        return "前段"
+    ratio = start / total
+    if ratio < 1 / 3:
+        return "前段"
+    if ratio < 2 / 3:
+        return "中段"
+    return "后段"
+
+
+def _code_channel_risk_flags(novel_id: str, chapter_number: int) -> list[dict[str, Any]]:
+    """**代码通道**（可机检）的命中 —— 与 LLM 通道的结论**汇总到一处**。
+
+    ⚠ 第 16 批：``risk_flags`` 之前**恒为空** ——
+    ``continuations._audit`` 读 ``payload.get("risk_flags", [])``，
+    而 LLM 的 JSON 契约里**从来没有这个键** ⇒ 面板上的「风险标记」永远是 0。
+    而代码通道算出来的分数/命中走的是**另一条路**（``anti_ai_audits`` 表 + 共享状态）
+    ⇒ 两条通道的结论**没有汇总到一处**。
+
+    ⇒ 现在：代码通道的命中与 LLM 通道的命中合并进同一个 ``risk_flags``。
+    """
+    if not novel_id or chapter_number <= 0:
+        return []
+    try:
+        from infrastructure.persistence.database.connection import get_database
+
+        row = get_database().fetch_one(
+            "SELECT content FROM chapters WHERE novel_id = ? AND number = ?",
+            (novel_id, chapter_number),
+        )
+        content = str((row or {}).get("content") or "")
+        if not content.strip():
+            return []
+
+        from application.audit.services.cliche_scanner import ClicheScanner
+
+        hits = ClicheScanner().scan_cliches(content)
+        return [
+            {
+                "source": "code",
+                "category": hit.category,
+                "pattern": hit.pattern,
+                "text": hit.text,
+                "position": _position_bucket(hit.start, len(content)),
+                "severity": hit.severity,
+                "replacement": hit.replacement_hint,
+            }
+            for hit in hits
+        ]
+    except Exception as exc:  # noqa: BLE001 —— 取不到就当没有，不许把审计搞崩
+        logger.debug("代码通道审计命中读取失败 novel=%s ch=%s: %s", novel_id, chapter_number, exc)
+        return []
+
+
+def _merge_risk_flags(payload: Mapping[str, Any], code_flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把两条通道的命中合并成一份（LLM 通道优先，去重）。"""
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(item: Mapping[str, Any], source: str) -> None:
+        category = str(item.get("category") or "")
+        text = str(item.get("text") or item.get("pattern") or "")
+        key = (category, text)
+        if not text or key in seen:
+            return
+        seen.add(key)
+        entry = dict(item)
+        entry.setdefault("source", source)
+        merged.append(entry)
+
+    if isinstance(payload, Mapping):
+        for item in payload.get("hits") or []:
+            if isinstance(item, Mapping):
+                _add(
+                    {
+                        "category": item.get("category", ""),
+                        "pattern": item.get("pattern", ""),
+                        "text": item.get("pattern", ""),
+                        "position": item.get("position", ""),
+                        "severity": item.get("severity", ""),
+                        "replacement": item.get("replacement", ""),
+                    },
+                    "llm",
+                )
+    for item in code_flags:
+        _add(item, "code")
+    return merged
+
+
 def _load_json_value(content: str, error_code: str) -> Any:
     """Parse an accepted LLM JSON payload after normal LLM cleanup/repair."""
     raw = str(content or "")
@@ -553,6 +644,14 @@ def register_autopilot_continuations() -> None:
         )
         novel_id = str(ctx.session.context.get("novel_id") or "")
         chapter_number = int(ctx.session.context.get("chapter_number") or 0)
+        # ⚠ 第 16 批：``risk_flags`` 之前恒为空（读的键 LLM 从来不输出）。
+        # ⇒ 现在由**两条通道**派生：LLM 的 hits + 代码通道（可机检）的命中。
+        risk_flags = _merge_risk_flags(
+            payload if isinstance(payload, Mapping) else {},
+            _code_channel_risk_flags(novel_id, chapter_number),
+        )
+        if isinstance(payload, dict):
+            payload = {**payload, "risk_flags": risk_flags}
         if novel_id and ctx.session.policy != InvocationPolicy.DIRECT and chapter_number > 0:
             _clear_invocation_state(
                 novel_id,
@@ -565,7 +664,7 @@ def register_autopilot_continuations() -> None:
         return {
             "chapter_audit_report": payload,
             "chapter.audit.report": payload,
-            "chapter.audit.risk_flags": payload.get("risk_flags", []) if isinstance(payload, dict) else [],
+            "chapter.audit.risk_flags": risk_flags,
         }
 
     def _aftermath(ctx: ContinuationContext) -> Mapping[str, Any]:

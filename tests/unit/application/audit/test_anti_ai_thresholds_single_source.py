@@ -49,11 +49,15 @@ def test_no_literal_threshold_definitions_remain_in_either_module():
 
 # ── 常量本身 ────────────────────────────────────────────────────────────
 
-def test_weights_and_thresholds_values_unchanged():
-    """抽取后取值必须与原先两份**逐键一致**。"""
+def test_weights_and_thresholds_values_are_the_calibrated_ones():
+    """权重没变；**阈值按「每千字」口径重标定过**（第 16 批，生产库实测后）。
+
+    ⚠ 旧阈值（5.0/3.0/1.0）是按「每万字」定的 ⇒ 对 2000 字的章节，
+    5 个命中就判「严重」⇒ 分档没有区分力。新的见 ``ASSESSMENT_THRESHOLDS`` 注释里的实测表。
+    """
     assert src.SEVERITY_WEIGHTS == {"critical": 3.0, "warning": 1.0, "info": 0.3}
     assert src.ASSESSMENT_THRESHOLDS == [
-        (5.0, "严重"), (3.0, "中等"), (1.0, "轻微"), (0.0, "纯净"),
+        (4.0, "严重"), (2.0, "中等"), (0.8, "轻微"), (0.0, "纯净"),
     ]
 
 
@@ -66,23 +70,34 @@ def test_unknown_severity_weight_is_not_zero():
     assert src.DEFAULT_SEVERITY_WEIGHT == 0.5
 
 
-# ── 归一化：两种旧写法必须仍然等价 ──────────────────────────────────────
+# ── 归一化：口径 = 「每千字加权命中数」 ─────────────────────────────────
 
 @pytest.mark.parametrize(
     "raw_score,chars",
     [(0.0, 1000), (3.0, 1000), (12.5, 2000), (0.7, 350), (100.0, 500)],
 )
-def test_normalisation_keeps_both_legacy_formulas_equivalent(raw_score, chars):
-    """旧两处写法：(raw/(chars/1000))*10 与 (raw/chars)*1000*10。
+def test_normalisation_is_per_thousand_chars(raw_score, chars):
+    """归一化 = ``raw * 1000 / chars``（**每千字**加权命中数）。
 
-    抽取后统一走一个函数，必须与**两种旧写法都**给出相同结果。
+    ⚠ 旧口径是「每万字」（``raw*10000/chars``）⇒ 对章节惩罚极重 ⇒ 已换。
     """
-    chars_per_k = max(chars / 1000.0, 0.001)
-    legacy_metrics = min(100.0, (raw_score / chars_per_k) * 10)
-    legacy_audit = min(100.0, (raw_score / max(chars, 1)) * 1000 * 10)
-    shared = src.normalize_severity_score(raw_score, chars)
-    assert shared == pytest.approx(legacy_audit, abs=1e-9)
-    assert shared == pytest.approx(legacy_metrics, abs=1e-9)
+    expected = min(100.0, (raw_score / max(chars, 1)) * 1000)
+    assert src.normalize_severity_score(raw_score, chars) == pytest.approx(expected, abs=1e-9)
+
+
+def test_normalisation_does_not_penalise_short_chapters():
+    """**同样的命中数，章节长短不该让分数差一个数量级。**
+
+    ⚠ 旧口径（每万字）下：3 个命中在 2000 字 ⇒ 15 分（「严重」），
+    在 20000 字 ⇒ 1.5 分（「轻微」）⇒ **同一段文字，评分差 10 倍**。
+    """
+    short = src.normalize_severity_score(3.0, 2000)
+    long = src.normalize_severity_score(3.0, 20000)
+
+    assert short == pytest.approx(1.5, abs=1e-9)
+    assert long == pytest.approx(0.15, abs=1e-9)
+    # 密度口径下，差异只来自「每千字的命中数」本身（10 倍长度 ⇒ 1/10 密度）
+    assert short / long == pytest.approx(10.0, rel=1e-6)
 
 
 def test_normalisation_is_capped_at_100():
@@ -100,17 +115,40 @@ def test_normalisation_handles_zero_length_content():
     "score,expected",
     [
         (0.0, "纯净"),
-        (0.9, "纯净"),
-        (1.0, "轻微"),
-        (2.9, "轻微"),
-        (3.0, "中等"),
-        (4.9, "中等"),
-        (5.0, "严重"),
+        (0.79, "纯净"),
+        (0.8, "轻微"),
+        (1.9, "轻微"),
+        (2.0, "中等"),
+        (3.9, "中等"),
+        (4.0, "严重"),
         (99.0, "严重"),
     ],
 )
 def test_classification_boundaries(score, expected):
     assert src.classify_assessment(score) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,chars,expected",
+    [
+        # ↓ 生产库实测的真实数字（raw 由命中的严重性加权得到）
+        (1.2, 2030, "纯净"),   # 一章人设准确、推理扎实，只有 4 处行内破折号
+        (3.9, 2476, "轻微"),   # 含 1 处「指尖泛白」（critical）
+        (0.9, 1656, "纯净"),   # 只有 3 处行内破折号
+        (5.0, 2160, "中等"),   # AI 味重的一章：5 处情绪套路
+    ],
+)
+def test_the_calibration_separates_good_chapters_from_ai_slop(raw, chars, expected):
+    """**校准守卫**：生产库实测的好章节**不许**被判「严重」。
+
+    ⚠ 这条是第 16 批改口径的**根据**本身 ⇒ 必须钉住，
+    否则哪天有人把阈值调回旧值，好章节又会「严重」而没人发现。
+    """
+    score = src.normalize_severity_score(raw, chars)
+
+    assert src.classify_assessment(score) == expected, (
+        f"raw={raw} chars={chars} ⇒ score={score:.2f}，评级应为「{expected}」"
+    )
 
 
 def test_threshold_table_is_descending():

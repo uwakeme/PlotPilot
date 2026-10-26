@@ -21,6 +21,21 @@ def pytest_configure(config):
 
     os.environ.setdefault("PLOTPILOT_ALLOW_DIRECT_SQLITE_WRITES", "1")
 
+    # 测试日志**不许**写进生产的 ``logs/plotpilot.log``。
+    #
+    # ⚠ 第 16 批实测踩过：跑门禁时，测试的**预期**错误日志（迁移失败之类）
+    #   混进了同一个日志文件 ⇒ 排查生产问题时被它误导过一次
+    #   （把测试的输出当成了生产在跑坏迁移）。
+    #
+    # ⚠ 这件事有**三条**通道，只堵一条等于没堵（详见 tests/log_isolation.py）：
+    #   ① ``interfaces/main.py`` 模块级调 ``load_env()``（**覆盖**语义）
+    #      ⇒ ``.env`` 里的 ``LOG_FILE=logs/plotpilot.log`` 会把环境变量改回去；
+    #   ② 同一个模块模块级调 ``setup_logging()`` ⇒ 根 logger 上多了一个
+    #      指向生产日志的 handler；
+    #   ③ 「用例开始前清理」来不及 —— ``interfaces.main`` 是在**用例体内**
+    #      被 import 的，挂上去那一刻日志就已经写进生产文件了。
+    _install_log_isolation()
+
     # Ensure project root is first in sys.path
     root_str = str(_root)
     if root_str in sys.path:
@@ -28,7 +43,66 @@ def pytest_configure(config):
     sys.path.insert(0, root_str)
 
 
+def _install_log_isolation() -> None:
+    """把测试进程的日志隔离装上（环境变量 + handler + 封堵 ``.env`` 覆盖 + ``setup_logging`` 守卫）。"""
+    import os
+
+    from tests.log_isolation import apply_test_log_isolation, install_setup_logging_guard
+
+    apply_test_log_isolation()
+    install_setup_logging_guard()
+
+    # 封堵 ①：``load_env`` 是**覆盖**语义 ⇒ 它会把 ``LOG_FILE`` 改回 ``.env`` 里的值。
+    # ⚠ 必须在 ``interfaces.main`` 被 import **之前**改（``from load_env import load_env``
+    #   是在 import 时绑定函数对象的 ⇒ 晚于它改就来不及了）。
+    try:
+        import load_env as load_env_module
+    except Exception:  # pragma: no cover - 仓库根不在 sys.path 时忽略
+        return
+
+    if getattr(load_env_module, "_plotpilot_test_patched", False):
+        return
+
+    original = load_env_module.load_env
+
+    def _load_env_without_clobbering_log_file(path=None):
+        previous = os.environ.get("LOG_FILE")
+        result = original(path)
+        if previous is not None:
+            os.environ["LOG_FILE"] = previous
+        return result
+
+    load_env_module.load_env = _load_env_without_clobbering_log_file
+    load_env_module._plotpilot_test_patched = True
+
+
+def pytest_collection_finish(session):
+    """收集结束后再修一次日志隔离。
+
+    ⚠ 收集期会 import 各种模块（``interfaces.main`` 就是在这一阶段挂上生产日志 handler 的）
+    ⇒ 收集结束必须再清理一次，否则收集期产生的日志已经写进生产文件了。
+    """
+    from tests.log_isolation import apply_test_log_isolation
+
+    apply_test_log_isolation()
+
+
 import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _keep_test_logs_isolated():
+    """每个用例**前**再修一次日志隔离。
+
+    ⚠ 为什么每个用例都要修：隔离是在 ``pytest_configure`` 装的，但运行期还可能
+    再被掀翻（``.env`` 覆盖、模块级 ``setup_logging``、某个用例自己改了 env）。
+    ⇒ 用例开始前把「环境变量 + 生产 handler」拉回临时目录，
+    保证**用例执行期间**的日志不会落进生产文件。
+    """
+    from tests.log_isolation import apply_test_log_isolation
+
+    apply_test_log_isolation()
+    yield
 
 
 @pytest.fixture(autouse=True)
