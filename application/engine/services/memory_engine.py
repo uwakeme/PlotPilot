@@ -154,6 +154,17 @@ CHARACTER_SETTING_MAX_CHARS = 60
 CHARACTER_SETTING_MAX_CHARACTERS = 12
 
 
+def _truncate_with_mark(text: str, limit: int) -> str:
+    """截断并**留痕**（砍掉就要说：模型得知道这句话没写完）。
+
+    「…」是**模型可见**的 ⇒ 必须在提示词里说清楚「这里被砍了」，
+    否则模型会把半句话当成完整设定。
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 
 class FactLockBuilder:
     """从 Bible + KnowledgeGraph 动态构建 FACT_LOCK 文本
@@ -320,10 +331,10 @@ class FactLockBuilder:
             parts: List[str] = []
             description = str(getattr(char, "description", "") or "").strip()
             if description:
-                parts.append(description[:CHARACTER_SETTING_MAX_CHARS])
+                parts.append(_truncate_with_mark(description, CHARACTER_SETTING_MAX_CHARS))
             public_profile = str(getattr(char, "public_profile", "") or "").strip()
             if public_profile:
-                parts.append(public_profile[:CHARACTER_SETTING_MAX_CHARS])
+                parts.append(_truncate_with_mark(public_profile, CHARACTER_SETTING_MAX_CHARS))
             if not parts:
                 continue
             if len(lines) >= CHARACTER_SETTING_MAX_CHARACTERS:

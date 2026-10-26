@@ -136,6 +136,23 @@ def test_a_bible_without_any_settings_says_so():
     assert "暂无角色设定" in text
 
 
+def test_the_truncated_setting_says_it_was_cut():
+    """截断必须**留痕**（「砍掉就要说」）。
+
+    模型看到半句话（"…再听证人的措辞；她最"）会当成**完整设定** ⇒
+    必须让它知道这句话没写完。
+    """
+    long_description = ROLE_KEYWORD + "补" * 200
+    builder = FactLockBuilder.__new__(FactLockBuilder)
+    text = builder._build_from_bible(
+        _Bible([_Char("贺鸣珂", description=long_description)]), current_chapter=1
+    )
+
+    line = [l for l in text.splitlines() if "贺鸣珂 =" in l][0]
+    assert "…" in line, f"截断没有留痕：{line}"
+    assert ROLE_KEYWORD in line, f"截断把职能也砍掉了：{line}"
+
+
 # ======================================================================
 #  B. 端到端：模型**实际看到**的文本里有职能
 # ======================================================================
