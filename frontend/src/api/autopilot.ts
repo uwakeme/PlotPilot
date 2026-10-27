@@ -8,7 +8,8 @@ export interface AutopilotChapterAudit {
   tension: number | null
   drift_alert: boolean
   similarity_score: number | null
-  narrative_sync_ok: boolean
+  /** 三态：true=已同步 / false=同步失败 / null=未评估（章后管线超时） */
+  narrative_sync_ok: boolean | null
   vector_stored?: boolean
   foreshadow_stored?: boolean
   triples_extracted?: boolean

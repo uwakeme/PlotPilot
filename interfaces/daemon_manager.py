@@ -8,12 +8,14 @@ import multiprocessing
 import os
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from application.core.config.config_loader import get_config
 from application.core.config.runtime_settings_utils import positive_float, section_value
+from infrastructure.runtime.daemon_lock import DaemonLock, read_holder_pid
 from interfaces.api.settings import BackendSettings, get_backend_settings
 
 
@@ -38,6 +40,9 @@ class DaemonLifecycleSettings:
     terminate_join_timeout_seconds: float = 1.0
     sigkill_join_timeout_seconds: float = 1.0
     windows_taskkill_timeout_seconds: float = 3.0
+    #: 拿不到单实例锁时的**重试窗口**（第 18 批 · G）
+    #: ⇒ 旧守护进程正在退出时，新守护进程等它把锁放掉，而不是直接放弃。
+    daemon_lock_retry_seconds: float = 10.0
 
 
 def get_daemon_lifecycle_settings() -> DaemonLifecycleSettings:
@@ -101,6 +106,14 @@ def get_daemon_lifecycle_settings() -> DaemonLifecycleSettings:
             ),
             defaults.windows_taskkill_timeout_seconds,
         ),
+        daemon_lock_retry_seconds=positive_float(
+            section_value(
+                section,
+                "daemon_lock_retry_seconds",
+                defaults.daemon_lock_retry_seconds,
+            ),
+            defaults.daemon_lock_retry_seconds,
+        ),
     )
 
 
@@ -124,6 +137,7 @@ def run_autopilot_daemon_process(
     ai_queue=None,
     shared_state=None,
     persistence_queue=None,
+    lock_path: str | None = None,
 ) -> None:
     """Run the autopilot daemon in an isolated child process."""
     from interfaces.api.middleware.logging_config import setup_logging
@@ -131,6 +145,30 @@ def run_autopilot_daemon_process(
     process_logger = logging.getLogger(__name__)
     lifecycle_settings = get_daemon_lifecycle_settings()
     setup_logging(level=log_level, log_file=log_file)
+
+    # 🔒 单实例锁（第 18 批 · G）：**同一份数据只允许一个守护进程**。
+    # ⚠ 为什么必须有：守护子进程的 PID 记录是单槽的 ⇒ 别的 API 实例（Tauri /
+    #   第二个 dev server）启停时会覆盖或清掉它 ⇒ 重启后端时**旧守护进程活下来**
+    #   ⇒ 两个守护进程同时跑同一本书（实测：同一章被审计两次，一次旧代码一次新代码）。
+    # ⚠ 锁由**操作系统**在进程退出时释放 ⇒ 进程被强杀也不留「假锁」。
+    daemon_lock = DaemonLock(Path(lock_path) if lock_path else None)
+    lock_attempt = daemon_lock.acquire()
+    if not lock_attempt.acquired:
+        # 旧守护进程可能正在退出（锁还没被 OS 释放）⇒ 短暂重试，别急着放弃。
+        retry_deadline = time.time() + lifecycle_settings.daemon_lock_retry_seconds
+        while time.time() < retry_deadline and not stop_event.is_set():
+            time.sleep(0.5)
+            lock_attempt = daemon_lock.acquire()
+            if lock_attempt.acquired:
+                break
+    if not lock_attempt.acquired:
+        process_logger.warning(
+            "已有守护进程在运行（单实例锁被占用，持有者 PID=%s），本进程退出：%s",
+            lock_attempt.holder_pid,
+            lock_attempt.detail,
+        )
+        return
+    process_logger.info("守护进程已拿到单实例锁（锁文件=%s）", daemon_lock.path)
 
     if stream_queue is not None:
         from application.engine.services.streaming_bus import inject_stream_queue
@@ -234,6 +272,10 @@ def run_autopilot_daemon_process(
             process_logger.error("守护进程初始化失败: %s", exc, exc_info=True)
     finally:
         process_logger.info("守护进程已停止")
+        try:
+            daemon_lock.release()
+        except Exception as exc:  # noqa: BLE001 —— 释放失败不该影响退出
+            process_logger.debug(f"释放守护进程单实例锁失败（可忽略）: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +581,55 @@ def cleanup_orphan_python_processes(logger_: logging.Logger | None = None) -> No
         log.info("未发现残留进程")
 
 
+def cleanup_orphan_daemon(
+    logger_: logging.Logger | None = None,
+    lock_path: str | os.PathLike[str] | None = None,
+) -> int:
+    """终止「上一个实例留下的守护进程」（第 18 批 · G）。
+
+    为什么单列一条路径
+    ------------------
+    守护子进程的 PID 记录（``daemon.pid``）是**单槽**的 ⇒ 别的 API 实例
+    （Tauri 桌面端 / 第二个 dev server / 测试实例）启停时会**覆盖**或**清掉**它
+    ⇒ 靠它找不到真正还活着的孤儿 ⇒ 实测「重启后端 ⇒ 两个守护进程同时跑同一本书」。
+
+    ⇒ 改看**单实例锁**里记的持有者 pid：
+      * 锁是 OS 级文件锁 ⇒ 进程退出即释放 ⇒ 不会留「假锁」；
+      * 只有**我们的**守护进程会写这个文件 ⇒ 认得准，
+        不会像「按命令行乱杀 mp 子进程」那样误杀 API 自己的 ``multiprocessing.Manager()``
+        （它与守护子进程命令行**同签名**）。
+
+    返回被杀掉的进程数。
+    """
+    log = logger_ or logger
+    lifecycle_settings = get_daemon_lifecycle_settings()
+
+    holder_pid = read_holder_pid(Path(lock_path) if lock_path else None)
+    if holder_pid is None:
+        return 0
+    if holder_pid == os.getpid():
+        return 0
+
+    try:
+        rows = _list_python_processes(lifecycle_settings, log)
+    except Exception as exc:  # noqa: BLE001 —— 枚举失败就跳过，不阻断启动
+        log.warning("枚举 Python 进程失败，跳过孤儿守护进程清理: %s", exc)
+        return 0
+
+    holder_row = next((row for row in rows if row.pid == holder_pid), None)
+    if holder_row is None:
+        log.info("单实例锁里的守护进程 PID=%s 已不存在（陈旧记录），无需清理", holder_pid)
+        return 0
+
+    log.warning(
+        "发现上一个实例遗留的守护进程 PID=%s（%s），终止它"
+        "（否则两个守护进程会同时跑同一本书）",
+        holder_pid,
+        holder_row.cmdline[:80],
+    )
+    return _taskkill(holder_row, lifecycle_settings, log, reason="单实例锁持有者")
+
+
 class AutopilotDaemonManager:
     """Owns the API process view of the autopilot daemon child process."""
 
@@ -555,6 +646,7 @@ class AutopilotDaemonManager:
         event_factory: Callable[..., Any] = multiprocessing.Event,
         pid_recorder: Callable[[int], None] = record_daemon_pid,
         pid_recorder_clear: Callable[[], None] = clear_daemon_pid,
+        orphan_daemon_cleaner: Callable[..., int] = cleanup_orphan_daemon,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._log_level = log_level
@@ -566,6 +658,7 @@ class AutopilotDaemonManager:
         self._event_factory = event_factory
         self._pid_recorder = pid_recorder
         self._pid_recorder_clear = pid_recorder_clear
+        self._orphan_daemon_cleaner = orphan_daemon_cleaner
         self.process = None
         self.stop_event = None
 
@@ -579,10 +672,20 @@ class AutopilotDaemonManager:
     def cleanup_orphans(self) -> None:
         cleanup_orphan_python_processes(self._logger)
 
+    def cleanup_orphan_daemon(self) -> int:
+        """杀掉上一个实例留下的守护进程（第 18 批 · G）。"""
+        return cleanup_orphan_daemon(self._logger)
+
     def start(self) -> None:
         if self.process is not None and self.process.is_alive():
             self._logger.warning("守护进程已在运行，跳过重复启动")
             return
+
+        # 🔒 先清掉上一个实例留下的守护进程（第 18 批 · G）：
+        #   不清 ⇒ 旧守护进程活下来 ⇒ 两个守护进程同时跑同一本书。
+        # ⚠ 放在 DISABLE_AUTO_DAEMON 判断**之前**：孤儿是「上一个实例」留下的，
+        #   与「本实例要不要自动起守护进程」无关。
+        self._orphan_daemon_cleaner()
 
         if self._settings_provider().disable_auto_daemon:
             self._logger.info("守护进程自动启动已禁用（DISABLE_AUTO_DAEMON=1）")

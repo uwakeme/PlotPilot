@@ -115,6 +115,63 @@ def init_daemon_dependencies(
             host.volume_summary_service = None
 
 
+def _should_write_target_chapters(current: int | None, baseline: int | None) -> bool:
+    """审计是否**刻意**改过目标章数（第 18 批 · I）。
+
+    ⚠ 目标章数是「规划侧」的字段：审计只在**刻意上调**它时（终局预算 / 软目标续写）
+    才写回 DB ⇒ 否则实体里的是**陈旧值**，写回去会撤销别人刚做的改动
+    （生产实测：PUT 目标 4 → 审计收尾 ⇒ 又变回 3）。
+    """
+    return current != baseline
+
+
+def _build_novel_save_fields(
+    novel: Novel, *, write_target_chapters: bool = True
+) -> dict:
+    """审计落盘要写的**字段集合**（纯函数 ⇒ 守卫可直接验，不碰 DB）。
+
+    ⚠ ``write_target_chapters=False`` 时**不写**目标章数（第 18 批 · I）：
+      目标章数是「规划侧」的字段。审计只在**刻意上调**它时（终局预算 / 软目标续写）
+      才写 ⇒ 否则会把实体里的**陈旧值**写回 DB，把别人刚做的改动撤销掉
+      （生产实测：PUT 目标 4 → 审计收尾 ⇒ 又变回 3）。
+    """
+    import json as _json
+
+    fields = {
+        "autopilot_status": novel.autopilot_status.value if isinstance(novel.autopilot_status, AutopilotStatus) else str(novel.autopilot_status),
+        "current_stage": novel.current_stage.value if hasattr(novel.current_stage, 'value') else str(novel.current_stage),
+        "current_act": novel.current_act or 0,
+        "current_chapter_in_act": novel.current_chapter_in_act or 0,
+        "current_beat_index": novel.current_beat_index or 0,
+        "current_auto_chapters": novel.current_auto_chapters or 0,
+        "target_words_per_chapter": resolve_chapter_words(novel.target_words_per_chapter),
+        "consecutive_error_count": novel.consecutive_error_count or 0,
+        # 不加 `or 0`：`last_chapter_tension` 现为 Optional，None = 从未评估，
+        # 压成 0 会让「没测过」在下游读成「张力 0」
+        "last_chapter_tension": novel.last_chapter_tension,
+        # 🔥 needs_review 是计算字段（由 current_stage == paused_for_review 推导），
+        # novels 表无此列，不能写入 DB，否则会导致 "no such column: needs_review" 错误
+        # 使整条审计落盘失败。前端通过 current_stage 自行推导 needs_review。
+        "beats_completed": getattr(novel, 'beats_completed', 0) or 0,
+        # 审计快照字段（与 SqliteNovelRepository.save() 对齐）
+        "auto_approve_mode": 1 if getattr(novel, 'auto_approve_mode', False) else 0,
+        "last_audit_chapter_number": getattr(novel, 'last_audit_chapter_number', None),
+        "last_audit_similarity": getattr(novel, 'last_audit_similarity', None),
+        "last_audit_drift_alert": 1 if getattr(novel, 'last_audit_drift_alert', False) else 0,
+        "last_audit_narrative_ok": 1 if getattr(novel, 'last_audit_narrative_ok', True) else 0,
+        "last_audit_at": getattr(novel, 'last_audit_at', None),
+        "last_audit_vector_stored": 1 if getattr(novel, 'last_audit_vector_stored', False) else 0,
+        "last_audit_foreshadow_stored": 1 if getattr(novel, 'last_audit_foreshadow_stored', False) else 0,
+        "last_audit_triples_extracted": 1 if getattr(novel, 'last_audit_triples_extracted', False) else 0,
+        "last_audit_quality_scores": _json.dumps(getattr(novel, 'last_audit_quality_scores', None)) if getattr(novel, 'last_audit_quality_scores', None) else None,
+        "last_audit_issues": _json.dumps(getattr(novel, 'last_audit_issues', None)) if getattr(novel, 'last_audit_issues', None) else None,
+        "audit_progress": getattr(novel, 'audit_progress', None),
+    }
+    if write_target_chapters:
+        fields["target_chapters"] = novel.target_chapters or 0
+    return fields
+
+
 class DaemonHostMixin:
     """守护进程基础设施 — 供 AutopilotDaemon 继承"""
 
@@ -209,7 +266,9 @@ class DaemonHostMixin:
             pass
 
 
-    def _save_novel_ephemeral(self, novel: Novel) -> bool:
+    def _save_novel_ephemeral(
+        self, novel: Novel, *, write_target_chapters: bool = True
+    ) -> bool:
         """🔥 用独立短连接保存 novel 状态到 DB（替代 novel_repository.save()）。
 
         核心问题：novel_repository.save() 使用线程本地长连接，在守护进程
@@ -218,40 +277,14 @@ class DaemonHostMixin:
 
         字段必须与 SqliteNovelRepository.save() 的 ON CONFLICT UPDATE 完全一致，
         否则会遗漏更新导致数据丢失（如张力、审计快照等）。
-        """
-        import json as _json
 
-        fields = {
-            "autopilot_status": novel.autopilot_status.value if isinstance(novel.autopilot_status, AutopilotStatus) else str(novel.autopilot_status),
-            "current_stage": novel.current_stage.value if hasattr(novel.current_stage, 'value') else str(novel.current_stage),
-            "current_act": novel.current_act or 0,
-            "current_chapter_in_act": novel.current_chapter_in_act or 0,
-            "current_beat_index": novel.current_beat_index or 0,
-            "current_auto_chapters": novel.current_auto_chapters or 0,
-            "target_chapters": novel.target_chapters or 0,
-            "target_words_per_chapter": resolve_chapter_words(novel.target_words_per_chapter),
-            "consecutive_error_count": novel.consecutive_error_count or 0,
-            # 不加 `or 0`：`last_chapter_tension` 现为 Optional，None = 从未评估，
-            # 压成 0 会让「没测过」在下游读成「张力 0」
-            "last_chapter_tension": novel.last_chapter_tension,
-            # 🔥 needs_review 是计算字段（由 current_stage == paused_for_review 推导），
-            # novels 表无此列，不能写入 DB，否则会导致 "no such column: needs_review" 错误
-            # 使整条审计落盘失败。前端通过 current_stage 自行推导 needs_review。
-            "beats_completed": getattr(novel, 'beats_completed', 0) or 0,
-            # 审计快照字段（与 SqliteNovelRepository.save() 对齐）
-            "auto_approve_mode": 1 if getattr(novel, 'auto_approve_mode', False) else 0,
-            "last_audit_chapter_number": getattr(novel, 'last_audit_chapter_number', None),
-            "last_audit_similarity": getattr(novel, 'last_audit_similarity', None),
-            "last_audit_drift_alert": 1 if getattr(novel, 'last_audit_drift_alert', False) else 0,
-            "last_audit_narrative_ok": 1 if getattr(novel, 'last_audit_narrative_ok', True) else 0,
-            "last_audit_at": getattr(novel, 'last_audit_at', None),
-            "last_audit_vector_stored": 1 if getattr(novel, 'last_audit_vector_stored', False) else 0,
-            "last_audit_foreshadow_stored": 1 if getattr(novel, 'last_audit_foreshadow_stored', False) else 0,
-            "last_audit_triples_extracted": 1 if getattr(novel, 'last_audit_triples_extracted', False) else 0,
-            "last_audit_quality_scores": _json.dumps(getattr(novel, 'last_audit_quality_scores', None)) if getattr(novel, 'last_audit_quality_scores', None) else None,
-            "last_audit_issues": _json.dumps(getattr(novel, 'last_audit_issues', None)) if getattr(novel, 'last_audit_issues', None) else None,
-            "audit_progress": getattr(novel, 'audit_progress', None),
-        }
+        ⚠ ``write_target_chapters=False`` 时**不写**目标章数（第 18 批 · I）：
+          目标章数是「规划侧」的字段，审计只在**刻意上调**时（终局预算 / 软目标续写）
+          才写它 ⇒ 否则会把实体里的**陈旧值**写回 DB，撤销别人刚做的改动。
+        """
+        fields = _build_novel_save_fields(
+            novel, write_target_chapters=write_target_chapters
+        )
 
         set_clauses = [f"{k} = ?" for k in fields.keys()]
         set_clauses.append("updated_at = CURRENT_TIMESTAMP")

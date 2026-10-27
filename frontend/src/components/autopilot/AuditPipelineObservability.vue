@@ -45,7 +45,7 @@ interface StatusLike {
   last_chapter_audit?: {
     similarity_score?: number | null
     drift_alert?: boolean
-    narrative_sync_ok?: boolean
+    narrative_sync_ok?: boolean | null
     vector_stored?: boolean
     triples_extracted?: boolean
     tension?: number
@@ -141,7 +141,11 @@ const activeDetail = computed(() => {
       return { label, text: '文风审计改写了正文，正在重建叙事 / 向量 / KG 结果' }
     }
     const flags = [
-      audit.narrative_sync_ok ? '叙事已同步' : '',
+      // 三态：null = **未评估**（章后管线超时/异常）⇒ 不许写成「已同步」，
+      // 也不许当成「失败」—— 那是把「没测出来」记成「测出严重」。
+      audit.narrative_sync_ok === null
+        ? '叙事未评估（章后管线未跑完）'
+        : (audit.narrative_sync_ok ? '叙事已同步' : '叙事未同步'),
       audit.vector_stored ? '向量已落库' : '',
       audit.triples_extracted ? 'KG 已抽取' : '',
     ].filter(Boolean)

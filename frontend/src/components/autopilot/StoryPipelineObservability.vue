@@ -100,7 +100,7 @@ interface StatusLike {
   current_chapter_number?: number | null
   aftermath_live_status?: 'running' | 'done' | 'failed' | string | null
   aftermath_live_chapter_number?: number | null
-  narrative_sync_ok?: boolean
+  narrative_sync_ok?: boolean | null
   vector_stored?: boolean
   foreshadow_stored?: boolean
   triples_extracted?: boolean
@@ -110,7 +110,7 @@ interface StatusLike {
   character_reconcile_ok?: boolean
   evolution_snapshot_ok?: boolean
   last_chapter_audit?: {
-    narrative_sync_ok?: boolean
+    narrative_sync_ok?: boolean | null
     vector_stored?: boolean
     foreshadow_stored?: boolean
     triples_extracted?: boolean
@@ -222,7 +222,7 @@ const aftermathSource = computed(() => {
   return props.status?.last_chapter_audit ?? props.status ?? null
 })
 
-function stepState(value: boolean | undefined, failWhenFalse = false): AftermathState {
+function stepState(value: boolean | null | undefined, failWhenFalse = false): AftermathState {
   if (value === true) return 'done'
   if (value === false && failWhenFalse) return 'fail'
   return 'pending'

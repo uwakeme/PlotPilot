@@ -11,6 +11,7 @@ from domain.novel.entities.novel import Novel, NovelStage, AutopilotStatus
 from domain.novel.value_objects.novel_id import NovelId
 from domain.novel.value_objects.chapter_id import ChapterId
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
+from engine.runtime.daemon_host import _should_write_target_chapters
 from engine.runtime.target_reached_gate import (
     TARGET_REACHED_PAUSE_REASON,
     resolve_target_reached,
@@ -69,6 +70,53 @@ def _resolve_audit_pause_gate(
         or anti_ai_gate_triggered
     )
     return pause_gate, hard_fail, anti_ai_gate_triggered, anti_reason
+
+
+#: 章后管线超时/异常时的**显式默认值**（第 18 批 · H）。
+#:
+#: ⚠ ``narrative_sync_ok`` 必须是 **None（未评估）**，不是 ``False（失败）``：
+#:   超时只说明「没跑出来」，**不代表**叙事不合格 ⇒ 写成 False 会把
+#:   「没测出来」记成「测出严重」—— 与同一函数里 anti-AI 侧刚统一过的口径分裂。
+AFTERMATH_TIMEOUT_DEFAULT: dict[str, Any] = {
+    "drift_alert": False,
+    "similarity_score": None,
+    "narrative_sync_ok": None,
+    "vector_stored": False,
+    "foreshadow_stored": False,
+    "triples_extracted": False,
+}
+
+
+def _resolve_narrative_gate(drift_result: Mapping[str, Any]) -> tuple[bool, bool, str]:
+    """章后叙事同步的**三态**判定（返回 ``(hard_narrative, evaluated, state)``）。
+
+    ``state`` ∈ ``{"ok", "failed", "unassessed"}``：
+
+    - ``ok``：评估过且同步成功；
+    - ``failed``：评估过且**明确**失败；
+    - ``unassessed``：**没跑出来**（章后管线超时/异常降级）。
+
+    ⚠ 「未评估」与「失败」必须可分辨（第 18 批 · H）：
+      两者都触发硬伤闸门（fail-closed，与 ``hard_tension`` 同向），
+      但**未评估不许被说成「叙事失败」** —— 那等于把「没测出来」记成「测出严重」。
+    """
+    state = drift_result.get("narrative_sync_ok", True)
+    if state is None:
+        return True, False, "unassessed"
+    if state is False:
+        return True, True, "failed"
+    return False, True, "ok"
+
+
+def _narrative_shared_value(drift_result: Mapping[str, Any]) -> bool | None:
+    """共享内存里的**三态**值：True=已同步 / False=失败 / **None=未评估**。
+
+    ⚠ 共享内存能承载 None（DB 的列承载不了）⇒ 面板能分辨「没跑出来」与「跑出来失败」。
+    """
+    _, evaluated, _ = _resolve_narrative_gate(drift_result)
+    if not evaluated:
+        return None
+    return bool(drift_result.get("narrative_sync_ok", True))
 
 
 def _read_shared_state(novel_id: str) -> dict[str, Any]:
@@ -283,6 +331,10 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     content = chapter.content or ""
     original_content = content
     original_content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # 本轮开始时的目标章数（第 18 批 · I）：
+    # 只有审计**刻意上调**它时（终局预算 / 软目标续写），落盘才写这个字段；
+    # 否则实体里的是**陈旧值** ⇒ 写回去会撤销别人刚做的改动。
+    target_chapters_baseline = novel.target_chapters
     host._sync_novel_current_act_from_chapter_number(novel, chapter_num)
     host._cache_stats_to_shared_memory(novel)
     chapter_id = ChapterId(chapter.id)
@@ -506,7 +558,7 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
                 timeout=300.0,  # 章后管线最多 5 分钟（含多次 LLM）
                 novel_id=novel.novel_id.value,
                 label="aftermath_pipeline",
-                timeout_default={"drift_alert": False, "similarity_score": None, "narrative_sync_ok": False, "vector_stored": False, "foreshadow_stored": False, "triples_extracted": False},
+                timeout_default=dict(AFTERMATH_TIMEOUT_DEFAULT),
             )
             logger.info(
                 f"[{novel.novel_id}] 章后管线完成: 相似度={drift_result.get('similarity_score')}, "
@@ -663,7 +715,10 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     prefs = getattr(novel, "generation_prefs", None) or GenerationPreferences()
     auto = bool(getattr(novel, "auto_approve_mode", False))
 
-    hard_narrative = not bool(drift_result.get("narrative_sync_ok", True))
+    # 「没测出来」与「测出来不合格」必须可分辨（第 18 批 · H）：
+    # 章后管线超时/异常降级 ⇒ narrative_sync_ok=None（**未评估**）
+    # ⇒ 仍按 fail-closed 拦（与 hard_tension 同向），但**不**记成「叙事失败」。
+    hard_narrative, narrative_evaluated, narrative_state = _resolve_narrative_gate(drift_result)
     hard_voice = drift_too_high and similarity_below_threshold
     hard_tension = not bool(drift_result.get("tension_evaluated", False))
 
@@ -706,12 +761,13 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         # 走到这条路径必然 NameError。
         logger.info(
             "[%s] 章末审阅闸门：进入 paused_for_review（每章一停=%s，硬伤停机=%s，%s；"
-            "narrative_ok=%s hard_voice=%s tension_evaluated=%s assessment=%s）",
+            "narrative_ok=%s（%s） hard_voice=%s tension_evaluated=%s assessment=%s）",
             novel.novel_id.value,
             getattr(prefs, "pause_after_each_chapter_audit", False),
             bool(getattr(prefs, "audit_pause_on_hard_fail", False)) and hard_fail,
             anti_reason,
             drift_result.get("narrative_sync_ok", True),
+            narrative_state,
             hard_voice,
             drift_result.get("tension_evaluated", False),
             anti_assessment,
@@ -737,6 +793,7 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
             "paused_for_review": pause_gate or target_reached,
             "target_reached": target_reached,
             "hard_fail": hard_fail,
+            "narrative_sync_state": narrative_state,
             "anti_ai_assessment": anti_assessment,
         },
     )
@@ -758,7 +815,8 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         last_audit_chapter_number=novel.last_audit_chapter_number,
         last_audit_similarity=novel.last_audit_similarity,
         last_audit_drift_alert=novel.last_audit_drift_alert,
-        last_audit_narrative_ok=novel.last_audit_narrative_ok,
+        # 三态：True=已同步 / False=同步失败 / **None=未评估**（第 18 批 · H）
+        last_audit_narrative_ok=_narrative_shared_value(drift_result),
         last_audit_vector_stored=novel.last_audit_vector_stored,
         last_audit_foreshadow_stored=novel.last_audit_foreshadow_stored,
         last_audit_triples_extracted=novel.last_audit_triples_extracted,
@@ -785,7 +843,13 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     # 🔥 核心修复：novel_repository.save() 改为独立短连接写入
     # 原因：repository.save() 使用线程本地长连接，写锁持有时间不可控
     # 在守护进程（multiprocessing.Process）中，这会阻塞 API 进程的所有 DB 操作
-    host._save_novel_ephemeral(novel)
+    # ⚠ 目标章数：只有本轮**刻意上调**过才写（第 18 批 · I）⇒ 否则会把陈旧值写回去。
+    host._save_novel_ephemeral(
+        novel,
+        write_target_chapters=_should_write_target_chapters(
+            novel.target_chapters, target_chapters_baseline
+        ),
+    )
     logger.info(f"[{novel.novel_id}] 审计完成，状态已落盘")
 
     # 🔥 审计完成：同步编年史+故事线到共享内存

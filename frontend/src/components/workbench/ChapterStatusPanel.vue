@@ -330,7 +330,7 @@ function boolStep(
   id: string,
   label: string,
   detail: string,
-  value: boolean | undefined,
+  value: boolean | null | undefined,
   failWhenFalse = false,
 ): AftermathStep {
   return {

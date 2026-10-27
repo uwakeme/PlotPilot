@@ -386,7 +386,8 @@ def _build_fallback_status(novel) -> Dict[str, Any]:
             "tension": last_tension,
             "drift_alert": bool(getattr(novel, "last_audit_drift_alert", False)),
             "similarity_score": getattr(novel, "last_audit_similarity", None),
-            "narrative_sync_ok": bool(getattr(novel, "last_audit_narrative_ok", True)),
+            # 三态：True=已同步 / False=同步失败 / None=未评估（章后管线超时/异常降级，第 18 批 · H）
+            "narrative_sync_ok": getattr(novel, "last_audit_narrative_ok", True),
             "at": getattr(novel, "last_audit_at", None),
             "vector_stored": bool(getattr(novel, "last_audit_vector_stored", False)),
             "foreshadow_stored": bool(getattr(novel, "last_audit_foreshadow_stored", False)),
@@ -578,7 +579,7 @@ def _build_autopilot_status_sync(novel_id: str) -> Optional[Dict[str, Any]]:
             "tension": last_tension,
             "drift_alert": bool((novel.get("last_audit_drift_alert") if isinstance(novel, dict) else getattr(novel, "last_audit_drift_alert", False))),
             "similarity_score": novel.get("last_audit_similarity") if isinstance(novel, dict) else getattr(novel, "last_audit_similarity", None),
-            "narrative_sync_ok": bool((novel.get("last_audit_narrative_ok") if isinstance(novel, dict) else getattr(novel, "last_audit_narrative_ok", True))),
+            "narrative_sync_ok": (novel.get("last_audit_narrative_ok") if isinstance(novel, dict) else getattr(novel, "last_audit_narrative_ok", True)),
             "at": novel.get("last_audit_at") if isinstance(novel, dict) else getattr(novel, "last_audit_at", None),
             "vector_stored": bool((novel.get("last_audit_vector_stored") if isinstance(novel, dict) else getattr(novel, "last_audit_vector_stored", False))),
             "foreshadow_stored": bool((novel.get("last_audit_foreshadow_stored") if isinstance(novel, dict) else getattr(novel, "last_audit_foreshadow_stored", False))),
@@ -721,7 +722,7 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
             "tension": last_tension,
             "drift_alert": bool(shared.get("last_audit_drift_alert", False)),
             "similarity_score": shared.get("last_audit_similarity"),
-            "narrative_sync_ok": bool(shared.get("last_audit_narrative_ok", True)),
+            "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
             "at": shared.get("last_audit_at"),
             "vector_stored": bool(shared.get("last_audit_vector_stored", False)),
             "foreshadow_stored": bool(shared.get("last_audit_foreshadow_stored", False)),
@@ -923,7 +924,7 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
             "tension": last_tension,
             "drift_alert": bool(shared.get("last_audit_drift_alert", False)),
             "similarity_score": shared.get("last_audit_similarity"),
-            "narrative_sync_ok": bool(shared.get("last_audit_narrative_ok", True)),
+            "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
             "at": shared.get("last_audit_at"),
             "vector_stored": bool(shared.get("last_audit_vector_stored", False)),
             "foreshadow_stored": bool(shared.get("last_audit_foreshadow_stored", False)),
@@ -1406,6 +1407,50 @@ class StartRequest(BaseModel):
 
 
 @router.post("/{novel_id}/start")
+def _resolve_start_target_chapters(*, body_target: int | None, db_target: int) -> int:
+    """start 路由的**目标章数**解析（第 18 批 · I）。
+
+    ⚠ **共享内存的值不参与**：它是**快照** ⇒ 用户在界面上改完目标章数之后，
+    start 路由若用共享内存里的旧值，就会把旧值**回写 DB** ⇒ 用户的改动被撤销
+    （生产实测：PUT 4 → start ⇒ 又变回 3）。
+
+    ⇒ 权威来源是 **DB**；请求体里显式传的值优先级最高（前端「启动」弹窗就是这么传的）。
+    """
+    if body_target is not None:
+        return _clamp_autopilot_target_chapters(body_target)
+    return int(db_target or 0) or 1
+
+
+async def _read_target_chapters_from_db(
+    novel_id: str, runtime_settings: Any = None
+) -> int:
+    """读 DB 里的**目标章数**（权威值，第 18 批 · I）。
+
+    ⚠ 为什么不能读共享内存：共享内存是**快照** ⇒ 用户在界面上改完目标章数后，
+    共享内存里还是旧值 ⇒ start 路由会用旧值回写 DB ⇒ 用户的改动被撤销
+    （生产实测：PUT 4 → start ⇒ 又变回 3）。
+    """
+    def _read_sync() -> int:
+        from infrastructure.persistence.database.connection import get_database
+
+        row = get_database().fetch_one(
+            "SELECT target_chapters FROM novels WHERE id = ?", (novel_id,)
+        )
+        if not row or row["target_chapters"] in (None, 0):
+            return 1
+        return int(row["target_chapters"])
+
+    loop = asyncio.get_running_loop()
+    settings = runtime_settings or get_autopilot_runtime_settings()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_SSE_THREAD_POOL, _read_sync),
+            timeout=settings.db_read_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "数据库繁忙，请稍后重试")
+
+
 async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
     """启动自动驾驶（共享内存先行；目标章数字数原子落库后再发 IPC，避免与 PUT 竞态）。
 
@@ -1433,8 +1478,16 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
         current_act = shared.get("current_act", 0) or 0
         current_chapter_in_act = shared.get("current_chapter_in_act", 0) or 0
         current_beat_index = int(shared.get("current_beat_index", 0) or 0)
-        resolved_tc = int(shared.get("target_chapters", 1) or 1)
         resolved_twpc = resolve_chapter_words(shared.get("target_words_per_chapter"))
+        # ⚠ 目标章数**必须读 DB**，不能读共享内存（第 18 批 · I）。
+        #   共享内存是**快照**：用户在界面上改了目标章数（PUT /novels/{id}）之后，
+        #   共享内存里还是旧值 ⇒ start 路由会用旧值**回写 DB** ⇒ 用户的改动被撤销。
+        #   （生产实测：PUT 4 → start ⇒ 又变回 3。）
+        #   目标章数是「规划侧」的字段 ⇒ 它的权威来源是 DB。
+        resolved_tc = _resolve_start_target_chapters(
+            body_target=body.target_chapters,
+            db_target=await _read_target_chapters_from_db(novel_id, runtime_settings),
+        )
 
         # 计算下一阶段
         fresh_stages = {"planning", "macro_planning"}
@@ -1477,7 +1530,10 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
         current_act = novel_data["current_act"]
         current_chapter_in_act = novel_data["current_chapter_in_act"]
         current_beat_index = int(novel_data.get("current_beat_index") or 0)
-        resolved_tc = int(novel_data["target_chapters"])
+        resolved_tc = _resolve_start_target_chapters(
+            body_target=body.target_chapters,
+            db_target=int(novel_data["target_chapters"]),
+        )
         resolved_twpc = resolve_chapter_words(novel_data.get("target_words_per_chapter"))
 
         fresh_stages = {"planning", "macro_planning"}
@@ -1488,8 +1544,6 @@ async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
         else:
             next_stage = current_stage_str
 
-    if body.target_chapters is not None:
-        resolved_tc = _clamp_autopilot_target_chapters(body.target_chapters)
     if body.target_words_per_chapter is not None:
         resolved_twpc = _clamp_autopilot_words_per_chapter(body.target_words_per_chapter)
 
