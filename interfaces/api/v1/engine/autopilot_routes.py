@@ -269,7 +269,7 @@ def _macro_structure_exists(novel_id: str) -> bool:
 router = APIRouter(prefix="/autopilot", tags=["autopilot"])
 
 
-def _drift_alert_tri_state(value: Any) -> Optional[bool]:
+def _drift_alert_tri_state(value: Any, similarity_score: Any = None) -> Optional[bool]:
     """文风漂移告警的**三态**（第 23 批）。
 
     - ``True``  = 本章**真的**偏离（相似度低于阈值）
@@ -278,8 +278,12 @@ def _drift_alert_tri_state(value: Any) -> Optional[bool]:
 
     ⚠ 此前一律 ``bool(...)`` ⇒ 「未评估」被压成 False ⇒ 与「没偏离」同形
     ⇒ 第 21 批生产实测出「告警开着、分数是空」的自相矛盾状态。
+
+    ⚠ 相似度**没有** ⇒ 一律判「未评估」：
+      相似度都没有 ⇒ 本章偏不偏离**判不了** ⇒ 不许报「告警」也不许报「没偏离」
+      （顺带把历史遗留的「告警=1 + 分数为空」的老行也纠正过来）。
     """
-    if value is None:
+    if similarity_score is None or value is None:
         return None
     return bool(value)
 
@@ -399,7 +403,10 @@ def _build_fallback_status(novel) -> Dict[str, Any]:
         last_chapter_audit = {
             "chapter_number": int(lacn),
             "tension": last_tension,
-            "drift_alert": _drift_alert_tri_state(getattr(novel, "last_audit_drift_alert", False)),
+            "drift_alert": _drift_alert_tri_state(
+                getattr(novel, "last_audit_drift_alert", False),
+                getattr(novel, "last_audit_similarity", None),
+            ),
             "similarity_score": getattr(novel, "last_audit_similarity", None),
             # 三态：True=已同步 / False=同步失败 / None=未评估（章后管线超时/异常降级，第 18 批 · H）
             "narrative_sync_ok": getattr(novel, "last_audit_narrative_ok", True),
@@ -592,7 +599,10 @@ def _build_autopilot_status_sync(novel_id: str) -> Optional[Dict[str, Any]]:
         last_chapter_audit = {
             "chapter_number": int(lacn),
             "tension": last_tension,
-            "drift_alert": _drift_alert_tri_state(novel.get("last_audit_drift_alert") if isinstance(novel, dict) else getattr(novel, "last_audit_drift_alert", False)),
+            "drift_alert": _drift_alert_tri_state(
+                novel.get("last_audit_drift_alert") if isinstance(novel, dict) else getattr(novel, "last_audit_drift_alert", False),
+                novel.get("last_audit_similarity") if isinstance(novel, dict) else getattr(novel, "last_audit_similarity", None),
+            ),
             "similarity_score": novel.get("last_audit_similarity") if isinstance(novel, dict) else getattr(novel, "last_audit_similarity", None),
             "narrative_sync_ok": (novel.get("last_audit_narrative_ok") if isinstance(novel, dict) else getattr(novel, "last_audit_narrative_ok", True)),
             "at": novel.get("last_audit_at") if isinstance(novel, dict) else getattr(novel, "last_audit_at", None),
@@ -735,7 +745,9 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         last_chapter_audit = {
             "chapter_number": int(lacn),
             "tension": last_tension,
-            "drift_alert": _drift_alert_tri_state(shared.get("last_audit_drift_alert")),
+            "drift_alert": _drift_alert_tri_state(
+                shared.get("last_audit_drift_alert"), shared.get("last_audit_similarity")
+            ),
             "similarity_score": shared.get("last_audit_similarity"),
             "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
             "at": shared.get("last_audit_at"),
@@ -937,7 +949,9 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         last_chapter_audit = {
             "chapter_number": int(lacn),
             "tension": last_tension,
-            "drift_alert": _drift_alert_tri_state(shared.get("last_audit_drift_alert")),
+            "drift_alert": _drift_alert_tri_state(
+                shared.get("last_audit_drift_alert"), shared.get("last_audit_similarity")
+            ),
             "similarity_score": shared.get("last_audit_similarity"),
             "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
             "at": shared.get("last_audit_at"),

@@ -156,8 +156,23 @@ def test_the_api_passes_the_three_states_through():
     """⚠ API 以前一律 ``bool(...)`` ⇒ 「未评估」被压成 False。"""
     from interfaces.api.v1.engine.autopilot_routes import _drift_alert_tri_state
 
-    assert _drift_alert_tri_state(None) is None
-    assert _drift_alert_tri_state(True) is True
-    assert _drift_alert_tri_state(False) is False
-    assert _drift_alert_tri_state(1) is True
-    assert _drift_alert_tri_state(0) is False
+    assert _drift_alert_tri_state(True, 0.5) is True
+    assert _drift_alert_tri_state(False, 0.5) is False
+    assert _drift_alert_tri_state(1, 0.5) is True
+    assert _drift_alert_tri_state(0, 0.5) is False
+    assert _drift_alert_tri_state(None, 0.5) is None
+    assert _drift_alert_tri_state(None, None) is None
+
+
+def test_the_api_does_not_report_an_alert_without_a_similarity_score():
+    """⚠ 相似度**没有** ⇒ 一律「未评估」。
+
+    ⇒ 顺带把历史遗留的「告警=1 + 分数为空」的老行纠正过来
+    （第 21 批生产实测出来的自相矛盾状态）。
+    """
+    from interfaces.api.v1.engine.autopilot_routes import _drift_alert_tri_state
+
+    assert _drift_alert_tri_state(True, None) is None, (
+        "没有相似度却报「告警」⇒ 面板上像是告警，却给不出任何数字"
+    )
+    assert _drift_alert_tri_state(1, None) is None
