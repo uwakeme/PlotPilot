@@ -159,7 +159,13 @@ def _build_novel_save_fields(
         "auto_approve_mode": 1 if getattr(novel, 'auto_approve_mode', False) else 0,
         "last_audit_chapter_number": getattr(novel, 'last_audit_chapter_number', None),
         "last_audit_similarity": getattr(novel, 'last_audit_similarity', None),
-        "last_audit_drift_alert": 1 if getattr(novel, 'last_audit_drift_alert', False) else 0,
+        # 三态（第 23 批）：None（未评估）⇒ 原样写 NULL，别压成 0
+        # （压成 0 就是「本章没偏离」⇒ 与「没算出来」混成一件事）
+        "last_audit_drift_alert": (
+            None
+            if getattr(novel, 'last_audit_drift_alert', False) is None
+            else (1 if getattr(novel, 'last_audit_drift_alert', False) else 0)
+        ),
         # 三态（第 19 批）：None（未评估）⇒ 原样写 NULL，别压成 0
         "last_audit_narrative_ok": narrative_ok_to_db(
             getattr(novel, 'last_audit_narrative_ok', True)
@@ -893,6 +899,7 @@ class DaemonHostMixin:
         """
         try:
             from application.audit.services.setting_drift_audit import (
+                DEFAULT_TIME_BUDGET_SECONDS,
                 SettingDriftAuditService,
             )
             from infrastructure.persistence.database.connection import get_database
@@ -908,6 +915,12 @@ class DaemonHostMixin:
                 novel_id=novel_id,
                 chapter_number=int(chapter_number),
                 content=content,
+                # ⚠ 第 23 批：**单章时间预算**。
+                # 实测单段调用 312 秒（glm-5.3-flash），长章最多 4 段
+                # ⇒ 慢 provider 下原本可能拖 20 分钟，且它挂在章末关键路径上。
+                # ⇒ 超预算 ⇒ 停止送审剩余段 ⇒ 结论显式报「覆盖不全」，
+                #   **已审出的结论照样保留**（不把查到的丢掉），也不会报假通过。
+                time_budget=DEFAULT_TIME_BUDGET_SECONDS,
             )
         except Exception as exc:  # noqa: BLE001 —— 审计失败不许把整章流程带崩
             logger.warning(

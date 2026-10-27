@@ -62,7 +62,9 @@ class Novel(BaseEntity):
         beats_completed: bool = False,  # 当前章节所有节拍是否已完成
         last_audit_chapter_number: Optional[int] = None,
         last_audit_similarity: Optional[float] = None,
-        last_audit_drift_alert: bool = False,
+        # 三态（第 23 批）：True=本章真的偏离 / False=本章没偏离 / **None=未评估**
+        # （相似度没算出来 ⇒ 本章偏离与否**判不了** ⇒ 不许谎报「告警」或「正常」）
+        last_audit_drift_alert: Optional[bool] = False,
         # 三态（第 19 批）：True=已同步 / False=明确失败 / **None=未评估**
         # （章后管线超时/异常降级 ⇒ 没跑出来，不等于「跑出来失败」）
         last_audit_narrative_ok: Optional[bool] = True,

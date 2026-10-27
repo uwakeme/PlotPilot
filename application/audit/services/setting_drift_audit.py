@@ -18,8 +18,10 @@ F-13（长章漂移漏审 / 假通过）：旧实现只送前 12000 字（``_CON
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,25 @@ _FACT_TEXT_LIMIT = 200
 _SEGMENT_CHARS = 6000
 # 单章最多送审段数（token 上限护栏）——超出部分不审，并显式报告「未审完」
 _MAX_SEGMENTS = 4
+
+#: **单章**设定漂移审计的时间预算（秒）——``0`` 表示不限。
+#:
+#: ⚠ 为什么需要它（第 23 批）：第 21 批生产实测单段调用 **312 秒**（``glm-5.3-flash``）；
+#:   而长章会切成最多 ``_MAX_SEGMENTS`` 段 ⇒ 慢 provider 下**一章可能拖 20 分钟**
+#:   （4 段 × 5 分钟），且它挂在**章末关键路径**上。
+#: ⇒ 预算耗尽 ⇒ 停止送审剩余段 ⇒ 已有机制自然给出
+#:   ``coverage="partial"`` / ``audited=False`` ⇒ **已审出的结论照样保留**，
+#:   没审完的部分**显式报出来**（不报假通过，也不把已审的丢掉）。
+DEFAULT_TIME_BUDGET_SECONDS: float = 600.0
+
+
+def _now() -> float:
+    """当前时间（秒）。
+
+    ⚠ 单独抽出来是为了**可被测试替换** —— 预算相关的测试不该依赖真实时钟
+    （真实时钟 ⇒ 慢机器上偶发失败、CI 上偶发挂起）。
+    """
+    return time.monotonic()
 
 
 def _split_into_segments(text: str, limit: int) -> List[str]:
@@ -161,10 +182,16 @@ class SettingDriftAuditService:
         chapter_number: int,
         content: str,
         novel_title: str = "",
+        time_budget: float = 0.0,
     ) -> Dict[str, Any]:
         """审计单章设定漂移。
 
         正文过长时**分段送审**（不再截断丢弃后半段），各段结论合并。
+
+        ⚠ ``time_budget``（秒，``0`` = 不限）是**单章**的总时间预算：
+        预算耗尽 ⇒ 停止送审剩余段 ⇒ 结论里显式报「覆盖不全」
+        ⇒ **已审出的结论照样保留**（不把已经查到的丢掉），
+        也不会让慢 provider 把章末**拖到 20 分钟**。
 
         Returns:
             {audited, drift_score, issues: [...], checked_facts,
@@ -191,8 +218,25 @@ class SettingDriftAuditService:
         setting_facts_text = "\n".join(f"- {f}" for f in facts)
         targets = segments[:_MAX_SEGMENTS]
 
+        # ⚠ 时间预算（第 23 批）：整章共享一份预算（不是每段一份）
+        deadline = (_now() + time_budget) if time_budget and time_budget > 0 else None
+
         results: List[Dict[str, Any]] = []
         for index, segment in enumerate(targets, start=1):
+            remaining: Optional[float] = None
+            if deadline is not None:
+                remaining = deadline - _now()
+                if remaining <= 0:
+                    # 预算耗尽 ⇒ 剩下的段**不送审**（显式报告，不装作审过了）
+                    logger.warning(
+                        "设定漂移审计时间预算耗尽 novel=%s ch=%s seg=%s/%s 未送审",
+                        novel_id, chapter_number, index, total_segments,
+                    )
+                    results.extend(
+                        self._unaudited("时间预算耗尽（未送审）")
+                        for _ in range(index, len(targets) + 1)
+                    )
+                    break
             variables = {
                 "novel_id": novel_id,
                 "novel_title": novel_title or novel_id,
@@ -205,7 +249,32 @@ class SettingDriftAuditService:
                 "segment_total": total_segments,
             }
             try:
-                raw = await self._invoke(variables)
+                if remaining is None:
+                    raw = await self._invoke(variables)
+                else:
+                    raw = await asyncio.wait_for(self._invoke(variables), timeout=remaining)
+            except asyncio.TimeoutError:
+                # ⚠ 分清两种超时：**预算耗尽**（这一章到此为止） vs
+                #   **provider 自己超时**（只是这一段失败，预算还有 ⇒ 继续下一段）。
+                budget_left = (deadline - _now()) if deadline is not None else None
+                exhausted = budget_left is not None and budget_left <= 0
+                logger.warning(
+                    "设定漂移审计段超时 novel=%s ch=%s seg=%s/%s 预算耗尽=%s",
+                    novel_id, chapter_number, index, total_segments, exhausted,
+                )
+                results.append(
+                    self._unaudited(
+                        "超时（超出时间预算）" if exhausted else "段超时（LLM 调用超时）"
+                    )
+                )
+                if exhausted:
+                    # 预算已经用完 ⇒ 剩下的段不再送审
+                    results.extend(
+                        self._unaudited("时间预算耗尽（未送审）")
+                        for _ in range(index + 1, len(targets) + 1)
+                    )
+                    break
+                continue
             except Exception as e:
                 logger.warning(
                     "设定漂移审计调用失败 novel=%s ch=%s seg=%s/%s: %s",

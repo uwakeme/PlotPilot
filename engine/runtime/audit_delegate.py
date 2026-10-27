@@ -119,6 +119,27 @@ def _narrative_shared_value(drift_result: Mapping[str, Any]) -> bool | None:
     return bool(drift_result.get("narrative_sync_ok", True))
 
 
+def _drift_alert_shared_value(
+    drift_result: Mapping[str, Any], similarity_below_threshold: bool
+) -> bool | None:
+    """文风漂移告警的**三态**（第 23 批）。
+
+    - ``True``  = 本章**真的**偏离（相似度低于阈值）
+    - ``False`` = 本章没偏离
+    - ``None``  = **未评估**（相似度没算出来 ⇒ 判不了）
+
+    ⚠ 此前写的是 ``bool(drift_alert)`` ⇒ 第 21 批生产实测出**自相矛盾**的状态：
+    「漂移告警 = 1」但「相似度 = NULL」⇒ 面板上像是告警，却给不出任何数字。
+    根因有两层：
+      ① 告警**可能来自历史窗口**（本章相似度并未低于阈值）；
+      ② 「相似度没算出来」被当成了「没低于阈值」。
+    ⇒ 现在：相似度**没算出来** ⇒ 未评估；算出来了 ⇒ 只在确实低于阈值时才算偏离。
+    """
+    if drift_result.get("similarity_score") is None:
+        return None
+    return bool(drift_result.get("drift_alert", False)) and bool(similarity_below_threshold)
+
+
 #: 设定漂移条目的 type 前缀（重审时按它把**上一轮**的漂移条目清掉）。
 SETTING_DRIFT_ISSUE_TYPE = "setting_drift"
 
@@ -728,7 +749,21 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     )
     novel.last_audit_chapter_number = chapter_num
     novel.last_audit_similarity = drift_result.get("similarity_score")
-    novel.last_audit_drift_alert = bool(drift_result.get("drift_alert", False))
+    # 三态（第 23 批）：True=本章真的偏离 / False=本章没偏离 / None=**未评估**
+    #
+    # ⚠ 此前写的是 ``bool(drift_alert)`` ⇒ 第 21 批生产实测出**自相矛盾**的状态：
+    #   「漂移告警 = 1」但「相似度 = NULL」⇒ 面板上像是告警，却给不出任何数字。
+    #   根因：告警**可能来自历史窗口**（本章相似度并未低于阈值），
+    #   而「相似度没算出来」被当成了「没低于阈值」。
+    # ⇒ 现在：相似度**没算出来** ⇒ 未评估（None）；
+    #   算出来了 ⇒ 只在**确实低于阈值**时才算本章偏离。
+    similarity_score = drift_result.get("similarity_score")
+    similarity_below_threshold = host._similarity_below_warning_threshold(similarity_score)
+    drift_too_high = bool(drift_result.get("drift_alert", False))
+    # ⚠ 三态（第 23 批）：True=本章真的偏离 / False=没偏离 / None=未评估
+    novel.last_audit_drift_alert = _drift_alert_shared_value(
+        drift_result, similarity_below_threshold
+    )
     # 三态（第 19 批）：未评估（None）就存 None —— 别压成 False
     # （那是把「没跑出来」记成「跑出来失败」）
     novel.last_audit_narrative_ok = _narrative_shared_value(drift_result)
@@ -737,9 +772,6 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     novel.last_audit_triples_extracted = bool(drift_result.get("triples_extracted", False))
     novel.last_audit_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-    drift_too_high = bool(drift_result.get("drift_alert", False))
-    similarity_score = drift_result.get("similarity_score")
-    similarity_below_threshold = host._similarity_below_warning_threshold(similarity_score)
     if drift_result.get("similarity_score") is not None:
         logger.info(
             f"[{novel.novel_id}] 文风相似度：{drift_result.get('similarity_score')}，"

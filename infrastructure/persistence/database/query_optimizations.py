@@ -194,7 +194,8 @@ def _build_novel_from_dict(data: Dict) -> Novel:
         beats_completed=bool(data.get('beats_completed', 0)),
         last_audit_chapter_number=data.get("last_audit_chapter_number"),
         last_audit_similarity=data.get("last_audit_similarity"),
-        last_audit_drift_alert=bool(_lad) if _lad is not None else False,
+        # 三态（第 23 批）：NULL = 未评估 ⇒ **保持 None**，别压成 False
+        last_audit_drift_alert=(None if _lad is None else bool(_lad)),
         last_audit_narrative_ok=(None if _lano is None else bool(_lano)),
         last_audit_at=data.get("last_audit_at"),
         last_audit_vector_stored=bool(data.get("last_audit_vector_stored", 0)),

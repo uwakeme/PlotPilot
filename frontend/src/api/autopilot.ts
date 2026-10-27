@@ -6,7 +6,8 @@ export interface AutopilotChapterAudit {
   chapter_number: number
   /** 张力三态：null = 未评估（打分没跑/失败），0 = 评估过且张力就是 0 */
   tension: number | null
-  drift_alert: boolean
+  /** 三态：true=本章真的偏离 / false=没偏离 / null=未评估（相似度没算出来） */
+  drift_alert: boolean | null
   similarity_score: number | null
   /** 三态：true=已同步 / false=同步失败 / null=未评估（章后管线超时） */
   narrative_sync_ok: boolean | null

@@ -113,7 +113,9 @@ class SqliteNovelRepository(NovelRepository):
         beats_completed = 1 if getattr(novel, 'beats_completed', False) else 0
         lacn = getattr(novel, "last_audit_chapter_number", None)
         lasim = getattr(novel, "last_audit_similarity", None)
-        ladr = 1 if getattr(novel, "last_audit_drift_alert", False) else 0
+        # 三态（第 23 批）：None（未评估）要**原样存 NULL** —— 压成 0 就成了「没偏离」
+        _ladr_raw = getattr(novel, "last_audit_drift_alert", False)
+        ladr = None if _ladr_raw is None else (1 if _ladr_raw else 0)
         # 三态（第 19 批）：None（未评估）要**原样存 NULL**，不能压成 0
         lano = narrative_ok_to_db(getattr(novel, "last_audit_narrative_ok", True))
         laat = getattr(novel, "last_audit_at", None)
@@ -367,7 +369,8 @@ class SqliteNovelRepository(NovelRepository):
             beats_completed=bool(row.get('beats_completed', 0)),
             last_audit_chapter_number=row.get("last_audit_chapter_number"),
             last_audit_similarity=row.get("last_audit_similarity"),
-            last_audit_drift_alert=bool(_lad) if _lad is not None else False,
+            # 三态（第 23 批）：NULL = 未评估 ⇒ **保持 None**，别压成 False
+            last_audit_drift_alert=(None if _lad is None else bool(_lad)),
             # 三态（第 19 批）：NULL = 未评估 ⇒ **保持 None**，别压成 True
             last_audit_narrative_ok=(None if _lano is None else bool(_lano)),
             last_audit_at=row.get("last_audit_at"),

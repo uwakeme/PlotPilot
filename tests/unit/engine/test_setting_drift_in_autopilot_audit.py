@@ -225,10 +225,12 @@ class _FakeAntiReport:
 class _FakeHost:
     """``run_chapter_audit`` 需要的 host 替身（只喂数据，不做副作用）。"""
 
-    def __init__(self, *, shared, pipeline_result, setting_drift_result):
+    def __init__(self, *, shared, pipeline_result, setting_drift_result,
+                 similarity_below_threshold: bool = False):
         self.shared = shared
         self.pipeline_result = pipeline_result
         self.setting_drift_result = setting_drift_result
+        self.similarity_below_threshold = similarity_below_threshold
         self.setting_drift_calls: list[tuple] = []
         self.events: list[tuple] = []
         self.shared_updates: list[dict] = []
@@ -276,7 +278,7 @@ class _FakeHost:
         return dict(self.pipeline_result)
 
     def _similarity_below_warning_threshold(self, score) -> bool:
-        return False
+        return self.similarity_below_threshold
 
     async def _run_anti_ai_audit(self, novel_id, number, content):
         return _FakeAntiReport("轻微")
@@ -486,3 +488,101 @@ async def test_the_setting_drift_audit_does_not_change_the_tension_gate(monkeypa
         f"（narrative_sync_state={payload.get('narrative_sync_state')}）"
     )
     assert novel.last_chapter_tension == 72
+
+
+# ── 5) 文风漂移告警的三态（第 23 批）────────────────────────────────────
+#
+# ⚠ 第 21 批生产实测出**自相矛盾**的快照：「漂移告警 = 1」但「相似度 = NULL」
+#    ⇒ 面板上像是告警，却给不出任何数字。
+# ⇒ 相似度**没算出来** ⇒ 未评估（None）；算出来了 ⇒ 只在确实低于阈值时才算偏离。
+
+
+async def _run_audit_with_pipeline(pipeline_result, *, below_threshold=False):
+    import sys
+
+    import engine.runtime.audit_delegate as audit_delegate_module
+    from domain.novel.entities.novel import AutopilotStatus, Novel, NovelStage
+    from domain.novel.value_objects.novel_id import NovelId
+
+    novel_id = "novel-drift-tri"
+    shared = {
+        f"novel:{novel_id}": {
+            "autopilot_pending_audit_chapter_number": "3",
+            "autopilot_pending_audit_report": {"chapter.audit.risk_flags": []},
+            "autopilot_pending_aftermath_chapter_number": "3",
+            "autopilot_pending_aftermath_payload": {"chapter.summary": "摘要"},
+        }
+    }
+
+    old_shared = sys.modules.get("__shared_state")
+    sys.modules["__shared_state"] = shared
+    try:
+        host = _FakeHost(
+            shared=shared,
+            pipeline_result=pipeline_result,
+            setting_drift_result={"audited": True, "issues": []},
+            similarity_below_threshold=below_threshold,
+        )
+        novel = Novel(
+            id=NovelId(novel_id),
+            title="缝",
+            author="t",
+            target_chapters=10,
+            current_stage=NovelStage.WRITING,
+            autopilot_status=AutopilotStatus.RUNNING,
+            auto_approve_mode=True,
+        )
+        await audit_delegate_module.run_chapter_audit(host, novel)
+        return novel, shared
+    finally:
+        if old_shared is None:
+            sys.modules.pop("__shared_state", None)
+        else:
+            sys.modules["__shared_state"] = old_shared
+
+
+@pytest.mark.asyncio
+async def test_an_unmeasured_similarity_leaves_the_drift_alert_unassessed():
+    """⚠ 相似度**没算出来** ⇒ 告警**未评估**（None），不是「告警」也不是「没偏离」。"""
+    novel, _ = await _run_audit_with_pipeline(
+        {
+            "similarity_score": None,
+            "drift_alert": True,
+            "narrative_sync_ok": True,
+            "tension_composite": 70,
+        }
+    )
+    assert novel.last_audit_drift_alert is None, (
+        f"未评估被写成了 {novel.last_audit_drift_alert!r} ⇒ 面板上会显示成「偏离」"
+    )
+    assert novel.last_audit_similarity is None
+
+
+@pytest.mark.asyncio
+async def test_a_real_drift_is_recorded_as_an_alert():
+    """对照：相似度算出来了 + 确实低于阈值 ⇒ 本章真的偏离。"""
+    novel, _ = await _run_audit_with_pipeline(
+        {
+            "similarity_score": 0.42,
+            "drift_alert": True,
+            "narrative_sync_ok": True,
+            "tension_composite": 70,
+        },
+        below_threshold=True,
+    )
+    assert novel.last_audit_drift_alert is True
+
+
+@pytest.mark.asyncio
+async def test_an_alert_from_a_historical_window_is_not_this_chapters_drift():
+    """⚠ 告警来自历史窗口（本章相似度没低于阈值）⇒ 本章**没偏离**。"""
+    novel, _ = await _run_audit_with_pipeline(
+        {
+            "similarity_score": 0.97,
+            "drift_alert": True,
+            "narrative_sync_ok": True,
+            "tension_composite": 70,
+        },
+        below_threshold=False,
+    )
+    assert novel.last_audit_drift_alert is False

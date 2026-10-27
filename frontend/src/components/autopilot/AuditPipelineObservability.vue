@@ -44,7 +44,8 @@ interface StatusLike {
   audit_aftermath_rebuilt?: boolean
   last_chapter_audit?: {
     similarity_score?: number | null
-    drift_alert?: boolean
+    /** 三态：true=本章真的偏离 / false=没偏离 / null=未评估（相似度没算出来） */
+    drift_alert?: boolean | null
     narrative_sync_ok?: boolean | null
     vector_stored?: boolean
     triples_extracted?: boolean
