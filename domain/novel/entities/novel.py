@@ -63,7 +63,9 @@ class Novel(BaseEntity):
         last_audit_chapter_number: Optional[int] = None,
         last_audit_similarity: Optional[float] = None,
         last_audit_drift_alert: bool = False,
-        last_audit_narrative_ok: bool = True,
+        # 三态（第 19 批）：True=已同步 / False=明确失败 / **None=未评估**
+        # （章后管线超时/异常降级 ⇒ 没跑出来，不等于「跑出来失败」）
+        last_audit_narrative_ok: Optional[bool] = True,
         last_audit_at: Optional[str] = None,
         # 章后管线状态
         last_audit_vector_stored: bool = False,

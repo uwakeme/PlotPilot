@@ -9,6 +9,8 @@ import time
 import logging
 import asyncio
 from dataclasses import replace
+
+from infrastructure.persistence.database.sqlite_novel_repository import narrative_ok_to_db
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -158,7 +160,10 @@ def _build_novel_save_fields(
         "last_audit_chapter_number": getattr(novel, 'last_audit_chapter_number', None),
         "last_audit_similarity": getattr(novel, 'last_audit_similarity', None),
         "last_audit_drift_alert": 1 if getattr(novel, 'last_audit_drift_alert', False) else 0,
-        "last_audit_narrative_ok": 1 if getattr(novel, 'last_audit_narrative_ok', True) else 0,
+        # 三态（第 19 批）：None（未评估）⇒ 原样写 NULL，别压成 0
+        "last_audit_narrative_ok": narrative_ok_to_db(
+            getattr(novel, 'last_audit_narrative_ok', True)
+        ),
         "last_audit_at": getattr(novel, 'last_audit_at', None),
         "last_audit_vector_stored": 1 if getattr(novel, 'last_audit_vector_stored', False) else 0,
         "last_audit_foreshadow_stored": 1 if getattr(novel, 'last_audit_foreshadow_stored', False) else 0,
@@ -845,6 +850,36 @@ class DaemonHostMixin:
             )
         except Exception as e:
             logger.warning(f"[{novel_id}] 桥段提取失败（不影响主流程）ch={chapter_number}: {e}")
+
+    def _allowed_character_names(self, novel_id: str) -> str:
+        """审计用的**角色白名单**（与生成侧事实锁**同源**，第 19 批）。
+
+        ⚠ 为什么必须同源：生成侧把白名单锁进 T0（提示词侧约束），
+        审计侧要拿**同一份**去比对正文 ⇒ 两边不同源的话，
+        审计比的与生成时被锁的不是一回事。
+
+        ⚠ 取不到（没有 Bible / 取失败）⇒ 返回**空串**
+        ⇒ 审计提示词据此**跳过**「越界角色」这一类（不许臆测）。
+        """
+        try:
+            from infrastructure.persistence.database.connection import get_database
+            from infrastructure.persistence.database.sqlite_bible_repository import (
+                SqliteBibleRepository,
+            )
+
+            from application.engine.services.memory_engine import (
+                FactLockBuilder,
+                character_names,
+            )
+
+            builder = FactLockBuilder(SqliteBibleRepository(get_database()))
+            bible = builder.bible_repository.get_by_novel_id(NovelId(novel_id))
+            if not bible:
+                return ""
+            return ", ".join(character_names(bible))
+        except Exception as exc:  # noqa: BLE001 —— 取不到就当「没有白名单」，不许臆测
+            logger.debug("取角色白名单失败（审计将跳过越界角色检查）novel=%s: %s", novel_id, exc)
+            return ""
 
     async def _run_anti_ai_audit(
         self,

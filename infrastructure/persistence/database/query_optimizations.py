@@ -164,6 +164,8 @@ def _build_novel_from_dict(data: Dict) -> Novel:
         current_stage = NovelStage.PLANNING
 
     _lad = data.get("last_audit_drift_alert")
+    # 三态（第 19 批）：NULL = 未评估 ⇒ 保持 None
+    # 三态（第 19 批）：NULL = 未评估 ⇒ 保持 None
     _lano = data.get("last_audit_narrative_ok")
 
     # 解析 JSON 字段
@@ -193,7 +195,7 @@ def _build_novel_from_dict(data: Dict) -> Novel:
         last_audit_chapter_number=data.get("last_audit_chapter_number"),
         last_audit_similarity=data.get("last_audit_similarity"),
         last_audit_drift_alert=bool(_lad) if _lad is not None else False,
-        last_audit_narrative_ok=bool(_lano) if _lano is not None else True,
+        last_audit_narrative_ok=(None if _lano is None else bool(_lano)),
         last_audit_at=data.get("last_audit_at"),
         last_audit_vector_stored=bool(data.get("last_audit_vector_stored", 0)),
         last_audit_foreshadow_stored=bool(data.get("last_audit_foreshadow_stored", 0)),

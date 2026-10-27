@@ -420,7 +420,15 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
             operation="autopilot.chapter.audit",
             node_key="anti-ai-chapter-audit",
             continuation_handler_key="autopilot_audit",
-            explicit_variables={"content": content},
+            explicit_variables={
+                "content": content,
+                # 角色白名单（第 19 批）：与生成侧事实锁**同源**
+                # ⇒ 审计才能判「正文出现了白名单外的新角色」。
+                # ⚠ 取不到时是**空串** ⇒ 提示词据此跳过该项（不许臆测）。
+                "allowed_character_names": host._allowed_character_names(
+                    novel.novel_id.value
+                ),
+            },
         )
         if audit_outcome.status in {
             "awaiting_pre_call_review",
@@ -673,7 +681,9 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     novel.last_audit_chapter_number = chapter_num
     novel.last_audit_similarity = drift_result.get("similarity_score")
     novel.last_audit_drift_alert = bool(drift_result.get("drift_alert", False))
-    novel.last_audit_narrative_ok = bool(drift_result.get("narrative_sync_ok", True))
+    # 三态（第 19 批）：未评估（None）就存 None —— 别压成 False
+    # （那是把「没跑出来」记成「跑出来失败」）
+    novel.last_audit_narrative_ok = _narrative_shared_value(drift_result)
     novel.last_audit_vector_stored = bool(drift_result.get("vector_stored", False))
     novel.last_audit_foreshadow_stored = bool(drift_result.get("foreshadow_stored", False))
     novel.last_audit_triples_extracted = bool(drift_result.get("triples_extracted", False))

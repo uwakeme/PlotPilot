@@ -14,6 +14,20 @@ from infrastructure.persistence.database.sqlite_corruption import is_sqlite_stor
 logger = logging.getLogger(__name__)
 
 
+def narrative_ok_to_db(value: Optional[bool]) -> Optional[int]:
+    """``last_audit_narrative_ok`` 的**三态** → DB 列值。
+
+    ⚠ ``None``（**未评估**：章后管线超时/异常降级）必须**原样写 NULL**：
+    压成 0 就成了「失败」，压成 True 就成了「没问题」—— 两个都是谎报。
+    ⇒ 这一列的语义是三态，不是布尔。
+
+    ⚠ 单一来源：仓储 ``save()`` 与守护进程的落盘字段都走它 ⇒ 两边不会漂。
+    """
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
 class SqliteNovelRepository(NovelRepository):
     """SQLite Novel Repository 实现"""
 
@@ -100,7 +114,8 @@ class SqliteNovelRepository(NovelRepository):
         lacn = getattr(novel, "last_audit_chapter_number", None)
         lasim = getattr(novel, "last_audit_similarity", None)
         ladr = 1 if getattr(novel, "last_audit_drift_alert", False) else 0
-        lano = 1 if getattr(novel, "last_audit_narrative_ok", True) else 0
+        # 三态（第 19 批）：None（未评估）要**原样存 NULL**，不能压成 0
+        lano = narrative_ok_to_db(getattr(novel, "last_audit_narrative_ok", True))
         laat = getattr(novel, "last_audit_at", None)
         # 新增字段
         lavs = 1 if getattr(novel, "last_audit_vector_stored", False) else 0
@@ -353,7 +368,8 @@ class SqliteNovelRepository(NovelRepository):
             last_audit_chapter_number=row.get("last_audit_chapter_number"),
             last_audit_similarity=row.get("last_audit_similarity"),
             last_audit_drift_alert=bool(_lad) if _lad is not None else False,
-            last_audit_narrative_ok=bool(_lano) if _lano is not None else True,
+            # 三态（第 19 批）：NULL = 未评估 ⇒ **保持 None**，别压成 True
+            last_audit_narrative_ok=(None if _lano is None else bool(_lano)),
             last_audit_at=row.get("last_audit_at"),
             last_audit_vector_stored=bool(row.get("last_audit_vector_stored", 0)),
             last_audit_foreshadow_stored=bool(row.get("last_audit_foreshadow_stored", 0)),

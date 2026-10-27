@@ -176,6 +176,31 @@ def _truncate_with_mark(text: str, limit: int) -> str:
 
 
 
+def character_names(bible) -> List[str]:
+    """Bible 里的**有名字的角色**名单（白名单）。
+
+    ⚠ 生成侧（``_build_from_bible``）与审计侧（``_facts_from_bible``）
+    **必须用同一个来源** —— 否则「正文被锁住的」与「审计拿来比对的」不是一回事。
+    """
+    characters = getattr(bible, "characters", None) or []
+    return [c.name for c in characters if getattr(c, "name", "")]
+
+
+def whitelist_lines(names: List[str]) -> List[str]:
+    """角色白名单的**文本行**（生成侧与审计侧**同一份** ⇒ 不会漂）。
+
+    ⚠ 此前这两处各抄了一份（生成侧用「允许: A, B」+「禁止: …」，审计侧内联一行）
+    ⇒ 改一边另一边不会跟着改 ⇒ 两边口径可能悄悄分叉。
+    """
+    if not names:
+        return []
+    return [
+        FACT_LOCK_HEADER_WHITELIST,
+        f"   允许: {', '.join(names)}",
+        "   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！",
+    ]
+
+
 class FactLockBuilder:
     """从 Bible + KnowledgeGraph 动态构建 FACT_LOCK 文本
     
@@ -233,11 +258,10 @@ class FactLockBuilder:
         facts: List[str] = []
         characters = bible.characters
 
-        names = [c.name for c in characters if getattr(c, "name", "")]
-        if names:
-            facts.append(
-                "角色白名单（只可使用以下有名字的角色）：" + "、".join(names)
-            )
+        # 角色白名单：与生成侧**同一份**（``whitelist_lines``）⇒ 两边不会分叉
+        wl_lines = whitelist_lines(character_names(bible))
+        if wl_lines:
+            facts.append("\n".join(wl_lines))
 
         for sl in self._build_character_setting_lines(characters):
             facts.append(f"角色设定：{sl}")
@@ -263,13 +287,12 @@ class FactLockBuilder:
         """从 Bible 实体构建 FACT_LOCK"""
         lines = ["【绝对事实边界（一旦违背即为废稿）】\n"]
 
-        # ── 1. 角色白名单 ──
+        # ── 1. 角色白名单（与审计侧同一份：``whitelist_lines``）──
         characters = bible.characters
-        if characters:
-            names = [c.name for c in characters]
-            lines.append(FACT_LOCK_HEADER_WHITELIST)
-            lines.append(f"   允许: {', '.join(names)}")
-            lines.append("   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！\n")
+        names = character_names(bible)
+        if names:
+            lines.extend(whitelist_lines(names))
+            lines.append("")
 
         # ── 2. 角色设定（谁是谁、干什么的）—— N-0 的关键一节 ──
         # ⚠ 此前事实锁**只有名字**（白名单），没有任何一节装角色的职能/身份

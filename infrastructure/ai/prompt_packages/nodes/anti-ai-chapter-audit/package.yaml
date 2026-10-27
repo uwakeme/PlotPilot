@@ -1,7 +1,7 @@
 name: Anti-AI 章节审计 v1（50+模式扫描）
 category: anti-ai
 source: application/audit/services/cliche_scanner.py
-description: Layer 7 章后审计：50+增强模式扫描，涵盖微表情/声线/比喻/生理性/句式/叙事/环境/节奏/复述9大类，生成结构化审计报告。
+description: Layer 7 章后审计：50+增强模式扫描，涵盖微表情/声线/比喻/生理性/句式/叙事/环境/节奏/复述/生造词/越界角色11大类，生成结构化审计报告。
 builtin: true
 tags:
 - 核心
@@ -14,5 +14,10 @@ variables:
   desc: 章节正文
   type: string
   required: true
+- name: allowed_character_names
+  desc: 角色白名单（与生成侧事实锁同源；空串 = 没有白名单 ⇒ 跳过越界角色检查）
+  type: string
+  required: false
+  default: ""
 id: anti-ai-chapter-audit
 sort_order: 35

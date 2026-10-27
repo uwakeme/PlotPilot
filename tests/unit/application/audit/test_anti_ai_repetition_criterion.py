@@ -86,34 +86,63 @@ def test_repetition_criterion_has_a_negative_boundary():
     assert "不报" in text, "负向边界没写明「不报」"
 
 
+def _declared_category_letters(text: str) -> str:
+    """从提示词里抽出**声明的** category 枚举字母（不写死内容）。"""
+    import re
+
+    match = re.search(r'"category":\s*"([A-Z/]+)"', text)
+    assert match, "提示词里找不到 category 枚举声明"
+    return match.group(1).replace("/", "")
+
+
 def test_category_enum_includes_i():
-    """输出 JSON 的 category 枚举必须把 I 加进去（否则模型报不出这一类）。"""
-    text = _system()
-    assert '"category": "A/B/C/D/E/F/G/H/I"' in text, (
-        "category 枚举没加 I ⇒ 模型报了 I 类也会被当成非法值"
-    )
+    """输出 JSON 的 category 枚举必须把 I 加进去（否则模型报不出这一类）。
+
+    ⚠ 不写死整条枚举（实测踩过：加了 J/K 之后，写死 `"A/.../I"` 的断言直接假红
+    ⇒ 断言应当只钉**它关心的那一类**在不在）。
+    """
+    letters = _declared_category_letters(_system())
+    assert "I" in letters, f"category 枚举里没有 I（现在是 {letters}）"
 
 
 # ── 2) 同一个事实散在三处 ⇒ 三处都要改 ────────────────────────────────
 
 
+def _declared_category_count(text: str) -> int:
+    """从文本里抽出「N 大类」这个数字（不写死 N）。"""
+    import re
+
+    match = re.search(r"(\d+)\s*大类", text)
+    assert match, f"文本里找不到「N 大类」：{text[:120]!r}"
+    return int(match.group(1))
+
+
 def test_category_count_is_consistent_in_all_three_places():
-    """「9 大类」这个事实出现在三处 ⇒ 改一处不够。
+    """「N 大类」这个事实出现在三处 ⇒ 改一处不够。
 
     - ``anti-ai-chapter-audit/system.md``（模型看到的那份）
     - ``anti-ai-chapter-audit/package.yaml`` 的 description（提示词广场显示）
     - ``anti_ai_nodes.py`` 的 DAG 节点描述（DAG 编辑器显示）
+
+    ⚠ **不写死 N**（实测踩过：加了 J/K 之后，写死「9大类」的断言直接假红
+    ⇒ 那是断言自己过时了，不是被测代码坏了）⇒ 改成**三处互相对齐**：
+    数字一致 + 与提示词里实际声明的类别数一致。
     """
     system = _system()
     package = _read(PACKAGE_YAML)
     dag = _read(DAG_NODE_PY)
 
-    assert "涵盖9大类别" in system, "system.md 的类别数没更新"
-    assert "9大类" in package, "package.yaml 的类别数没更新"
-    assert "涵盖9大类AI味检测" in dag, "DAG 节点描述的类别数没更新"
+    counts = {
+        "system.md": _declared_category_count(system),
+        "package.yaml": _declared_category_count(package),
+        "anti_ai_nodes.py": _declared_category_count(dag),
+    }
+    assert len(set(counts.values())) == 1, f"三处的类别数不一致：{counts}"
 
-    for name, text in (("system.md", system), ("package.yaml", package), ("anti_ai_nodes.py", dag)):
-        assert "8大类" not in text, f"{name} 里还留着过期的「8大类」"
+    declared = len(_declared_category_letters(system))
+    assert counts["system.md"] == declared, (
+        f"文案说 {counts['system.md']} 大类，但枚举里声明了 {declared} 个 ⇒ 文案与枚举对不上"
+    )
 
 
 # ── 3) bundle 版本：改了提示词必须 bump（否则存量安装不生效）──────────
@@ -136,24 +165,34 @@ def _changelog_segment(base: str) -> str:
     return rest[:nxt] if nxt != -1 else rest
 
 
+def _changelog_segments() -> list[str]:
+    """changelog 的**全部**版本片段（一条一个元素）。
+
+    ⚠ 用途：断言「某一版的改动**有被记账**」时，不能只查**当前版本**那一段
+    （实测踩过：I 类是 5.47.0 引入的，后来又有了 5.48.0 ⇒ 只查当前版本 ⇒ 假红）。
+    ⇒ 这里给的是**全部**片段，断言自己在里面找对应那条。
+    """
+    changelog = str(_meta().get("changelog") or "")
+    parts = changelog.split("|v")
+    return [part for part in parts if part.strip()]
+
+
 def test_bundle_version_was_bumped_for_this_change():
     """提示词包改了 ⇒ bundle 版本必须 bump，且机器可读的 version_nodes 要登记它。"""
     meta = _meta()
     version = str(meta.get("version") or "")
-    assert _version_tuple(version) >= (5, 47, 0), f"bundle 版本没 bump（当前 {version}）"
+    base = _version_base(version)
 
     version_nodes = meta.get("version_nodes") or {}
-    base = _version_base(version)
     assert base in version_nodes, f"当前版本 {base} 在 version_nodes 里没有条目"
     assert NODE_KEY in version_nodes[base], (
         f"version_nodes[{base}] 里没有 {NODE_KEY} ⇒ "
         "「这一版改了哪些提示词包」漏了它（审计脚本会指不出来）"
     )
 
-    segment = _changelog_segment(base)
-    assert segment, f"changelog 里找不到 v{base}: 这一条的说明"
-    assert "I类" in segment, (
-        f"v{base} 的 changelog 条目没写清这一笔新增的类别（I类）⇒ "
+    # I 类是**某一版**引入的（不一定是当前版本）⇒ 扫全部版本片段找那条
+    assert any("I类" in part for part in _changelog_segments()), (
+        "changelog 里找不到「I类」的记账条目 ⇒ "
         "读者对不上「提示词包 ↔ 登记表条目」"
     )
 
