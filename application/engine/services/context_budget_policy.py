@@ -48,6 +48,21 @@ _MISSING_SECTIONS_RE = re.compile(r"^【被截掉的小节：(.+?)】\n?", re.S)
 #: ⚠ 实际长度随「缺了几节」变化 ⇒ 上层还要**实测一次**再收（见 context_builder）。
 NAMING_RESERVE_CHARS = 120
 
+#: 截断的**开头留痕**（第 24 批）。
+#:
+#: ⚠ 为什么必须在**开头**：结尾那个 ``TRUNCATION_MARKER`` 会被**下游的二次截断**切掉
+#:   （分配器给 fact_lock 2250 字，正文 builder 再切到 2000 字 ⇒ 结尾标记正好
+#:   落在被切掉的那一段里）⇒ **模型在正文提示词里根本看不到「本块被截断了」**。
+#:
+#: ⚠ 之前只有「点名被截掉的小节」，而**被切在一节中间**的那一节（实测：身份锁死
+#:   切在第 5 个角色中间）**标题还在** ⇒ 点名机制认不出来 ⇒ 模型以为
+#   「身份锁死这一节就这几个角色」⇒ **半截的硬约束被当成了完整设定**。
+#:
+#: ⇒ 开头这一句把「本块不完整」这件事**明说**给模型。
+TRUNCATION_NOTICE = "【本块已按上限截断，以下内容不完整】\n"
+_TRUNCATION_NOTICE_RE = re.compile(r"^【本块已按上限截断，以下内容不完整】\n?", re.S)
+
+
 
 def _already_named_sections(content: str) -> list:
     """原文开头**已经**点名过的小节（去掉结尾冒号的形式）。"""
@@ -59,20 +74,118 @@ def _already_named_sections(content: str) -> list:
 
 def _strip_naming_block(content: str) -> str:
     """去掉开头那个点名块（重新截断时**替换**而不是叠加）。"""
-    return _MISSING_SECTIONS_RE.sub("", content or "", count=1)
+    without_naming = _MISSING_SECTIONS_RE.sub("", content or "", count=1)
+    # ⚠ 开头留痕同理（幂等）：重新截断时**替换**而不是叠加
+    return _TRUNCATION_NOTICE_RE.sub("", without_naming, count=1)
+
+
+def _section_body(text: str, header: str, section_headers) -> str:
+    """取 ``text`` 里 ``header`` 那一节的**内容**（到下一个标题为止）。
+
+    ⚠ 用途：判断「这一节是不是被切了一半」——
+    **标题还在**但内容比原文少 ⇒ 模型会以为「这一节就这么多」
+    ⇒ 点名机制必须算上它（否则就是静默失效）。
+    """
+    start = text.find(header)
+    if start < 0:
+        return ""
+    start += len(header)
+    end = len(text)
+    for other in section_headers or ():
+        if other == header:
+            continue
+        idx = text.find(other, start)
+        if idx >= 0 and idx < end:
+            end = idx
+    return text[start:end]
 
 
 def _missing_sections(content: str, kept: str, section_headers) -> list:
     """原文里存在、但被截掉的小节标题。
 
-    ⚠ 只报**确实出现过**（在原文里）却**没出现在保留部分**的小节 ——
+    ⚠ 只报**确实出现过**（在原文里）的小节 ——
     原文本来就没有的小节不算「被截掉」。
+
+    ⚠ 第 24 批：**「标题还在、内容只剩一半」也算被截掉**。
+      此前只报「整节没了」⇒ 刀口切在一节**中间**时（实测：调序后
+      「角色设定」这一节被切掉一半）标题还在 ⇒ 点名机制认不出来 ⇒
+      模型以为「这一节就这几个角色」⇒ **静默失效**。
     """
     missing = []
     for header in section_headers or ():
-        if header and header in content and header not in kept:
+        if not header or header not in content:
+            continue
+        if header not in kept:
+            missing.append(header)
+            continue
+        if _section_body(content, header, section_headers).strip() != _section_body(
+            kept, header, section_headers
+        ).strip():
             missing.append(header)
     return missing
+
+
+def _cut_at_line_boundary(text: str, target_chars: int) -> str:
+    """切到 ``target_chars``，但**只切在行边界上** ⇒ 不切半行。
+
+    ⚠ 为什么（第 24 批，生产实测出来的）：
+      槽位里的行是**一条条约束**（如
+      ``   贺九 = 公开面 | [已揭露] …（POV防火墙：…） | 当前心理: …``），
+      切在半行 ⇒ 模型看到的是**半条约束**（半句 POV 防火墙）
+      ⇒ 它会把半句当成**完整设定** ⇒ **比整条缺失更危险**。
+    ⇒ 普通的约束行**整行**丢掉（不送半行）。
+
+    ⚠ 唯一例外（**实测逼出来的**）：刀口所在的那一行**比预算的一半还长**。
+      生产实测的样本：白名单一行 400 个角色 = **2290 字** > 预算 2250 字
+      ⇒ 这一行**根本装不下** ⇒ 整行丢掉 = 整个白名单都没了
+      （实测：2250 字的预算最后只剩 **18 字**内容）
+      ⇒ 这种行是**超长清单**（不是一条约束）⇒ 半截仍然可读 ⇒ 只能切在字上。
+
+    ⚠ 行级回退 ⇒ 被丢掉的内容变多 ⇒ 「点名被截掉的小节」必须**跟着算**
+      （``mark_truncated`` 里用保留部分重新算一遍 ⇒ 点名不会撒谎）。
+    """
+    if target_chars <= 0:
+        return ""
+    if len(text) <= target_chars:
+        return text
+    cut = text[:target_chars]
+    newline = cut.rfind("\n")
+    if newline >= 0:
+        # 刀口所在的那一行（从上一个换行之后到该行末尾）
+        line_end = text.find("\n", newline + 1)
+        line_len = (line_end if line_end >= 0 else len(text)) - (newline + 1)
+        trimmed = cut[:newline]
+        if trimmed.strip() and line_len * 2 <= target_chars:
+            # 这一行**装得下**预算的一半 ⇒ 它是一条约束 ⇒ **整行**丢掉
+            return trimmed
+        # ⚠ 这一行超长（清单）⇒ 丢不得 ⇒ 切在字上（开头留痕会说明不完整）
+        return cut.rstrip()
+    # ⚠ 整块内容**只有一行** ⇒ 没有行边界可切 ⇒ 按字符切
+    return cut.rstrip()
+
+
+def _drop_trailing_section_header(kept: str, section_headers) -> str:
+    """保留部分若**以某个小节标题结尾**（标题在、内容没到）⇒ 把标题也丢掉。
+
+    ⚠ 为什么（第 24 批，生产实测出来的）：
+      刀口落在「身份锁死：」标题之后、内容之前时，模型会看到
+      「身份锁死：」后面**空着** ⇒ 而点名机制也**认不出**这一节被截断
+      （标题还在保留部分里）⇒
+      ⇒ 既没有内容、也没有「这一节被截掉了」的提示
+      ⇒ 模型只会以为「这一节本来就是空的」⇒ **静默失效**。
+
+    ⇒ 把这个标题也丢掉 ⇒ 点名机制随后就会点名它 ⇒ 模型明确知道「这一节没了」。
+    """
+    if not kept or not section_headers:
+        return kept
+    lines = kept.splitlines()
+    if not lines:
+        return kept
+    last_line = lines[-1].strip()
+    for header in section_headers:
+        if header and last_line == str(header).strip():
+            return "\n".join(lines[:-1]).rstrip()
+    return kept
 
 
 def mark_truncated(content: str, target_chars: int, *, section_headers=()) -> str:
@@ -95,7 +208,9 @@ def mark_truncated(content: str, target_chars: int, *, section_headers=()) -> st
         return ""
     already = _already_named_sections(content)
     body = _strip_naming_block(content)
-    kept = body[:target_chars].rstrip()
+    kept = _cut_at_line_boundary(body, target_chars).rstrip()
+    # ⚠ 标题在、内容没到 ⇒ 标题也丢（否则点名机制认不出 ⇒ 静默失效）
+    kept = _drop_trailing_section_header(kept, section_headers)
     missing = _missing_sections(body, kept, section_headers)
     names = list(
         dict.fromkeys([*already, *(str(h).rstrip("：:") for h in missing)])
@@ -103,7 +218,10 @@ def mark_truncated(content: str, target_chars: int, *, section_headers=()) -> st
     notice = ""
     if names:
         notice = f"{_MISSING_SECTIONS_PREFIX}{'、'.join(names)}{_MISSING_SECTIONS_SUFFIX}"
-    return f"{notice}{kept}{TRUNCATION_MARKER}"
+    # ⚠ 第 24 批：开头**明说**「本块被截断了」——
+    #   结尾那个标记会被下游的二次截断切掉 ⇒ 模型看不到
+    #   （实测：正文提示词里只有开头的点名块，没有结尾标记）。
+    return f"{notice}{TRUNCATION_NOTICE}{kept}{TRUNCATION_MARKER}"
 
 
 #: 兼容旧名（内部曾用下划线前缀）。

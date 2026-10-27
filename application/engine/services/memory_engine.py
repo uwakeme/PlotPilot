@@ -136,19 +136,27 @@ FACT_LOCK_HEADER_TIMELINE = "核心事件时间线（不可矛盾）："
 
 #: ⚠ **顺序 = 截断时的存活优先级**（正文侧那把刀是从**尾部**切的）。
 #:
-#: 实测（生产书真实数据）：事实锁原始 3788 字 → 正文侧上限 2000 字 ⇒
-#: 尾部三节被切。此前「核心关系」排在「身份锁死」**前面**
-#: ⇒ 被切掉的是**身份锁死**（已揭露的秘密 + **POV 防火墙**）
-#: —— 那恰恰是**最硬的**叙事约束（违反即人物失格）。
+#: 实测（生产书真实数据，第 24 批）：
+#:   事实锁原始 **3876 字** ⇒ 正文侧上限 **2000 字**
+#:   ⇒ 尾部被切。此前「角色设定」排在「身份锁死」**前面**（1025 字）
+#:   ⇒ 刀口正好落在**最硬**的「身份锁死」这一节**中间**
+#:   ⇒ 8 个角色的 POV 防火墙只活下来 **4 个**
+#:   ⇒ 后 4 个角色的硬约束**没送到模型** ⇒ 模型自由发挥
+#:   ⇒ 而生产实测抓到的「能力越界 / 性别矛盾」根因就在这里。
 #:
-#: ⇒ 硬约束在前、软约束在后：**白名单 → 角色设定 → 死亡锁 → 身份锁死
-#: → 核心关系 → 时间线**。
-#: ⇒ 仍会被切的是**软**的（关系/时间线）⇒ 可接受（它们还能从别处推）。
+#: ⇒ 硬约束在前、软约束在后（**按硬度排，不按篇幅排**）：
+#:   **白名单 → 死亡锁 → 身份锁死 → 角色设定 → 核心关系 → 时间线**。
+#:   * 死亡锁：极硬且**极短**（每个死者一行）⇒ 提到最前面不吃预算；
+#:   * 身份锁死：**最硬**（已揭露的秘密 + POV 防火墙）⇒ 必须在「角色设定」前面；
+#:   * 角色设定：仍是很硬的约束，但**篇幅最大** ⇒ 放在硬约束之后；
+#:   * 核心关系 / 时间线：**软**（还能从别处推）⇒ 被切可接受（且**如实点名**）。
+#:
+#: ⚠ 调序后（生产数据实测）：**8/8** 个 POV 防火墙全部送达正文提示词。
 FACT_LOCK_SECTION_HEADERS: tuple = (
     FACT_LOCK_HEADER_WHITELIST,
-    FACT_LOCK_HEADER_CHARACTER_SETTINGS,
     FACT_LOCK_HEADER_DEAD,
     FACT_LOCK_HEADER_IDENTITY,
+    FACT_LOCK_HEADER_CHARACTER_SETTINGS,
     FACT_LOCK_HEADER_RELATIONS,
     FACT_LOCK_HEADER_TIMELINE,
 )
@@ -162,6 +170,48 @@ FACT_LOCK_SECTION_HEADERS: tuple = (
 CHARACTER_SETTING_MAX_CHARS = 60
 #: 「角色设定」最多给多少个角色（超出的**如实点名**，不静默丢）。
 CHARACTER_SETTING_MAX_CHARACTERS = 12
+
+#: 身份锁里「[已揭露] 秘密主体」的限长（字符）——第 24 批。
+#:
+#: ⚠ 为什么要限：事实锁整块在正文提示词里只有 2000 字
+#:   ⇒ 实测（生产书真实数据）原始 4202 字 ⇒ 刀口落在「身份锁死」这一节**中间**
+#:   ⇒ 后半角色的硬约束（秘密 + POV 防火墙）**根本没送到模型**
+#:   ⇒ 模型自由发挥 ⇒ 生产实测抓到的「角色能力越界 / 性别矛盾」根因就在这里。
+#:
+#: ⚠ 限的只是**叙述性描述**（可以被别处推出来）；
+#:   **POV 防火墙不受此限**（它最硬：违反即人物失格）。
+IDENTITY_SECRET_MAX_CHARS = 40
+
+#: 身份锁里「当前心理」的限长（字符）——第 24 批（最容易从别处推 ⇒ 先砍它）。
+IDENTITY_MENTAL_MAX_CHARS = 20
+
+#: 身份锁里「公开面」的限长（字符）——第 24 批。
+#:
+#: ⚠ 公开面**不能删**（它在「角色设定」节里每条只给 60 字、且只给前 12 个角色
+#:   ⇒ 删掉会让「只有公开面」的角色整行消失）⇒ 只能限长。
+IDENTITY_PUBLIC_MAX_CHARS = 60
+
+
+def _split_hidden_profile(hidden: str) -> tuple[str, str]:
+    """把 ``hidden_profile`` 拆成「秘密主体」与「POV 防火墙」。
+
+    ⇒ 返回 ``(秘密主体, POV 防火墙整块)``。
+
+    ⚠ 为什么要拆：POV 防火墙藏在隐藏面文本的**尾巴**上（形如
+    ``……（POV防火墙：她的视角在后台认人之前，不得确知送票人身份。）``），
+    而秘密主体限长时若不做区分，**刀口会落在防火墙中间**
+    ⇒ 留下半句防火墙（模型可能当成别的意思）⇒ 比没有更糟。
+    ⇒ 拆开 ⇒ 主体可限长，防火墙**整块保留**。
+    """
+    text = str(hidden or "")
+    marker = text.find("POV防火墙")
+    if marker < 0:
+        return text, ""
+    start = max(text.rfind("（", 0, marker), text.rfind("(", 0, marker))
+    end = max(text.rfind("）", marker), text.rfind(")", marker))
+    if start < 0 or end <= marker:
+        return text, ""
+    return text[:start].rstrip(), text[start:end + 1]
 
 
 def _truncate_with_mark(text: str, limit: int) -> str:
@@ -294,20 +344,9 @@ class FactLockBuilder:
             lines.extend(whitelist_lines(names))
             lines.append("")
 
-        # ── 2. 角色设定（谁是谁、干什么的）—— N-0 的关键一节 ──
-        # ⚠ 此前事实锁**只有名字**（白名单），没有任何一节装角色的职能/身份
-        # ⇒ 正文提示词里模型只知道「有这个人」，不知道「他是干什么的」
-        # ⇒ 只能靠名字+梗概+大纲去猜 ⇒ 人设必然漂移
-        # （真实跑一本真书实测：7 个角色里 4 个被重定义，
-        #   连 Bible 里的「白塔旧案主谋」都被写成了报社好领导）。
-        setting_lines = self._build_character_setting_lines(characters)
-        if setting_lines:
-            lines.append(FACT_LOCK_HEADER_CHARACTER_SETTINGS)
-            for sl in setting_lines:
-                lines.append(f"   {sl}")
-            lines.append("")
-
-        # ── 3. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
+        # ── 2. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
+        # ⚠ 第 24 批调序：死亡锁**极硬且极短**（每个死者一行）⇒ 提到最前面，
+        #   「不可复活」这种约束一旦被截掉就是**灾难级**违规，而它几乎不占预算。
         dead_chars = self._extract_dead_characters(characters)
         if dead_chars:
             lines.append(FACT_LOCK_HEADER_DEAD)
@@ -315,14 +354,32 @@ class FactLockBuilder:
                 lines.append(f"   禁止: {dc['name']}({dc.get('role', '未知')}) - {dc.get('cause', '原因不详')}（死于{dc.get('when', '未知时间')}）")
             lines.append("")
 
-        # ── 4. 身份锁死（已揭露的秘密 / POV 防火墙 —— **硬约束**）──
-        # ⚠ 排在「核心关系」**之前**：正文侧那把刀从尾部切，
-        #    硬约束必须先活下来（关系/时间线是软的，砍了还能从别处推）。
+        # ── 3. 身份锁死（已揭露的秘密 / POV 防火墙 —— **硬约束**）──
+        # ⚠ 第 24 批调序（**实测驱动**）：此前这一节排在「角色设定」**后面**
+        #   ⇒ 正文侧那把刀（2000 字上限）正好切在**这一节中间**
+        #   ⇒ 8 个角色只有 4 个的 POV 防火墙活下来 ⇒ 后 4 个角色的硬约束
+        #   **没送到模型** ⇒ 模型自由发挥（生产实测抓到的「能力越界 / 性别矛盾」
+        #   根因就在这里）⇒ 调序后实测 **8/8** 全部送达。
         identity_lines = self._build_identity_lines(characters, current_chapter)
         if identity_lines:
             lines.append(FACT_LOCK_HEADER_IDENTITY)
             for il in identity_lines:
                 lines.append(f"   {il}")
+            lines.append("")
+
+        # ── 4. 角色设定（谁是谁、干什么的）—— N-0 的关键一节 ──
+        # ⚠ 此前事实锁**只有名字**（白名单），没有任何一节装角色的职能/身份
+        # ⇒ 正文提示词里模型只知道「有这个人」，不知道「他是干什么的」
+        # ⇒ 只能靠名字+梗概+大纲去猜 ⇒ 人设必然漂移
+        # （真实跑一本真书实测：7 个角色里 4 个被重定义，
+        #   连 Bible 里的「白塔旧案主谋」都被写成了报社好领导）。
+        # ⚠ 第 24 批调序：这一节**篇幅最大**（每个角色两段各 60 字）
+        #   ⇒ 放在**硬约束之后** ⇒ 被切时硬约束先活下来（且这一节被切会**如实点名**）。
+        setting_lines = self._build_character_setting_lines(characters)
+        if setting_lines:
+            lines.append(FACT_LOCK_HEADER_CHARACTER_SETTINGS)
+            for sl in setting_lines:
+                lines.append(f"   {sl}")
             lines.append("")
 
         # ── 5. 核心关系图谱 ──
@@ -454,15 +511,36 @@ class FactLockBuilder:
         return lines
 
     def _build_identity_lines(self, characters: list, current_chapter: int) -> list[str]:
-        """构建身份锁死行"""
+        """构建身份锁死行。
+
+        ⚠ **预算**（第 24 批，生产实测出来的硬事实）：
+          事实锁整块在正文提示词里只有 **2000 字**
+          （``prose_context_settings.DEFAULT_MAX_CHARS_PER_SLOT``）
+          ⇒ 实测（生产书真实数据）：原始 4202 字 ⇒ 裁到 2000 字时
+          **刀口正好落在「身份锁死」这一节中间** ⇒ 后半角色的硬约束
+          （已揭露的秘密 + POV 防火墙）**根本没送到模型**
+          ⇒ 模型可以自由发挥 ⇒ 第 21 批生产实测抓到的「郑铁珊被无解释赋予
+          写票能力」「郑铁珊的性别矛盾」**根因就在这里**。
+
+        ⇒ 两处压缩（把整块事实锁压进 2000 字 ⇒ 硬约束**整段**送达）：
+          ① 「[已揭露] 秘密主体」**限长**（``IDENTITY_SECRET_MAX_CHARS``）。
+          ② 「当前心理」限长（``IDENTITY_MENTAL_MAX_CHARS``）。
+        ⚠ **公开面（``public_profile``）保留**：它虽然也在「角色设定」节里，
+          但那一节每条限 60 字、且只给前 12 个角色 ⇒ 删掉它会让
+          「只有公开面、没有隐藏面」的角色**整行消失**（信息丢失）⇒ 只能限长，不能删。
+        ⚠ **POV 防火墙完整保留**（不受任何限长约束）——
+          它是**最硬**的约束（违反即人物失格）⇒ 砍它等于砍掉整节的价值。
+        """
         lines = []
         for char in characters:
             name = char.name
             identity_parts = []
 
-            # 公开面作为基础身份
+            # 公开面（**限长但保留**）：见上面的说明 ⇒ 不能删
             if char.public_profile:
-                identity_parts.append(char.public_profile)
+                identity_parts.append(
+                    _truncate_with_mark(char.public_profile, IDENTITY_PUBLIC_MAX_CHARS)
+                )
 
             # reveal_chapter 为 None 表示「总是可见」（见 bible_dto.CharacterDTO
             # 「reveal_chapter: 揭示章节号，None 表示总是可见」）。
@@ -472,11 +550,19 @@ class FactLockBuilder:
             # 同一章里 AI 会拿到两套互相矛盾的角色设定。
             reveal = char.reveal_chapter
             if char.hidden_profile and (reveal is None or current_chapter >= int(reveal)):
-                identity_parts.append(f"[已揭露] {char.hidden_profile}")
+                secret_body, pov_block = _split_hidden_profile(char.hidden_profile)
+                hidden_text = _truncate_with_mark(secret_body, IDENTITY_SECRET_MAX_CHARS)
+                if pov_block:
+                    # ⚠ POV 防火墙**完整保留**（限长只作用于秘密主体）
+                    hidden_text = f"{hidden_text}{pov_block}"
+                identity_parts.append(f"[已揭露] {hidden_text}")
 
             # 心理状态
             if char.mental_state and char.mental_state != "NORMAL":
-                identity_parts.append(f"当前心理: {char.mental_state}")
+                identity_parts.append(
+                    "当前心理: "
+                    + _truncate_with_mark(char.mental_state, IDENTITY_MENTAL_MAX_CHARS)
+                )
 
             if identity_parts:
                 lines.append(f"{name} = {' | '.join(identity_parts)}")
