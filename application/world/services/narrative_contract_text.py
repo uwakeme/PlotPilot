@@ -26,26 +26,133 @@ for _dim in WORLDBUILDING_DIMENSION_DEFS.values():
         _FIELD_LABELS.setdefault(_key, str(_label).split("（", 1)[0])
 
 
+#: 世界观维度的**展示顺序**（第 26 批）—— 按**硬度**排，不按篇幅排。
+#:
+#: ⚠ 为什么（生产实测，第 26 批）：
+#:   创作契约块真实长度 **4379 字**，而正文侧每块上限只有 **2000 字**
+#:   ⇒ **一半以上装不下** ⇒ 刀口必然落在块中间。
+#:   旧顺序（core_rules → geography → society → culture → daily_life）：
+#:   活下来的是「核心法则 + 地理生态大半」⇒ 而**禁忌 / 历史 / 政治 / 等级 / 行话
+#:   全丢** ⇒ 模型压根不知道「三更闻唤莫应」「戏票不能捡」这类**硬规则**。
+#:   ⇒ 违反即穿帮，且**它连规则是什么都不知道**。
+#:
+#: ⇒ 改成按硬度排：core_rules（力量体系/物理/技术）→ culture（禁忌/历史/宗教）
+#:   → society（政治/等级/经济）→ geography（地形/气候/资源/生态）→ daily_life。
+#:   实测：禁忌 / 历史 / 政治 **从"丢"变成"在"**。
+#:   代价：地形 / 气候 / 资源掉出去 —— 可接受，因为**地理信息在地点清单里还有一份**
+#:   （``bible_locations`` 的描述同样写着地形），而禁忌**只在这里有**。
+#:
+#: ⚠ 契约（``WORLD_BUILDING_DIMENSION_KEYS``）**不动** ⇒ 前端 / 提示词 schema 不受影响；
+#:   这里只是**呈现顺序**。契约里新增的维度/字段会自动追加到**末尾**（不丢）。
+WORLDBUILDING_DIMENSION_DISPLAY_ORDER: tuple = (
+    "core_rules",
+    "culture",
+    "society",
+    "geography",
+    "daily_life",
+)
+
+#: 维度**内部**的字段展示顺序（同样按硬度）—— 维度被切一半时，先保住靠前的字段。
+WORLDBUILDING_FIELD_DISPLAY_ORDER: Dict[str, tuple] = {
+    "core_rules": ("power_system", "physics_rules", "magic_tech"),
+    "culture": ("taboos", "history", "religion"),
+    "society": ("politics", "class_system", "economy"),
+    "geography": ("terrain", "climate", "resources", "ecology"),
+    "daily_life": ("language_slang", "food_clothing", "entertainment"),
+}
+
+#: 字段的**显示分组**调整（第 26 批）—— 只改**呈现**，不动契约与数据。
+#:
+#: ⚠ 为什么：``religion``（宗教信仰体系：城隍出巡、梨园供老郎神、走阴问亡）
+#:   语义上属于**民俗/生活质感**（沉浸感），而它原先挂在「历史文化」维里
+#:   ⇒ 那一维**整体**排在「社会结构」前面 ⇒ 预算刚好差 ~160 字，
+#:   「政治体制与权力架构」（探员能不能跨界办案、官府不受理邪祟案……）
+#:   就**整行被切掉** ⇒ 而它**比宗教更容易穿帮**（第 21 批 A1 抓到的
+#:   「郑铁珊被无解释赋予写票能力」就是**权力边界**问题）。
+#: ⇒ 把 ``religion`` 挪到「沉浸感细节」组（语义也说得通）
+#:   ⇒ 它跟着最软的一组走 ⇒ 预算紧时**第一个被牺牲** ⇒ 换「政治体制」进来。
+#:
+#: ⚠ 只影响**正文提示词里的呈现顺序与分组**；契约 / 前端 / 数据映射一律不动。
+WORLDBUILDING_FIELD_DIMENSION_OVERRIDE: Dict[str, str] = {
+    "religion": "daily_life",
+}
+
+#: 创作契约槽位**声明的分节标题**（第 26 批）—— 截断时**点名丢了哪几维**。
+#:
+#: ⚠ 为什么必须声明：此前这个槽位**没声明** section_headers ⇒ 截断后只有一句
+#:   「仅是部分内容」⇒ 模型不知道丢的是**哪一维**
+#:   ⇒ 它会以为「这个世界没有禁忌/没有历史」⇒ **静默失效**。
+#: ⇒ 声明之后，截断机制会点名「社会结构 / 地理生态 / 沉浸感细节」（第 24 批那套）。
+WORLDBUILDING_DIMENSION_SECTION_HEADERS: tuple = tuple(
+    f"▸ {_DIM_DISPLAY.get(dim_key, dim_key)}"
+    for dim_key in WORLDBUILDING_DIMENSION_DISPLAY_ORDER
+    if dim_key in _DIM_DISPLAY
+)
+
+
+def _dimension_display_order() -> tuple:
+    """维度展示顺序 = 硬度顺序 + 契约里**没列**的维度（按契约顺序追加在末尾）。"""
+    declared = [d for d in WORLDBUILDING_DIMENSION_DISPLAY_ORDER if d in _DIM_DISPLAY]
+    rest = [d for d in WORLD_BUILDING_DIMENSION_KEYS if d not in declared]
+    return tuple([*declared, *rest])
+
+
+def _field_display_order(dim_key: str) -> tuple:
+    """字段展示顺序 = 硬度顺序 + 契约里**没列**的字段（按契约顺序追加在末尾）。"""
+    contract_fields = tuple(WORLD_BUILDING_FIELD_KEYS_BY_DIMENSION.get(dim_key, ()))
+    declared = [
+        f for f in WORLDBUILDING_FIELD_DISPLAY_ORDER.get(dim_key, ()) if f in contract_fields
+    ]
+    rest = [f for f in contract_fields if f not in declared]
+    return tuple([*declared, *rest])
+
+
+def _grouped_fields(slices: Dict[str, Dict[str, str]]) -> List[tuple]:
+    """按**展示分组**把字段排好 ⇒ ``[(组维度, 字段键, 文本), ...]``。
+
+    ⚠ 跨维调整（:data:`WORLDBUILDING_FIELD_DIMENSION_OVERRIDE`）在这里生效：
+    被改组的字段**只在目标组**出现（原组不再出现）⇒ 不会重复。
+    """
+    grouped: List[tuple] = []
+    for dim in _dimension_display_order():
+        blk = slices.get(dim) or {}
+        for key in _field_display_order(dim):
+            value = str(blk.get(key) or "").strip()
+            if not value:
+                continue
+            target = WORLDBUILDING_FIELD_DIMENSION_OVERRIDE.get(key)
+            if target is not None and target != dim:
+                continue  # 在目标组里渲染
+            grouped.append((dim, key, value))
+        # 被改到本组的字段（按它们的硬度位置插进来）
+        for other_dim in _dimension_display_order():
+            for key in _field_display_order(other_dim):
+                if WORLDBUILDING_FIELD_DIMENSION_OVERRIDE.get(key) != dim:
+                    continue
+                value = str((slices.get(other_dim) or {}).get(key) or "").strip()
+                if not value:
+                    continue
+                grouped.append((dim, key, value))
+    return grouped
+
+
 def format_worldbuilding_slices_for_prompt(
     slices: Optional[Dict[str, Dict[str, str]]],
 ) -> str:
-    """合并后的五维 dict → writer 基础字段顺序的紧凑正文。"""
+    """合并后的五维 dict → writer 基础字段顺序的紧凑正文。
+
+    ⚠ 顺序按**硬度**（第 26 批）—— 见 :data:`WORLDBUILDING_DIMENSION_DISPLAY_ORDER`。
+    """
     if not slices or not worldbuilding_slices_nonempty(slices):
         return ""
 
     lines: List[str] = ["【世界观五维（作者确认）】"]
-    for dim in WORLD_BUILDING_DIMENSION_KEYS:
-        blk = slices.get(dim) or {}
-        items = [
-            (k, _FIELD_LABELS.get(k, k), str(blk.get(k) or "").strip())
-            for k in WORLD_BUILDING_FIELD_KEYS_BY_DIMENSION.get(dim, ())
-            if str(blk.get(k) or "").strip()
-        ]
-        if not items:
-            continue
-        lines.append(f"▸ {_DIM_DISPLAY.get(dim, dim)}")
-        for _key, label, val in items:
-            lines.append(f"- {label}：{val}")
+    current_dim = None
+    for dim, key, value in _grouped_fields(slices):
+        if dim != current_dim:
+            lines.append(f"▸ {_DIM_DISPLAY.get(dim, dim)}")
+            current_dim = dim
+        lines.append(f"- {_FIELD_LABELS.get(key, key)}：{value}")
 
     if len(lines) <= 1:
         return ""

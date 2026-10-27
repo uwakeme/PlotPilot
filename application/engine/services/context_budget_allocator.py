@@ -480,6 +480,13 @@ class ContextBudgetAllocator:
 
         # ── T0-2b: 创作契约（向导五维 + 文风公约 + Bible 规则）—— priority=122 ──
         narrative_contract = self._build_narrative_contract_slot(novel_id)
+        # ⚠ 第 26 批：**声明分节标题** ⇒ 截断时点名「丢了哪一维」。
+        #   （实测：块长 4379 字 vs 预算 2000 字 ⇒ 必然被切；
+        #   不点名 ⇒ 模型以为「这个世界没有禁忌/没有历史」⇒ 静默失效。）
+        from application.world.services.narrative_contract_text import (
+            WORLDBUILDING_DIMENSION_SECTION_HEADERS,
+        )
+
         slots["narrative_contract"] = ContextSlot(
             name="创作契约(NARRATIVE_CONTRACT)",
             tier=PriorityTier.T0_CRITICAL,
@@ -487,6 +494,7 @@ class ContextBudgetAllocator:
             tokens=self.estimate_tokens(narrative_contract),
             max_tokens=self.MAX_NARRATIVE_CONTRACT_TOKENS,
             priority=122,
+            section_headers=WORLDBUILDING_DIMENSION_SECTION_HEADERS,
         )
 
         # ── T0-3: FACT_LOCK（不可篡改事实块）—— priority=120 ──
