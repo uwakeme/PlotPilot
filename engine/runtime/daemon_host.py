@@ -881,6 +881,46 @@ class DaemonHostMixin:
             logger.debug("取角色白名单失败（审计将跳过越界角色检查）novel=%s: %s", novel_id, exc)
             return ""
 
+    async def _run_setting_drift_audit(
+        self, novel_id: str, chapter_number: int, content: str
+    ) -> Dict[str, Any]:
+        """📐 设定漂移审计（第 20 批）：**自动写作**的章后流程里也要查。
+
+        ⚠ 与手动审稿走**同一个服务类**（``SettingDriftAuditService``）⇒ 两处口径一致，
+        不会一个查一个不查。
+        ⚠ 失败 / 无基准 / 覆盖不全 ⇒ 返回 ``audited=False`` + 原因
+        （**不许**假装通过 ⇒ 上游会写一条「未评估」条目）。
+        """
+        try:
+            from application.audit.services.setting_drift_audit import (
+                SettingDriftAuditService,
+            )
+            from infrastructure.persistence.database.connection import get_database
+            from infrastructure.persistence.database.sqlite_bible_repository import (
+                SqliteBibleRepository,
+            )
+
+            service = SettingDriftAuditService(
+                llm_service=self.llm_service,
+                bible_repository=SqliteBibleRepository(get_database()),
+            )
+            return await service.audit_chapter(
+                novel_id=novel_id,
+                chapter_number=int(chapter_number),
+                content=content,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 审计失败不许把整章流程带崩
+            logger.warning(
+                "[%s] 设定漂移审计异常 ch=%s: %s", novel_id, chapter_number, exc
+            )
+            return {
+                "audited": False,
+                "reason": str(exc)[:120],
+                "issues": [],
+                "drift_score": None,
+                "coverage": "none",
+            }
+
     async def _run_anti_ai_audit(
         self,
         novel_id: str,

@@ -119,6 +119,54 @@ def _narrative_shared_value(drift_result: Mapping[str, Any]) -> bool | None:
     return bool(drift_result.get("narrative_sync_ok", True))
 
 
+#: 设定漂移条目的 type 前缀（重审时按它把**上一轮**的漂移条目清掉）。
+SETTING_DRIFT_ISSUE_TYPE = "setting_drift"
+
+
+def _merge_setting_drift_issues(
+    existing: list[dict[str, Any]] | None,
+    drift: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """把**设定漂移审计**的结论并进审计 issues 列表。
+
+    降级纪律：**「没审出来」≠「没问题」**
+    - 未评估（LLM 失败 / 无基准 / 覆盖不全）⇒ 追加一条**可见**的「未评估」条目
+      （带原因）⇒ 面板上不会把「没查」读成「查了没问题」。
+    - 审了且没问题 ⇒ **一条都不加**（此时 issues 为空才真的意味着「没问题」）。
+    """
+    items = [
+        dict(item)
+        for item in (existing or [])
+        if not str((item or {}).get("type") or "").startswith(SETTING_DRIFT_ISSUE_TYPE)
+    ]
+    if not drift:
+        return items
+    if not drift.get("audited"):
+        items.append(
+            {
+                "type": f"{SETTING_DRIFT_ISSUE_TYPE}_unassessed",
+                "severity": "info",
+                "category": "setting_drift",
+                "description": f"设定漂移未评估：{drift.get('reason') or '未评估'}",
+                "suggestion": "",
+            }
+        )
+        return items
+    for issue in drift.get("issues") or []:
+        if not isinstance(issue, Mapping):
+            continue
+        items.append(
+            {
+                "type": SETTING_DRIFT_ISSUE_TYPE,
+                "severity": str(issue.get("severity") or "info"),
+                "category": str(issue.get("category") or "fact"),
+                "description": str(issue.get("description") or "")[:400],
+                "suggestion": str(issue.get("suggestion") or "")[:200],
+            }
+        )
+    return items
+
+
 def _read_shared_state(novel_id: str) -> dict[str, Any]:
     from application.ai_invocation.autopilot.shared_state import read_autopilot_shared_state
 
@@ -722,6 +770,22 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         novel.novel_id.value, chapter_num, content
     )
 
+    # 📐 设定漂移审计（第 20 批）：**自动写作**的章后流程里也要查设定漂移。
+    # ⚠ 此前只有**手动审稿 API** 会查（A1）⇒ 自动写作时，角色能力越界 / 地名错误 /
+    #   世界观规则被违反 这些漂移**没有人发现**（`novel.last_audit_issues` 一直是空的）。
+    # ⚠ 降级：没查出来 ⇒ 写一条「未评估」条目（**不许**假装没问题）。
+    # ⚠ 变量名**不许**叫 `drift_result` —— 那个名字在本函数里已经指的是
+    #   **章后管线的叙述漂移结果**（`narrative_sync_ok` / `tension_evaluated` /
+    #   `similarity_score` / `causal_edges_stored` …）⇒ 遮蔽它会让下面的
+    #   `hard_tension` / `_resolve_narrative_gate` 读到**设定漂移**的结果
+    #   ⇒ 硬门禁恒真、叙述三态塌成 True。
+    setting_drift_result = await host._run_setting_drift_audit(
+        novel.novel_id.value, chapter_num, content
+    )
+    novel.last_audit_issues = _merge_setting_drift_issues(
+        novel.last_audit_issues, setting_drift_result
+    )
+
     prefs = getattr(novel, "generation_prefs", None) or GenerationPreferences()
     auto = bool(getattr(novel, "auto_approve_mode", False))
 
@@ -830,6 +894,9 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
         last_audit_vector_stored=novel.last_audit_vector_stored,
         last_audit_foreshadow_stored=novel.last_audit_foreshadow_stored,
         last_audit_triples_extracted=novel.last_audit_triples_extracted,
+        # 📐 设定漂移结论（第 20 批）：共享内存要带上 ⇒ 面板**实时**看得见
+        # （此前这个字段在自动写作路径上一直是空的）。
+        last_audit_issues=novel.last_audit_issues,
         last_audit_causal_edges_stored=bool(drift_result.get("causal_edges_stored", False)),
         last_audit_character_mutations_stored=bool(drift_result.get("character_mutations_stored", False)),
         last_audit_debt_updated=bool(drift_result.get("debt_updated", False)),
