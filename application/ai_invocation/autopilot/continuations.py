@@ -9,6 +9,13 @@ from application.ai.llm_json_extract import extract_outer_json_value, repair_jso
 from application.ai_invocation.continuation import ContinuationContext, register_continuation_handler
 from application.ai_invocation.dtos import InvocationPolicy
 from application.ai_invocation.autopilot.shared_state import write_autopilot_shared_state
+from application.audit.services.character_whitelist_check import (  # noqa: E402
+    CONFIRMED,
+    REJECTED,
+    REJECTED_CATEGORY,
+    classify_rogue_character_hit,
+    is_rogue_category,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +76,52 @@ def _code_channel_risk_flags(novel_id: str, chapter_number: int) -> list[dict[st
         return []
 
 
-def _merge_risk_flags(payload: Mapping[str, Any], code_flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把两条通道的命中合并成一份（LLM 通道优先，去重）。"""
+def _whitelist_variants(novel_id: str) -> list[str]:
+    """取该书的**角色白名单变体**（K 类核对的依据）。
+
+    ⚠ 与生成侧 / 提示词侧**同源**：白名单来自 ``memory_engine.character_names``
+    （Bible 的角色名单）⇒ 不会「审计用的白名单」与「生成时锁的白名单」分叉。
+    ⚠ 取不到 ⇒ 返回空 ⇒ 核对**不下结论**（保守：宁可留着让人看）。
+    """
+    if not novel_id:
+        return []
+    try:
+        from domain.novel.value_objects.novel_id import NovelId
+        from infrastructure.persistence.database.connection import get_database
+        from infrastructure.persistence.database.sqlite_bible_repository import (
+            SqliteBibleRepository,
+        )
+
+        from application.audit.services.character_whitelist_check import expand_whitelist
+        from application.engine.services.memory_engine import (
+            FactLockBuilder,
+            character_names,
+        )
+
+        builder = FactLockBuilder(SqliteBibleRepository(get_database()))
+        bible = builder.bible_repository.get_by_novel_id(NovelId(novel_id))
+        if not bible:
+            return []
+        return sorted(expand_whitelist(character_names(bible)))
+    except Exception as exc:  # noqa: BLE001 —— 取不到就当没有白名单，不许臆测
+        logger.debug("取角色白名单变体失败（K 类核对将不下结论）novel=%s: %s", novel_id, exc)
+        return []
+
+
+def _merge_risk_flags(
+    payload: Mapping[str, Any],
+    code_flags: list[dict[str, Any]],
+    *,
+    whitelist_variants: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """把两条通道的命中合并成一份（LLM 通道优先，去重）。
+
+    ⚠ 第 22 批：**K 类（越界角色）会被确定性核对**。
+    LLM 报的角色名若落在白名单变体集合里 ⇒ **驳回**（误报）
+    ⇒ 以 ``越界角色·机检驳回`` 单独一条留下（**不许静默丢**），
+    并与真越界**可分辨**（类别不同、severity=info）。
+    白名单取不到 / 名字判不了 ⇒ **不下结论**（原样保留）。
+    """
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -87,18 +138,33 @@ def _merge_risk_flags(payload: Mapping[str, Any], code_flags: list[dict[str, Any
 
     if isinstance(payload, Mapping):
         for item in payload.get("hits") or []:
-            if isinstance(item, Mapping):
-                _add(
-                    {
-                        "category": item.get("category", ""),
-                        "pattern": item.get("pattern", ""),
-                        "text": item.get("pattern", ""),
-                        "position": item.get("position", ""),
-                        "severity": item.get("severity", ""),
-                        "replacement": item.get("replacement", ""),
-                    },
-                    "llm",
+            if not isinstance(item, Mapping):
+                continue
+            entry = {
+                "category": item.get("category", ""),
+                "pattern": item.get("pattern", ""),
+                "text": item.get("pattern", ""),
+                "position": item.get("position", ""),
+                "severity": item.get("severity", ""),
+                "replacement": item.get("replacement", ""),
+            }
+            if is_rogue_category(entry.get("category", "")):
+                verdict, name = classify_rogue_character_hit(
+                    entry.get("pattern", ""), whitelist_variants
                 )
+                if verdict == REJECTED:
+                    entry = {
+                        "category": REJECTED_CATEGORY,
+                        "pattern": f"机检驳回：白名单内角色「{name}」",
+                        "text": name,
+                        "position": entry.get("position", ""),
+                        "severity": "info",
+                        "replacement": "该角色在白名单内，不算越界角色",
+                        "verified": "rejected_by_whitelist_check",
+                    }
+                elif verdict == CONFIRMED:
+                    entry["verified"] = "confirmed_out_of_whitelist"
+            _add(entry, "llm")
     for item in code_flags:
         _add(item, "code")
     return merged
@@ -646,9 +712,12 @@ def register_autopilot_continuations() -> None:
         chapter_number = int(ctx.session.context.get("chapter_number") or 0)
         # ⚠ 第 16 批：``risk_flags`` 之前恒为空（读的键 LLM 从来不输出）。
         # ⇒ 现在由**两条通道**派生：LLM 的 hits + 代码通道（可机检）的命中。
+        # ⚠ 第 22 批：K 类（越界角色）额外做**确定性核对**（白名单变体比对）
+        #   ⇒ LLM 把白名单内角色报成越界时会被驳回（并留痕）。
         risk_flags = _merge_risk_flags(
             payload if isinstance(payload, Mapping) else {},
             _code_channel_risk_flags(novel_id, chapter_number),
+            whitelist_variants=_whitelist_variants(novel_id),
         )
         if isinstance(payload, dict):
             payload = {**payload, "risk_flags": risk_flags}
