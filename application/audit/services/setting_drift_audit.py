@@ -102,14 +102,22 @@ class SettingDriftAuditService:
         self,
         llm_service: Optional[Any] = None,
         bible_repository: Optional[Any] = None,
+        worldbuilding_repository: Optional[Any] = None,
     ) -> None:
         self._llm_service = llm_service
         self._bible_repository = bible_repository
+        #: 世界观（核心法则）仓储 —— 第 25 批：审计基准补上**世界规则**。
+        #:
+        #: ⚠ 为什么需要它（生产实测）：审计的判据写着「世界观规则被违反」，
+        #:   而旧基准只取 ``bible.world_settings`` —— 那张表**永远为空**
+        #:   （实测生产书 0 条；Bible 生成流程只写 ``worldbuilding`` 表）
+        #:   ⇒ **世界观规则一条都没进过审计基准** ⇒ 那一类漂移**永远审不到**。
+        self._worldbuilding_repository = worldbuilding_repository
 
     # ── 基准事实收集 ──────────────────────────────────────────────
 
     def _collect_setting_facts(self, novel_id: str, chapter_number: int = 0) -> List[str]:
-        """收集基准事实清单（Bible 聚合 + FactLock）。"""
+        """收集基准事实清单（Bible 聚合 + 世界规则 + FactLock）。"""
         facts: List[str] = []
 
         bible = self._load_bible(novel_id)
@@ -122,6 +130,8 @@ class SettingDriftAuditService:
                 desc = getattr(loc, "description", "")
                 loc_type = getattr(loc, "location_type", "") or getattr(loc, "type", "")
                 facts.append(f"[地点/{loc_type}] {name}：{desc}"[:_FACT_TEXT_LIMIT])
+
+        facts.extend(self._world_rule_facts(novel_id))
 
         fact_locks = self._load_fact_locks(novel_id, chapter_number)
         for lock in fact_locks:
@@ -136,6 +146,53 @@ class SettingDriftAuditService:
                 seen.add(key)
                 unique.append(f)
         return unique[:_MAX_FACTS]
+
+    def _world_rule_facts(self, novel_id: str) -> List[str]:
+        """世界**核心规则**基准 —— 与生成侧**同一个函数**（逐字同源）。
+
+        ⚠ 为什么必须**同源**（第 25 批）：
+          生成侧把世界核心规则放在 ``worldbuilding_core`` 槽位
+          （``context_budget_allocator._build_worldbuilding_core_slot``），
+          模型看到的就是那个块的内容。
+          ⇒ 审计若自己**另写一份**渲染（世界规则格式化再写一遍），
+            两边迟早漂移 ⇒ 又变成「审计审模型没被告知过的东西」。
+
+        ⇒ 这里直接复用**生成侧那个函数**
+          （``build_worldbuilding_core_slot_content``），只把它的块**切成事实条**。
+
+        ⚠ 降级：仓储没配 / 读取失败 ⇒ **返回空**（不假装有基准，也不崩）
+          ⇒ 世界观这一类**审不到**（其余基准照常审）⇒ 缺的是「覆盖」，
+            不是「正确性」⇒ 不影响「不报假通过」。
+        """
+        if self._worldbuilding_repository is None:
+            return []
+        try:
+            from application.engine.services.context_slot_providers import (
+                build_worldbuilding_core_slot_content,
+            )
+
+            block = build_worldbuilding_core_slot_content(
+                self._worldbuilding_repository, novel_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("设定漂移审计加载世界核心规则失败 novel=%s: %s", novel_id, exc)
+            return []
+
+        facts: List[str] = []
+        for raw in (block or "").splitlines():
+            line = raw.strip()
+            # 生成侧的块形如「【力量体系/科技树的描述】…」
+            if not line.startswith("【"):
+                continue
+            label, sep, content = line.partition("】")
+            if not sep:
+                continue
+            label = label.strip().lstrip("【").strip()
+            content = content.strip()
+            if not label or not content:
+                continue
+            facts.append(f"[世界观/{label}] {content}"[:_FACT_TEXT_LIMIT])
+        return facts
 
     def _load_bible(self, novel_id: str) -> Optional[Any]:
         if self._bible_repository is None:

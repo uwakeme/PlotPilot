@@ -1212,11 +1212,15 @@ def get_chapter_review_service():
     """
     from application.audit.services.chapter_review_service import ChapterReviewService
     from application.audit.services.setting_drift_audit import SettingDriftAuditService
+    from application.paths import get_db_path
     from infrastructure.persistence.database.sqlite_chapter_repository import SqliteChapterRepository
     from infrastructure.persistence.database.sqlite_cast_repository import SqliteCastRepository
     from infrastructure.persistence.database.sqlite_timeline_repository import SqliteTimelineRepository
     from infrastructure.persistence.database.sqlite_storyline_repository import SqliteStorylineRepository
     from infrastructure.persistence.database.sqlite_foreshadowing_repository import SqliteForeshadowingRepository
+    from infrastructure.persistence.database.worldbuilding_repository import (
+        WorldbuildingRepository,
+    )
 
     db = get_database()
     chapter_repo = SqliteChapterRepository(db)
@@ -1239,6 +1243,8 @@ def get_chapter_review_service():
         setting_drift_audit=SettingDriftAuditService(
             llm_service=get_llm_service(),
             bible_repository=get_bible_repository(),
+            # ⚠ 第 25 批：审计基准要含**世界核心规则** ⇒ 与生成侧同源（worldbuilding 表）
+            worldbuilding_repository=WorldbuildingRepository(get_db_path()),
         ),
         # F-14b：总分由 AI 给 —— 复用活的那条审稿路径的同一个服务
         ai_review_service=get_chapter_ai_review_service(),

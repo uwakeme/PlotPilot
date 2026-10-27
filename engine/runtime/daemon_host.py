@@ -902,14 +902,21 @@ class DaemonHostMixin:
                 DEFAULT_TIME_BUDGET_SECONDS,
                 SettingDriftAuditService,
             )
+            from application.paths import get_db_path
             from infrastructure.persistence.database.connection import get_database
             from infrastructure.persistence.database.sqlite_bible_repository import (
                 SqliteBibleRepository,
+            )
+            from infrastructure.persistence.database.worldbuilding_repository import (
+                WorldbuildingRepository,
             )
 
             service = SettingDriftAuditService(
                 llm_service=self.llm_service,
                 bible_repository=SqliteBibleRepository(get_database()),
+                # ⚠ 第 25 批：审计基准要含**世界核心规则** ⇒ 与生成侧同源
+                #   （手动审稿路径 `interfaces/api/dependencies.py` 也要传 ⇒ 两边一致）
+                worldbuilding_repository=WorldbuildingRepository(get_db_path()),
             )
             return await service.audit_chapter(
                 novel_id=novel_id,
