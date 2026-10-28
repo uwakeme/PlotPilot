@@ -116,8 +116,17 @@ class SettingDriftAuditService:
 
     # ── 基准事实收集 ──────────────────────────────────────────────
 
-    def _collect_setting_facts(self, novel_id: str, chapter_number: int = 0) -> List[str]:
-        """收集基准事实清单（Bible 聚合 + 世界规则 + FactLock）。"""
+    def _collect_setting_facts(
+        self, novel_id: str, chapter_number: int = 0, chapter_content: str = ""
+    ) -> List[str]:
+        """收集基准事实清单（Bible 聚合 + 世界规则 + FactLock）。
+
+        ⚠ **地点**只取「本章正文里真出现」的（第 30 批）：
+        模型**没写到**的地方不可能被违反 ⇒ 不该进基准；
+        而且生成侧只给**本场**地点的描述（实测：11 条里模型只见过 **5 条**的描述）
+        ⇒ 拿另外 6 条判它违规 = **冤枉模型**。
+        逐章实测：正文只出现 1~5 个地点 ⇒ 每章能少 **6~10 条**白送进 prompt 的事实。
+        """
         facts: List[str] = []
 
         bible = self._load_bible(novel_id)
@@ -129,6 +138,9 @@ class SettingDriftAuditService:
                 name = getattr(loc, "name", "")
                 desc = getattr(loc, "description", "")
                 loc_type = getattr(loc, "location_type", "") or getattr(loc, "type", "")
+                # ⚠ 第 30 批：只保留**本章正文里真出现**的地点
+                if name and chapter_content and name not in chapter_content:
+                    continue
                 facts.append(f"[地点/{loc_type}] {name}：{desc}"[:_FACT_TEXT_LIMIT])
 
         facts.extend(self._world_rule_facts(novel_id))
@@ -266,7 +278,9 @@ class SettingDriftAuditService:
         segments = _split_into_segments(content, _SEGMENT_CHARS)
         total_segments = len(segments)
 
-        facts = self._collect_setting_facts(novel_id, chapter_number)
+        # ⚠ 第 30 批：把**本章正文**传进去 ⇒ 地点基准只取「本章真出现」的
+        #   （模型没写到的地方不可能被违反 ⇒ 不该进基准；生成侧也只给本场地点）
+        facts = self._collect_setting_facts(novel_id, chapter_number, chapter_content=content)
         if not facts:
             return self._unaudited(
                 "无基准事实（Bible/FactLock 为空）", total_segments=total_segments
