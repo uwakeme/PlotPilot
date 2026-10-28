@@ -24,6 +24,10 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from application.audit.services.setting_drift_settings import (
+    get_setting_drift_runtime_settings,
+)
+
 logger = logging.getLogger(__name__)
 
 # 送入 LLM 的基准事实规模上限（条）——防长篇 Bible 全量撑爆 prompt
@@ -444,7 +448,17 @@ class SettingDriftAuditService:
                     "chapter_number": variables.get("chapter_number"),
                 },
                 metadata={"source": "setting_drift_audit"},
-                config={"max_tokens": 2048, "temperature": 0.2},
+                config={
+                    "max_tokens": 2048,
+                    "temperature": 0.2,
+                    # ⚠ 第 33 批：审计是**核对型**任务 ⇒ 不需要长思考。
+                    # ⚠ 实测（同一份 prompt / 生产同口径）：394 秒 → 36 秒，
+                    #   报出的 issues **没减**（4 → 5，仍含自造地点）。
+                    # ⚠ 值来自 ``config/performance.yaml`` 的
+                    #   ``audit.setting_drift.extra_body``（provider 特定 ⇒ 归配置）；
+                    # ⚠ 段缺失时是 ``None`` ⇒ **行为与改造前完全一致**。
+                    "extra_body": get_setting_drift_runtime_settings().extra_body,
+                },
             )
         )
 
