@@ -184,6 +184,17 @@ class ContextBudgetAllocator:
     MAX_RECENT_CHAPTERS_TOKENS = 8000   # 扩容：N-1 完整 + N-2 半量 + N-3~5 预览
     MAX_VECTOR_RECALL_TOKENS = 5000
     MAX_NARRATIVE_CONTRACT_TOKENS = 1400  # 向导五维 + 文风公约 + Bible 规则条目
+    #: 事实锁槽位的上限（第 36 批：1500 → 4000）。
+    #:
+    #: ⚠ 为什么抬：生产实测（``prodrealtest-001`` 第 5 章）事实锁 **74 条 / 4040 字**
+    #:   （2296 tokens）⇒ 在 1500 的上限下**被砍掉 35%**（796 tokens）
+    #:   ⇒ 死亡锁 / 白名单 / 身份锁 / 时间线这些**硬事实**有将近三分之一**没进模型**
+    #:   ⇒ 用户的模型窗口有 50 万上下文 ⇒ 真正该抬的是**我们自己的上限**，不是模型窗口。
+    #: ⚠ 抬到 4000 ⇒ 生产书的事实锁**100% 送达**（2296 < 4000）
+    #:   ⇒ 长书（529 章那本事实锁 ~13.5k tokens）仍会被削 ⇒ 那是另一档（用户已拍板「先做小书」）。
+    #: ⚠ 抬高**不会**触发 T0 的 40% 保护：T0 各槽位上限合计 8320 → 10820
+    #:   ⇒ 仍 < 35000 × 40% = 14000 ⇒ 不进 ``_truncate_t0_slots``。
+    MAX_FACT_LOCK_TOKENS = 4000
 
     # 最近章节槽位：紧邻上一章侧重章末承接；更早章节仅章首短预览以省预算
     # V8 优化：增加章末保留量，提升章节间连贯性
@@ -561,7 +572,7 @@ class ContextBudgetAllocator:
             tier=PriorityTier.T0_CRITICAL,
             content=fact_lock_content,
             tokens=self.estimate_tokens(fact_lock_content),
-            max_tokens=1500,  # V9: 从 2500 砍到 1500
+            max_tokens=self.MAX_FACT_LOCK_TOKENS,  # 第 36 批：1500 → 4000（生产书的事实锁要 2296）
             priority=120,
             # 复审 §4：声明分节标题 ⇒ 截断时**点名被截掉的小节**
             # （否则模型看不到「身份锁死」这一节存在 ⇒ 不会去遵守它）。

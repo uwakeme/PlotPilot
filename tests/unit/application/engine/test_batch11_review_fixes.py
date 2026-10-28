@@ -174,14 +174,30 @@ def test_the_named_sections_are_at_the_front():
 
 
 def _fact_lock_text_with_identity_in_window() -> str:
-    """构造一份 fact_lock 文本，使「身份锁死：」落在 **2000–2250 字**窗口内。
+    """构造一份 fact_lock 文本，使「身份锁死：」落在**夹缝**窗口内。
 
-    ⚠ 这个窗口是**硬常量**决定的：
-      分配器给 fact_lock 1500 tokens × 1.5 = **2250 字**；
-      正文 builder 每块上限 **2000 字** ⇒ 中间永远有 250 字的差。
-    ⇒ 落在这个窗口里的小节：**分配器保住、builder 切掉** ⇒
-    它是「模型看不见、也没被告知」的那一节。
+    ⚠ 这个窗口是**两个上限之间的差**决定的：
+      分配器给 fact_lock ``MAX_FACT_LOCK_TOKENS`` tokens × 1.5（**字符**）；
+      正文 builder 每块上限 ``prose_context.max_chars_per_slot``（**字符**）
+      ⇒ 夹缝 = (builder 上限, 分配器上限×1.5]
+      ⇒ 落在这个窗口里的小节：**分配器保住、builder 切掉** ⇒
+      它是「模型看不见、也没被告知」的那一节。
+
+    ⚠ 第 36 批：窗口**改成跟着当前配置算**（不再写死 2000/2250）
+      ⇒ 以后再抬上限，这条守卫**自动跟随**，不会「因样本前提失效而空过」。
     """
+    from application.engine.services.context_budget_allocator import (
+        ContextBudgetAllocator,
+    )
+    from application.engine.services.prose_context_settings import (
+        get_prose_context_runtime_settings,
+    )
+
+    builder_cap = get_prose_context_runtime_settings().max_chars_per_slot
+    allocator_cap = int(ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS * 1.5)
+    # ⚠ 落在夹缝**中部** ⇒ 两边都不贴边（贴边时任一侧的口径变化都会让样本失效）
+    target = (builder_cap + allocator_cap) // 2
+
     names = "、".join(f"角色{i}" for i in range(360))
     head = (
         "【绝对事实边界（一旦违背即为废稿）】\n\n"
@@ -191,7 +207,8 @@ def _fact_lock_text_with_identity_in_window() -> str:
     )
     identity = "身份锁死：\n   乙 = 真实身份是丙\n\n"
     timeline = "核心事件时间线（不可矛盾）：\n   [第 3 章] 丁已死\n"
-    return head + identity + timeline
+    filler = "补" * max(target - len(head) - len(identity), 0)
+    return head + filler + identity + timeline
 
 
 def test_the_real_prose_builder_names_the_sections_it_drops():
@@ -206,11 +223,20 @@ def test_the_real_prose_builder_names_the_sections_it_drops():
     """
     from application.engine.services.context_budget_models import BudgetAllocation
     from application.engine.services.context_builder import ContextBuilder
+    from application.engine.services.context_budget_allocator import (
+        ContextBudgetAllocator,
+    )
+    from application.engine.services.prose_context_settings import (
+        get_prose_context_runtime_settings,
+    )
 
     original = _fact_lock_text_with_identity_in_window()
     identity_at = original.index("身份锁死：")
-    assert 2000 < identity_at < 2250, (
-        f"样本前提变了（身份锁死落在 {identity_at} 字，不在 2000–2250 窗口里）"
+    builder_cap = get_prose_context_runtime_settings().max_chars_per_slot
+    allocator_cap = int(ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS * 1.5)
+    assert builder_cap < identity_at <= allocator_cap, (
+        f"样本前提变了（身份锁死落在 {identity_at} 字，"
+        f"不在夹缝 ({builder_cap}, {allocator_cap}] 里）"
     )
 
     # ── 分配器那一刀（真实函数） ────────────────────────────────
@@ -219,7 +245,7 @@ def test_the_real_prose_builder_names_the_sections_it_drops():
         tier=PriorityTier.T0_CRITICAL,
         content=original,
         tokens=9999,
-        max_tokens=1500,
+        max_tokens=ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS,
         priority=120,
         section_headers=FACT_LOCK_SECTION_HEADERS,
     )
