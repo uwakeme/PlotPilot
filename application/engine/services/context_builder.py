@@ -179,6 +179,10 @@ class ContextBuilder:
             evolution_presenter=evolution_presenter,
             evolution_repository=evolution_repository,
             character_narrative_kernel=character_kernel,
+            # ⚠ 第 28 批：此前**漏传** ⇒ 分配器的 novel_repository 恒为 None
+            #   ⇒ 「叙事承诺锁」（T0 / priority=123，从 title+premise 派生）
+            #   **静默恒空** ⇒ 模型拿不到「这本书承诺讲什么」。
+            novel_repository=novel_repository,
         )
 
     def estimate_tokens(self, text: str) -> int:
