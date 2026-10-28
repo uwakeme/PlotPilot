@@ -1,6 +1,12 @@
+# ⚠ `max_tokens` 已从本文件**移除**（第 35 批）：
+#   `GenerationConfig.__post_init__` 里有 `max_tokens = max(入参, 120000)` 的**下限**
+#   ⇒ 本文件原先写的任何 < 120000 的值都会被**顶成 120000**
+#   ⇒ ⇒ **38 个画像里有 22 个**的 `max_tokens` 是**死配置**（实际全是 120000）
+#   ⇒ ⇒ 留着会持续误导（**上一份审查简报就信过同族的 `timeout_seconds` / `retries`**）
+#   ⇒ ⇒ 已删；不设时取默认值 `DEFAULT_MAX_OUTPUT_TOKENS`（= 120000）⇒ **行为逐字不变**
+#   ⚠ 真实上限由 **provider** 决定（实测智谱 endpoint：合法范围 [1, 131072]）
 base_generation_profile:
   provider_role: writing
-  max_tokens: 120000
   temperature: 0.3
 # ⚠ 复审 B2：本文件此前还有 ``timeout_seconds`` / ``retries`` 两个键，
 #   但 ``generation_config_from_profile`` **只读** model / max_tokens /
@@ -12,187 +18,152 @@ base_generation_profile:
 
 memory_extraction:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.3
 
 voice_style_analysis:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.1
 
 voice_baseline_analysis:
   extends: voice_style_analysis
-  max_tokens: 120000
   temperature: 0.1
 
 chapter_summarizer:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.7
 
 tension_scoring:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.3
 
 tension_diagnosis:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.2
 
 review_json:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.3
 
 summary_act:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.4
 
 summary_volume:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.5
 
 summary_part:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.45
 
 summary_checkpoint:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.5
 
 planning_macro:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.7
 
 planning_repair:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.5
 
 planning_act:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.7
 
 planning_chapter_preplan:
   extends: base_generation_profile
-  max_tokens: 120000
   temperature: 0.65
 
 context_weights:
   extends: base_generation_profile
-  max_tokens: 4000
   temperature: 0.2
 
 
 chapter_mode:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.3
 
 finale_intent:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.4
 
 continuation_strategy:
   extends: base_generation_profile
-  max_tokens: 1500
   temperature: 0.3
 
 macro_calibration:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.4
 
 # H-06 子项 A：宏观断点的语义分类。这是**判读**，不是抽取 ⇒ 温度略高。
 macro_breakpoint:
   extends: base_generation_profile
-  max_tokens: 4000
   temperature: 0.3
 
 # H-01：死亡角色的出场方式判定。这是**判读** ⇒ 温度略低（要稳）。
 evolution_dead_character_check:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.2
 
 # E-04：武侠风格审。判读题 ⇒ 温度低（要稳）。
 wuxia_style_audit:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.2
 
 # E-06：章节节奏配额。判读题 ⇒ 温度低（要稳）。
 rhythm_quota:
   extends: base_generation_profile
-  max_tokens: 1200
   temperature: 0.3
 
 # B-06：规划深度自评。判读题 ⇒ 温度低（要稳）。
 planning_depth:
   extends: base_generation_profile
-  max_tokens: 800
   temperature: 0.2
 
 # B-05：结构网格提案。判读题 => 温度低（要稳）。
 structure_proposal:
   extends: base_generation_profile
-  max_tokens: 800
   temperature: 0.2
 
 # G-05：本章新角色识别（NER）。判读题 ⇒ 温度低。
 character_ner:
   extends: base_generation_profile
-  max_tokens: 1200
   temperature: 0.2
 
 # B-08：新一幕所属卷的声明。判读题 => 温度低（要稳）。
 act_volume_placement:
   extends: base_generation_profile
-  max_tokens: 800
   temperature: 0.2
 
 # J-02：文风预设语义匹配。判读题 ⇒ 温度低（要稳）。
 style_preset_match:
   extends: base_generation_profile
-  max_tokens: 500
   temperature: 0.2
 
 character_context_selection:
   extends: base_generation_profile
-  max_tokens: 3000
   temperature: 0.3
 
 character_belief_check:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.2
 
 foreshadow_selection:
   extends: base_generation_profile
-  max_tokens: 1500
   temperature: 0.3
 
 anti_ai_pattern_induction:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.2
 
 conflict_action_extraction:
   extends: base_generation_profile
-  max_tokens: 1500
   temperature: 0.1
 
 plot_point_classification:
   extends: base_generation_profile
-  max_tokens: 1200
   temperature: 0.3
 
 # J-01：目标章数 / 终局预算提案。提案是「用户点继续写前看一眼」的前置动作
@@ -206,12 +177,10 @@ plot_point_classification:
 #   留 P1 —— 本次未改（不在本轮四条阻塞的范围内）。
 target_budget_proposal:
   extends: base_generation_profile
-  max_tokens: 1200
   temperature: 0.3
 
 # C-07：全书首幕（标题/描述/章数）。这是**创作内容**，不是分类
 # ⇒ 温度略高，且超时不能太长（守护进程在等它）。
 planning_first_act:
   extends: base_generation_profile
-  max_tokens: 2000
   temperature: 0.6
