@@ -887,6 +887,65 @@ class DaemonHostMixin:
             logger.debug("取角色白名单失败（审计将跳过越界角色检查）novel=%s: %s", novel_id, exc)
             return ""
 
+    async def _run_memory_update(
+        self, novel_id: str, chapter_number: int, content: str, outline: str = ""
+    ) -> Dict[str, Any]:
+        """🧠 记忆状态回写（第 29 批）：把本章的**已完成节拍 / 已揭露线索**落库。
+
+        ⚠ 为什么必须接（第 28 批核实）：
+          ``MemoryEngine.update_from_chapter`` **早就实现了**
+          （LLM 提取 → 去重合并 → 落 ``memory_engine_state``），
+          但 ``engine/`` 全目录**没有任何调用点** ⇒
+          ⇒ 「已完成节拍锁（防剧情鬼打墙 / 重复写）」与「已揭露线索清单（防前后矛盾）」
+          这两个**跨章一致性机制从未生效**（实测 ``memory_engine_state`` **全库 0 行**）。
+
+        ⚠ 失败 / 超时 ⇒ 返回 ``updated=False`` + 原因（**不许**假装成功
+          ⇒ 上游会写一条**可见**的「未更新」条目）。
+        """
+        try:
+            from application.engine.services.memory_engine import MemoryEngine
+            from infrastructure.persistence.database.connection import get_database
+            from infrastructure.persistence.database.sqlite_bible_repository import (
+                SqliteBibleRepository,
+            )
+
+            db = get_database()
+            engine = MemoryEngine(
+                llm_service=self.llm_service,
+                bible_repository=SqliteBibleRepository(db),
+                db_connection=db,
+            )
+            result = await engine.update_from_chapter(
+                novel_id=novel_id,
+                chapter_number=int(chapter_number),
+                content=content or "",
+                outline=outline or "",
+            )
+        except Exception as exc:  # noqa: BLE001 —— 记忆回写失败不许把整章流程带崩
+            logger.warning(
+                "[%s] 记忆状态回写异常 ch=%s: %s", novel_id, chapter_number, exc
+            )
+            return {"updated": False, "reason": str(exc)[:120], "new_beats": 0, "new_clues": 0}
+
+        errors = list(result.get("errors") or [])
+        if errors:
+            logger.warning(
+                "[%s] 记忆状态回写未完成 ch=%s: %s", novel_id, chapter_number, errors[:2]
+            )
+            return {
+                "updated": False,
+                "reason": str(errors[0])[:120],
+                "new_beats": int(result.get("new_beats", 0) or 0),
+                "new_clues": int(result.get("new_clues", 0) or 0),
+            }
+        return {
+            "updated": True,
+            "reason": "",
+            "new_beats": int(result.get("new_beats", 0) or 0),
+            "new_clues": int(result.get("new_clues", 0) or 0),
+            "violations": int(result.get("violations", 0) or 0),
+        }
+
     async def _run_setting_drift_audit(
         self, novel_id: str, chapter_number: int, content: str
     ) -> Dict[str, Any]:

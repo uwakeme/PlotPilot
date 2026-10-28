@@ -105,6 +105,37 @@ def _sync_run_async(coro):
     return run_coroutine_sync(lambda: coro)
 
 
+#: 空槽位的**原因**（第 29 批）—— 区分「正常为空」与「功能没开 / 数据没产生」。
+#:
+#: ⚠ 为什么要有：空槽位在槽位表里**照样占着优先级**（有的还是 T0）
+#:   ⇒ 看着像「有内容」⇒ **假信号**。
+#:   而「没有已延期的伏笔」（**正常**为空）与
+#:   「记忆引擎写侧从未被调用」（**功能没开**）**语义完全不同**
+#:   ⇒ 不区分就会把「没开」误读成「没有」。
+#:
+#: ⚠ 措辞纪律：**不许**把「没开」写成「没有」⇒ 那是把「没测出来」记成「测出没有」。
+EMPTY_SLOT_REASONS: Dict[str, str] = {
+    "evolution_presenter": "演化状态锁：本章没有演化快照（演化管线未覆盖这一章）",
+    "completed_beats": "已完成节拍锁：没有可用的节拍记录（记忆引擎写侧未运行或本章无新节拍）",
+    "revealed_clues": "已揭露线索锁：没有可用的线索记录（记忆引擎写侧未运行或本章无新线索）",
+    "diagnosis_breakpoints": "宏观诊断：本章没有诊断结果",
+    "deferred_foreshadowings": "已延期伏笔：没有已延期的伏笔（正常为空）",
+}
+
+
+def collect_empty_slots(slots: Dict[str, ContextSlot]) -> Dict[str, str]:
+    """空槽位清单 ⇒ ``{槽位名: 原因}``（第 29 批）。
+
+    ⚠ 用途：让「没有」**可见** —— 空槽位在槽位表里照样占着优先级
+    ⇒ 不登记出来，就会被读成「这一节本来就是空的」。
+    """
+    return {
+        name: (slot.empty_reason or "本槽位无数据（该数据源在本书上没有记录）")
+        for name, slot in (slots or {}).items()
+        if not (slot.content or "").strip()
+    }
+
+
 class ContextBudgetAllocator:
     """上下文配额分配器
     
@@ -308,6 +339,13 @@ class ContextBudgetAllocator:
             character_context_selection=character_context_selection,
             foreshadow_context=foreshadow_context,
         )
+
+        # ⚠ 第 29 批：空槽位**写清原因**（区分「正常为空」与「功能没开」）
+        for name, slot in slots.items():
+            if not (slot.content or "").strip():
+                slot.empty_reason = EMPTY_SLOT_REASONS.get(
+                    name, "本槽位无数据（该数据源在本书上没有记录）"
+                )
         
         # 提取过期伏笔用于终端强制约束
         pending_fs_slot = slots.get("pending_foreshadowings")
@@ -418,7 +456,18 @@ class ContextBudgetAllocator:
             f"T2={allocation.t2_allocated}, T3={allocation.t3_allocated}, "
             f"总使用={allocation.used_tokens}/{total_budget}"
         )
-        
+
+        # ── 空槽位**显式**登记（第 29 批）────────────────────────────
+        # ⚠ 空槽位在表里照样占着优先级（有的还是 T0）⇒ 看着像「有内容」
+        #   ⇒ **假信号**。而「正常为空」与「功能没开」语义完全不同
+        #   ⇒ 逐槽位写清原因，并**登记**下来（可被盘点/诊断直接读到）。
+        allocation.empty_slots = collect_empty_slots(allocation.slots or {})
+        if allocation.empty_slots:
+            logger.info(
+                "[BudgetAllocator] 空槽位（无数据）: %s",
+                allocation.empty_slots,
+            )
+
         return allocation
     
     def _collect_all_slots(

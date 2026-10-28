@@ -232,6 +232,7 @@ class _FakeHost:
         self.setting_drift_result = setting_drift_result
         self.similarity_below_threshold = similarity_below_threshold
         self.setting_drift_calls: list[tuple] = []
+        self.memory_update_calls: list[tuple] = []
         self.events: list[tuple] = []
         self.shared_updates: list[dict] = []
         self.chapter_repository = _FakeChapterRepository(_FakeChapter())
@@ -286,6 +287,11 @@ class _FakeHost:
     async def _run_setting_drift_audit(self, novel_id, number, content):
         self.setting_drift_calls.append((novel_id, number, content))
         return dict(self.setting_drift_result)
+
+    async def _run_memory_update(self, novel_id, number, content, outline=""):
+        """第 29 批：章后记忆状态回写（这个替身只喂数据，不做副作用）。"""
+        self.memory_update_calls.append((novel_id, number, content))
+        return {"updated": True, "reason": "", "new_beats": 0, "new_clues": 0}
 
     def _count_completed_chapters(self, novel_id) -> int:
         return 3

@@ -70,6 +70,13 @@ class DaemonHostProtocol(Protocol):
     # ── 审计 / 事件 ──
     def _publish_audit_event(self, novel_id: str, event: Dict, **kwargs) -> None: ...
     def _count_completed_chapters(self, novel_id: Any) -> int: ...
+    async def _run_memory_update(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        content: str,
+        outline: str = "",
+    ) -> Dict[str, Any]: ...
 
     # ── 注入的服务（属性）──
     planning_service: Any

@@ -143,6 +143,41 @@ def _drift_alert_shared_value(
 #: 设定漂移条目的 type 前缀（重审时按它把**上一轮**的漂移条目清掉）。
 SETTING_DRIFT_ISSUE_TYPE = "setting_drift"
 
+#: 记忆状态回写条目的 type 前缀（第 29 批）。
+#:
+#: ⚠ 与设定漂移**分开**（不同 type 前缀）⇒ 面板按 type 过滤时不会把两者混为一谈。
+MEMORY_UPDATE_ISSUE_TYPE = "memory_update"
+
+
+def _merge_memory_update_issue(
+    existing: list[dict[str, Any]] | None,
+    result: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """把「记忆状态回写」的结论并进审计 issues 列表。
+
+    降级纪律（同 A1）：**没更新成功** ⇒ 追加一条**可见**的「未更新」条目
+    ⇒ 面板上不会把「没更新」读成「更新了、没问题」。
+    成功 ⇒ **一条都不加**（此时 issues 为空才真的意味着「没问题」）。
+    """
+    items = [
+        dict(item)
+        for item in (existing or [])
+        if not str((item or {}).get("type") or "").startswith(MEMORY_UPDATE_ISSUE_TYPE)
+    ]
+    if not result:
+        return items
+    if not result.get("updated"):
+        items.append(
+            {
+                "type": f"{MEMORY_UPDATE_ISSUE_TYPE}_unassessed",
+                "severity": "info",
+                "category": "memory",
+                "description": f"记忆状态未更新：{result.get('reason') or '未更新'}",
+                "suggestion": "",
+            }
+        )
+    return items
+
 
 def _merge_setting_drift_issues(
     existing: list[dict[str, Any]] | None,
@@ -816,6 +851,28 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     )
     novel.last_audit_issues = _merge_setting_drift_issues(
         novel.last_audit_issues, setting_drift_result
+    )
+
+    # 🧠 记忆状态回写（第 29 批）：把本章的**已完成节拍 / 已揭露线索**落库。
+    # ⚠ 此前写侧**从未被调用** ⇒ 下一章的「已完成节拍锁」「已揭露线索清单」
+    #   两个槽位**恒空** ⇒ 「防剧情鬼打墙」「防前后矛盾」从未生效。
+    # ⚠ 放在设定漂移审计**之后**：审计是章末闸门（要先出结论），
+    #   记忆回写是**写侧**（下一章才用得上）⇒ 顺序不影响正确性，但闸门优先。
+    # ⚠ 超时 / 失败 ⇒ 降级（不崩）+ 写一条**可见**的「未更新」条目（不许假装成功）。
+    memory_update_result = await host._call_with_timeout(
+        host._run_memory_update(
+            novel.novel_id.value,
+            chapter_num,
+            content,
+            getattr(chapter, "outline", "") or "",
+        ),
+        timeout=180.0,  # 记忆提取最多 3 分钟（慢 provider 下别把章末拖死）
+        novel_id=novel.novel_id.value,
+        label="memory_update",
+        timeout_default={"updated": False, "reason": "记忆状态回写超时"},
+    )
+    novel.last_audit_issues = _merge_memory_update_issue(
+        novel.last_audit_issues, memory_update_result
     )
 
     prefs = getattr(novel, "generation_prefs", None) or GenerationPreferences()
