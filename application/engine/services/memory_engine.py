@@ -128,6 +128,7 @@ class MemoryDeltaPayload(BaseModel):
 #: 「身份锁死」的内容会被贴到「死亡锁」标题下，而**守卫仍然是绿的**
 #: （守卫只查「标题在不在 tuple 里」）。
 FACT_LOCK_HEADER_WHITELIST = "角色白名单（只可使用以下有名字的角色）："
+FACT_LOCK_HEADER_LOCATION_WHITELIST = "地点白名单（只可使用以下地点，不得自造）："
 FACT_LOCK_HEADER_CHARACTER_SETTINGS = "角色设定（不可更改）："
 FACT_LOCK_HEADER_DEAD = "已死亡角色（绝对不可复活、不可在当下时间线中出现）："
 FACT_LOCK_HEADER_IDENTITY = "身份锁死："
@@ -145,15 +146,18 @@ FACT_LOCK_HEADER_TIMELINE = "核心事件时间线（不可矛盾）："
 #:   ⇒ 而生产实测抓到的「能力越界 / 性别矛盾」根因就在这里。
 #:
 #: ⇒ 硬约束在前、软约束在后（**按硬度排，不按篇幅排**）：
-#:   **白名单 → 死亡锁 → 身份锁死 → 角色设定 → 核心关系 → 时间线**。
+#:   **白名单 → 地点白名单 → 死亡锁 → 身份锁死 → 角色设定 → 核心关系 → 时间线**。
 #:   * 死亡锁：极硬且**极短**（每个死者一行）⇒ 提到最前面不吃预算；
 #:   * 身份锁死：**最硬**（已揭露的秘密 + POV 防火墙）⇒ 必须在「角色设定」前面；
+#:   * 地点白名单：与角色白名单同级的**「只可使用」硬约束**（防自造地点），
+#:     实测 ~130 字 ⇒ 放在身份锁前不吃预算（第 31 批实测：8/8 防火墙仍全到）；
 #:   * 角色设定：仍是很硬的约束，但**篇幅最大** ⇒ 放在硬约束之后；
 #:   * 核心关系 / 时间线：**软**（还能从别处推）⇒ 被切可接受（且**如实点名**）。
 #:
 #: ⚠ 调序后（生产数据实测）：**8/8** 个 POV 防火墙全部送达正文提示词。
 FACT_LOCK_SECTION_HEADERS: tuple = (
     FACT_LOCK_HEADER_WHITELIST,
+    FACT_LOCK_HEADER_LOCATION_WHITELIST,
     FACT_LOCK_HEADER_DEAD,
     FACT_LOCK_HEADER_IDENTITY,
     FACT_LOCK_HEADER_CHARACTER_SETTINGS,
@@ -251,6 +255,29 @@ def whitelist_lines(names: List[str]) -> List[str]:
     ]
 
 
+def location_names(bible) -> List[str]:
+    """Bible 里的**地点**名单（白名单）—— 与 :func:`character_names` 同构。
+
+    ⚠ 为什么需要（第 31 批）：审计侧拿地点当基准，生成侧却**只给本场地点**的描述
+      ⇒ 模型压根不知道「有名字的地点」全集 ⇒ 可能**自造**地点
+      ⇒ 而「自造地点」在审计侧**审不到**（基准里没有它）
+      ⇒ ⇒ 与「角色白名单」同构：先告诉模型「只可使用这些」，审计才判得了。
+    """
+    locations = getattr(bible, "locations", None) or []
+    return [loc.name for loc in locations if getattr(loc, "name", "")]
+
+
+def location_whitelist_lines(names: List[str]) -> List[str]:
+    """地点白名单的**文本行**（生成侧与审计侧**同一份** ⇒ 不会漂）。"""
+    if not names:
+        return []
+    return [
+        FACT_LOCK_HEADER_LOCATION_WHITELIST,
+        f"   允许: {', '.join(names)}",
+        "   禁止: 创造其他有名字的地点！无名场所可以用，但不许起名成新地点。",
+    ]
+
+
 class FactLockBuilder:
     """从 Bible + KnowledgeGraph 动态构建 FACT_LOCK 文本
     
@@ -313,6 +340,11 @@ class FactLockBuilder:
         if wl_lines:
             facts.append("\n".join(wl_lines))
 
+        # 地点白名单（第 31 批）：与生成侧**同一份** ⇒ 审计才判得了「自造地点」
+        loc_wl_lines = location_whitelist_lines(location_names(bible))
+        if loc_wl_lines:
+            facts.append("\n".join(loc_wl_lines))
+
         for sl in self._build_character_setting_lines(characters):
             facts.append(f"角色设定：{sl}")
 
@@ -342,6 +374,14 @@ class FactLockBuilder:
         names = character_names(bible)
         if names:
             lines.extend(whitelist_lines(names))
+            lines.append("")
+
+        # ── 1b. 地点白名单（与审计侧同一份：``location_whitelist_lines``）──
+        # ⚠ 第 31 批：与「角色白名单」同构的**「只可使用」硬约束**
+        #   ⇒ 模型不会自造有名字的地点 ⇒ 审计侧才判得了「未登记地点」。
+        loc_names = location_names(bible)
+        if loc_names:
+            lines.extend(location_whitelist_lines(loc_names))
             lines.append("")
 
         # ── 2. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──

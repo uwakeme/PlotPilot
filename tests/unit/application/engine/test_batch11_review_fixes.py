@@ -34,7 +34,10 @@ from application.engine.services.context_budget_policy import (
     TRUNCATION_MARKER,
     cap_slots_by_own_limit,
 )
-from application.engine.services.memory_engine import FACT_LOCK_SECTION_HEADERS
+from application.engine.services.memory_engine import (
+    FACT_LOCK_HEADER_LOCATION_WHITELIST,
+    FACT_LOCK_SECTION_HEADERS,
+)
 from application.world.services.style_preset_match_schema import SOURCE_NONE
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -413,7 +416,14 @@ def test_the_builder_uses_the_same_titles_as_the_truncation():
     text = builder._build_from_bible(_Bible(), current_chapter=1)
 
     produced = [line for line in text.splitlines() if line.endswith("：")]
+    # ⚠ 第 31 批：「地点白名单」是**可选节** —— Bible 里没有地点时**不产空节**
+    #   （空节是假信号 + 白占预算）⇒ 不能要求它必然出现。
+    #   ⇒ 放宽必须**精确**：只对它放宽，且「有地点时必须出现」由
+    #   ``test_location_whitelist.py`` 单独钉住。
+    optional_headers = {FACT_LOCK_HEADER_LOCATION_WHITELIST}
     for header in FACT_LOCK_SECTION_HEADERS:
+        if header in optional_headers:
+            continue
         assert header in text, f"构建器的输出里没有 tuple 里的标题：{header}"
     for line in produced:
         assert line in FACT_LOCK_SECTION_HEADERS, (
