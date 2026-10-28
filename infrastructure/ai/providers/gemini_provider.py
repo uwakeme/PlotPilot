@@ -12,7 +12,7 @@ from domain.ai.value_objects.prompt import Prompt
 from domain.ai.value_objects.token_usage import TokenUsage
 from infrastructure.ai.config.settings import Settings
 from infrastructure.ai.http_timeout import build_httpx_timeout
-from .base import BaseProvider
+from .base import BaseProvider, merge_extra_body
 from .model_resolution import require_resolved_model_id
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ class GeminiProvider(BaseProvider):
             payload['systemInstruction'] = {
                 'parts': [{'text': prompt.system}],
             }
-        extra_body = dict(self.settings.extra_body or {})
+        extra_body = merge_extra_body(self.settings, config)
         generation_override = extra_body.pop('generationConfig', None)
         if isinstance(generation_override, dict):
             payload['generationConfig'].update(generation_override)

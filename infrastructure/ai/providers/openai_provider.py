@@ -13,7 +13,7 @@ from domain.ai.value_objects.token_usage import TokenUsage
 from application.ai.llm_retry_policy import LLM_MAX_TOTAL_ATTEMPTS, is_retryable_llm_error
 from infrastructure.ai.config.settings import Settings
 from infrastructure.ai.http_timeout import build_httpx_timeout
-from .base import BaseProvider
+from .base import BaseProvider, merge_extra_body
 from .model_resolution import require_resolved_model_id
 
 logger = logging.getLogger(__name__)
@@ -232,7 +232,8 @@ class OpenAIProvider(BaseProvider):
             "max_tokens": config.max_tokens,
             "extra_headers": self.settings.extra_headers or None,
             "extra_query": self.settings.extra_query or None,
-            "extra_body": self.settings.extra_body or None,
+            # ⚠ 第 32 批：画像的 extra_body + **单次调用**的覆盖（同名键以单次为准）
+            "extra_body": merge_extra_body(self.settings, config) or None,
             "timeout": self.settings.timeout_seconds,
         }
 
@@ -277,8 +278,11 @@ class OpenAIProvider(BaseProvider):
             "temperature": config.temperature,
             "max_output_tokens": config.max_tokens,
         }
-        if self.settings.extra_body:
-             kwargs.update(self.settings.extra_body)
+        # ⚠ 第 32 批：画像的 extra_body + **单次调用**的覆盖（同名键以单次为准）
+        # ⚠ Responses API 没有 extra_body 字段 ⇒ 这些键**平铺**到请求体顶层
+        merged_extra_body = merge_extra_body(self.settings, config)
+        if merged_extra_body:
+            kwargs.update(merged_extra_body)
 
         if stream:
             kwargs["stream"] = True

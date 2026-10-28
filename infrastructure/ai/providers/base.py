@@ -7,6 +7,21 @@ from infrastructure.ai.config.settings import Settings
 logger = logging.getLogger(__name__)
 
 
+def merge_extra_body(settings, config) -> dict:
+    """画像的 provider 参数 + **单次调用**的覆盖（同名键以**单次**为准）。
+
+    ⚠ 为什么（第 32 批）：provider 级的参数（``reasoning_effort`` / ``thinking`` /
+      ``top_p`` …）只来自**激活的生成画像** ⇒ 单次调用改不了
+      ⇒ 一次调用要「尽力思考」就是 5 分钟，改不掉。
+    ⇒ 这里把**单次调用**的 ``config.extra_body`` 合并进去
+    ⇒ 既不改默认行为（``config.extra_body`` 默认 None ⇒ 结果与画像完全一致），
+      也让**单点**可调（例如审计这类核对型任务关掉思考）。
+    """
+    merged = dict(getattr(settings, "extra_body", None) or {})
+    merged.update(getattr(config, "extra_body", None) or {})
+    return merged
+
+
 class BaseProvider(LLMService, ABC):
     """LLM 提供商基类
 

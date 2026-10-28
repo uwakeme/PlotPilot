@@ -12,7 +12,7 @@ from domain.ai.value_objects.prompt import Prompt
 from domain.ai.value_objects.token_usage import TokenUsage
 from infrastructure.ai.config.settings import Settings
 from infrastructure.ai.http_timeout import build_httpx_timeout
-from .base import BaseProvider
+from .base import BaseProvider, merge_extra_body
 from .model_resolution import require_resolved_model_id
 
 logger = logging.getLogger(__name__)
@@ -150,28 +150,7 @@ class AnthropicProvider(BaseProvider):
             RuntimeError: 当 API 调用失败或返回空内容时
         """
         try:
-            model_id = require_resolved_model_id(
-                config.model,
-                self.settings.default_model,
-                provider_label="Anthropic / Claude",
-            )
-            # 构建请求参数
-            # anthropic 1.x 的 create() 签名不再含 temperature 等采样参数，需经 extra_body 透传到请求体
-            create_kwargs = {
-                "model": model_id,
-                "max_tokens": config.max_tokens,
-                "system": prompt.system,
-                "messages": [{"role": "user", "content": prompt.user}],
-                "extra_body": {"temperature": config.temperature},
-            }
-            # Anthropic Messages API does not accept OpenAI-style response_format.
-            # Keep structured output provider-agnostic by moving the constraint into
-            # the prompt; structured_json_pipeline will parse and validate it.
-            if config.response_format:
-                fmt = config.response_format
-                instruction = _json_response_instruction(fmt)
-                if instruction:
-                    create_kwargs["system"] = create_kwargs["system"] + instruction
+            create_kwargs = self._build_create_kwargs(prompt, config)
 
             # 使用 async_client 避免阻塞 asyncio 事件循环。
             # 走流式聚合并取 final message（响应结构与 create 完全一致）：
@@ -209,6 +188,45 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Failed to generate text: {str(e)}") from e
 
+    def _build_create_kwargs(
+        self,
+        prompt: Prompt,
+        config: GenerationConfig,
+    ) -> dict[str, Any]:
+        """构建 Messages API 的调用参数（``generate()`` 路径）。
+
+        ⚠ 第 32 批：带上**单次调用**的 provider 参数覆盖（默认 ``None``
+        ⇒ 与改造前**完全一致**）。
+        ⚠ 画像的 ``extra_body`` **不在**这里合并 —— 那是另一笔账
+        （见登记表「二十点十四·②」，本批**不修**：修了只会更慢）。
+        """
+        model_id = require_resolved_model_id(
+            config.model,
+            self.settings.default_model,
+            provider_label="Anthropic / Claude",
+        )
+        # 构建请求参数
+        # anthropic 1.x 的 create() 签名不再含 temperature 等采样参数，需经 extra_body 透传到请求体
+        create_kwargs = {
+            "model": model_id,
+            "max_tokens": config.max_tokens,
+            "system": prompt.system,
+            "messages": [{"role": "user", "content": prompt.user}],
+            "extra_body": {
+                "temperature": config.temperature,
+                **(config.extra_body or {}),
+            },
+        }
+        # Anthropic Messages API does not accept OpenAI-style response_format.
+        # Keep structured output provider-agnostic by moving the constraint into
+        # the prompt; structured_json_pipeline will parse and validate it.
+        if config.response_format:
+            fmt = config.response_format
+            instruction = _json_response_instruction(fmt)
+            if instruction:
+                create_kwargs["system"] = create_kwargs["system"] + instruction
+        return create_kwargs
+
     def _build_message_request(
         self,
         prompt: Prompt,
@@ -231,7 +249,8 @@ class AnthropicProvider(BaseProvider):
         }
         if stream:
             payload["stream"] = True
-        payload.update(self.settings.extra_body or {})
+        # ⚠ 第 32 批：画像的 extra_body + **单次调用**的覆盖（同名键以单次为准）
+        payload.update(merge_extra_body(self.settings, config))
         return model_id, payload
 
     @staticmethod
