@@ -526,44 +526,71 @@ async def llm_chapter_extract_bundle(
     }
 
 
-def _fuzzy_match_foreshadow(consumed_desc: str, pending_list: List[Any]) -> Optional[Any]:
-    """模糊匹配消费的伏笔描述与待回收列表。
-    
+def _foreshadow_description(entry: Any) -> str:
+    """取一条伏笔（或潜台词条目）的描述文本。"""
+    desc = getattr(entry, "description", None) or getattr(entry, "question", None)
+    return str(desc or "").strip()
+
+
+def _foreshadow_candidates(consumed_desc: str, pending_list: List[Any]) -> List[Any]:
+    """返回**所有**能匹配上的候选（登记表 G-02，第 37 批）。
+
+    ⚠ 为什么改成「全部」（此前是**命中就返回第一个**）：
+      多个待回收伏笔都匹配同一条描述时 ⇒ 旧实现**静默取第一个**
+      ⇒ 另一条伏笔**静默漏掉**（而日志写「伏笔已消费」⇒ 看起来成功了）
+      ⇒ 故事的伏笔账从此对不上（一条被误标成已回收、另一条永远挂着）。
+
+    ⚠ **判据顺序不变**（精确 → 包含 → 关键词重叠 ≥50%）
+      ⇒ 命中更精确的那一档时，**不**把更松的档位候选混进来
+      （否则一条「原文照抄」的精确匹配会被一堆模糊候选淹没）。
+
     Args:
         consumed_desc: LLM 返回的消费伏笔描述
         pending_list: 待回收伏笔列表（Foreshadowing 或 SubtextLedgerEntry）
-    
+
     Returns:
-        匹配到的伏笔对象，未匹配返回 None
+        候选列表（**可能为空**，也可能**多于一个** ⇒ 那就是「歧义」）
     """
     if not consumed_desc or not pending_list:
-        return None
-    
+        return []
+
     consumed_lower = consumed_desc.lower().strip()
-    
-    # 优先精确匹配
+
+    # ① 精确匹配（AI 原文照抄）
+    exact = [
+        f for f in pending_list
+        if _foreshadow_description(f).lower() == consumed_lower
+        and _foreshadow_description(f)
+    ]
+    if exact:
+        return exact
+
+    # ② 包含关系
+    contained = []
     for f in pending_list:
-        desc = getattr(f, 'description', None) or getattr(f, 'question', None)
-        if desc and desc.lower().strip() == consumed_lower:
-            return f
-    
-    # 其次模糊匹配（包含关系）
+        desc_lower = _foreshadow_description(f).lower()
+        if not desc_lower:
+            continue
+        if consumed_lower in desc_lower or desc_lower in consumed_lower:
+            contained.append(f)
+    if contained:
+        return contained
+
+    # ③ 关键词重叠（至少 50% 的字匹配）
+    fuzzy = []
     for f in pending_list:
-        desc = getattr(f, 'description', None) or getattr(f, 'question', None)
-        if desc:
-            desc_lower = desc.lower().strip()
-            # 检查是否有足够的重叠
-            if consumed_lower in desc_lower or desc_lower in consumed_lower:
-                return f
-            # 检查关键词重叠（至少 50% 的词匹配）
-            consumed_words = set(consumed_lower)
-            desc_words = set(desc_lower)
-            if consumed_words and desc_words:
-                overlap = len(consumed_words & desc_words) / min(len(consumed_words), len(desc_words))
-                if overlap >= 0.5:
-                    return f
-    
-    return None
+        desc_lower = _foreshadow_description(f).lower()
+        if not desc_lower:
+            continue
+        consumed_words = set(consumed_lower)
+        desc_words = set(desc_lower)
+        if consumed_words and desc_words:
+            overlap = len(consumed_words & desc_words) / min(
+                len(consumed_words), len(desc_words)
+            )
+            if overlap >= 0.5:
+                fuzzy.append(f)
+    return fuzzy
 
 
 def persist_bundle_triples_and_foreshadows(
@@ -773,66 +800,121 @@ def persist_bundle_triples_and_foreshadows(
                     novel_id, chapter_number, offset_fallbacks,
                 )
 
-            # 处理伏笔消费：将 LLM 识别的已消费伏笔标记为 RESOLVED/consumed
-            if consumed:
-                # 获取所有待回收伏笔
-                pending_foreshadows = registry.get_unresolved()
-                pending_subtext = registry.get_pending_subtext_entries()
-                
-                consumed_count = 0
-                for consumed_desc in consumed:
-                    if not consumed_desc:
-                        continue
-                    
-                    # 1. 尝试匹配 Foreshadowing 对象
-                    matched_foreshadow = _fuzzy_match_foreshadow(consumed_desc, pending_foreshadows)
-                    if matched_foreshadow:
-                        try:
-                            registry.mark_resolved(
-                                foreshadowing_id=matched_foreshadow.id,
-                                resolved_in_chapter=chapter_number
-                            )
-                            consumed_count += 1
-                            logger.info(
-                                "伏笔已消费 novel=%s ch=%s: %s -> RESOLVED",
-                                novel_id, chapter_number, consumed_desc[:50]
-                            )
-                            # 从待回收列表中移除已处理的
-                            pending_foreshadows = [f for f in pending_foreshadows if f.id != matched_foreshadow.id]
-                        except Exception as e:
-                            logger.warning("伏笔消费状态更新失败: %s", e)
-                        continue
-                    
-                    # 2. 尝试匹配 SubtextLedgerEntry 对象
-                    matched_entry = _fuzzy_match_foreshadow(consumed_desc, pending_subtext)
-                    if matched_entry:
-                        try:
-                            from dataclasses import replace
-                            updated_entry = replace(
-                                matched_entry,
-                                status="consumed",
-                                consumed_at_chapter=chapter_number
-                            )
-                            registry.update_subtext_entry(matched_entry.id, updated_entry)
-                            consumed_count += 1
-                            logger.info(
-                                "潜台词条目已消费 novel=%s ch=%s: %s -> consumed",
-                                novel_id, chapter_number, consumed_desc[:50]
-                            )
-                            # 从待回收列表中移除已处理的
-                            pending_subtext = [e for e in pending_subtext if e.id != matched_entry.id]
-                        except Exception as e:
-                            logger.warning("潜台词条目消费状态更新失败: %s", e)
-                
-                if consumed_count > 0:
-                    logger.info(
-                        "伏笔消费检测完成 novel=%s ch=%s consumed=%d/%d",
-                        novel_id, chapter_number, consumed_count, len(consumed)
-                    )
             
             foreshadowing_repo.save(registry)
         except Exception as e:
             logger.warning("伏笔落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
+
+    # ── 伏笔**消费**（回收）：与「种植」**解耦**（第 37 批 · 登记表 G-02）──
+    #
+    # ⚠ 为什么必须解耦：此前这段**整块**嵌在 ``if foreshadowing_repo and hints:``（种植）里
+    #   ⇒ **一章只回收、不种植新伏笔时 ⇒ 回收逻辑压根不执行**
+    #   ⇒ 伏笔**永远回收不了**（除非那一章碰巧也种了新伏笔）⇒ **静默失效**。
+    if foreshadowing_repo and consumed:
+        try:
+            registry = foreshadowing_repo.get_by_novel_id(NovelId(novel_id))
+            if registry:
+                # 处理伏笔消费：将 LLM 识别的已消费伏笔标记为 RESOLVED/consumed
+                if consumed:
+                    # 获取所有待回收伏笔
+                    pending_foreshadows = registry.get_unresolved()
+                    pending_subtext = registry.get_pending_subtext_entries()
+                
+                    consumed_count = 0
+                    ambiguous_count = 0
+                    unmatched_count = 0
+                    for consumed_desc in consumed:
+                        if not consumed_desc:
+                            continue
+
+                        # 1. 尝试匹配 Foreshadowing 对象（登记表 G-02：返回**全部**候选）
+                        candidates = _foreshadow_candidates(consumed_desc, pending_foreshadows)
+                        if len(candidates) > 1:
+                            # ⚠ 歧义：**不静默取第一个** ⇒ 宁可挂账也不 resolve 错的那条
+                            #   （取第一个 ⇒ 另一条被误标成「已回收」、这一条永远挂着 ⇒ 伏笔账对不上）
+                            ambiguous_count += 1
+                            logger.warning(
+                                "伏笔回收**歧义**（%d 个候选都匹配）⇒ 本条**不**回收，"
+                                "宁可挂账也不 resolve 错的那条 novel=%s ch=%s: %s ← 候选 %s",
+                                len(candidates),
+                                novel_id,
+                                chapter_number,
+                                consumed_desc[:60],
+                                [getattr(c, "id", "?") for c in candidates],
+                            )
+                            continue
+                        if len(candidates) == 1:
+                            matched_foreshadow = candidates[0]
+                            try:
+                                registry.mark_resolved(
+                                    foreshadowing_id=matched_foreshadow.id,
+                                    resolved_in_chapter=chapter_number
+                                )
+                                consumed_count += 1
+                                logger.info(
+                                    "伏笔已消费 novel=%s ch=%s: %s -> RESOLVED",
+                                    novel_id, chapter_number, consumed_desc[:50]
+                                )
+                                # 从待回收列表中移除已处理的
+                                pending_foreshadows = [f for f in pending_foreshadows if f.id != matched_foreshadow.id]
+                            except Exception as e:
+                                logger.warning("伏笔消费状态更新失败: %s", e)
+                            continue
+
+                        # 2. 尝试匹配 SubtextLedgerEntry 对象（同样不许静默取第一个）
+                        entry_candidates = _foreshadow_candidates(consumed_desc, pending_subtext)
+                        if len(entry_candidates) > 1:
+                            ambiguous_count += 1
+                            logger.warning(
+                                "潜台词回收**歧义**（%d 个候选都匹配）⇒ 本条**不**回收 novel=%s ch=%s: %s ← 候选 %s",
+                                len(entry_candidates),
+                                novel_id,
+                                chapter_number,
+                                consumed_desc[:60],
+                                [getattr(c, "id", "?") for c in entry_candidates],
+                            )
+                            continue
+                        if len(entry_candidates) == 1:
+                            matched_entry = entry_candidates[0]
+                            try:
+                                from dataclasses import replace
+                                updated_entry = replace(
+                                    matched_entry,
+                                    status="consumed",
+                                    consumed_at_chapter=chapter_number
+                                )
+                                registry.update_subtext_entry(matched_entry.id, updated_entry)
+                                consumed_count += 1
+                                logger.info(
+                                    "潜台词条目已消费 novel=%s ch=%s: %s -> consumed",
+                                    novel_id, chapter_number, consumed_desc[:50]
+                                )
+                                # 从待回收列表中移除已处理的
+                                pending_subtext = [e for e in pending_subtext if e.id != matched_entry.id]
+                            except Exception as e:
+                                logger.warning("潜台词条目消费状态更新失败: %s", e)
+                            continue
+
+                        # 3. 一条都没匹配上 ⇒ AI 说回收了它，但它**不在**待回收清单里
+                        #    （要么是已经回收过的，要么是 AI 凭空说的）⇒ 此前**完全静默**。
+                        unmatched_count += 1
+                        logger.warning(
+                            "AI 说回收了伏笔 %r，但它**不在**待回收清单里 ⇒ 本条未处理"
+                            "（可能已回收过，也可能是 AI 凭空说的）novel=%s ch=%s",
+                            consumed_desc[:60],
+                            novel_id,
+                            chapter_number,
+                        )
+
+                    if consumed_count > 0 or ambiguous_count or unmatched_count:
+                        logger.info(
+                            "伏笔消费检测完成 novel=%s ch=%s consumed=%d/%d ambiguous=%d unmatched=%d",
+                            novel_id, chapter_number, consumed_count, len(consumed),
+                            ambiguous_count, unmatched_count,
+                        )
+                foreshadowing_repo.save(registry)
+        except Exception as e:
+            logger.warning("伏笔消费处理失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
 
 
 def _importance_str_to_level(importance_str: str) -> ImportanceLevel:
