@@ -15,6 +15,7 @@ A1 设定漂移审计单次调用 **~300 秒**，`output_tokens=12560` ⇒ **模
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from domain.ai.services.llm_service import GenerationConfig
@@ -293,3 +294,117 @@ def test_the_anthropic_create_kwargs_still_leaves_the_profile_extra_body_out():
 
     assert "reasoning_effort" not in kwargs["extra_body"]
     assert "top_p" not in kwargs["extra_body"]
+
+
+# ── ⑥ 生产入口（DynamicLLMService）必须把覆盖**透传**下去 ─────────────
+#
+# ⚠ 为什么单列这一段：``DynamicLLMService._merge_config`` 会**重建**
+#   ``GenerationConfig``（为了让 model / max_tokens / temperature 落到画像默认值）
+#   ⇒ 重建时漏一个字段，那个字段就**静默消失**
+#   ⇒ 本批实测就栽在这：provider 层接得好好的，生产入口却把 extra_body 剥了
+#   ⇒ **能力等于不存在**（不报错、不告警）。
+
+
+def test_the_merged_config_keeps_the_call_override():
+    """⚠ ``_merge_config`` 重建配置时**必须**带上单次覆盖。"""
+    from infrastructure.ai.provider_factory import DynamicLLMService
+
+    provider = SimpleNamespace(
+        settings=SimpleNamespace(
+            default_model="test-model",
+            default_max_tokens=4096,
+            default_temperature=0.7,
+        )
+    )
+
+    merged = DynamicLLMService._merge_config(
+        GenerationConfig(extra_body=CALL_EXTRA), provider
+    )
+
+    assert merged.extra_body == CALL_EXTRA
+
+
+def test_the_dynamic_llm_service_hands_the_call_override_to_the_provider(monkeypatch):
+    """⚠ 端到端：provider **收到**的 config 必须带着单次覆盖。"""
+    from infrastructure.ai.provider_factory import DynamicLLMService
+    from domain.ai.services.llm_service import GenerationResult
+    from domain.ai.value_objects.token_usage import TokenUsage
+
+    seen: list = []
+
+    class _RecordingProvider:
+        settings = SimpleNamespace(
+            default_model="test-model",
+            default_max_tokens=4096,
+            default_temperature=0.7,
+            provider_name="test",
+            protocol="openai",
+            base_url="http://localhost",
+        )
+
+        async def generate(self, prompt, config):
+            seen.append(config)
+            return GenerationResult(
+                content="ok", token_usage=TokenUsage(input_tokens=1, output_tokens=1)
+            )
+
+    class _NullRecorder:
+        def record_span(self, **kwargs):
+            return None
+
+    async def _resolve_provider():
+        return _RecordingProvider()
+
+    monkeypatch.setattr(
+        "infrastructure.ai.provider_factory.get_trace_recorder", lambda: _NullRecorder()
+    )
+    service = DynamicLLMService.__new__(DynamicLLMService)
+    service._resolve_provider = _resolve_provider
+
+    asyncio.run(service.generate(_prompt(), GenerationConfig(extra_body=CALL_EXTRA)))
+
+    assert seen, "provider 没被调用"
+    assert seen[0].extra_body == CALL_EXTRA
+
+
+def test_the_dynamic_llm_service_keeps_no_override_as_none(monkeypatch):
+    """⚠ 零行为变化：没传单次覆盖 ⇒ provider 收到的也是 ``None``（不是空 dict）。"""
+    from infrastructure.ai.provider_factory import DynamicLLMService
+    from domain.ai.services.llm_service import GenerationResult
+    from domain.ai.value_objects.token_usage import TokenUsage
+
+    seen: list = []
+
+    class _RecordingProvider:
+        settings = SimpleNamespace(
+            default_model="test-model",
+            default_max_tokens=4096,
+            default_temperature=0.7,
+            provider_name="test",
+            protocol="openai",
+            base_url="http://localhost",
+        )
+
+        async def generate(self, prompt, config):
+            seen.append(config)
+            return GenerationResult(
+                content="ok", token_usage=TokenUsage(input_tokens=1, output_tokens=1)
+            )
+
+    class _NullRecorder:
+        def record_span(self, **kwargs):
+            return None
+
+    async def _resolve_provider():
+        return _RecordingProvider()
+
+    monkeypatch.setattr(
+        "infrastructure.ai.provider_factory.get_trace_recorder", lambda: _NullRecorder()
+    )
+    service = DynamicLLMService.__new__(DynamicLLMService)
+    service._resolve_provider = _resolve_provider
+
+    asyncio.run(service.generate(_prompt(), GenerationConfig()))
+
+    assert seen, "provider 没被调用"
+    assert seen[0].extra_body is None

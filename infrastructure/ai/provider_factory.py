@@ -235,6 +235,10 @@ class DynamicLLMService(LLMService):
             max_tokens=max_tokens,
             temperature=temperature,
             response_format=config.response_format,
+            # ⚠ 第 32 批：单次覆盖必须**透传**下去。
+            # ⚠ 漏掉它 ⇒ `_merge_config` 重建配置时把它剥掉
+            #   ⇒ 能力在**生产入口**上静默失效（provider 层再对也没用）。
+            extra_body=config.extra_body,
         )
 
     @staticmethod
