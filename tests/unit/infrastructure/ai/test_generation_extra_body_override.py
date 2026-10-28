@@ -205,7 +205,7 @@ def test_every_request_body_path_carries_the_call_override():
     paths = [
         ("OpenAI / chat completions", _openai_chat_body, OpenAIProvider, True),
         ("OpenAI / responses API", _openai_responses_body, OpenAIProvider, True),
-        ("Anthropic / create_kwargs", _anthropic_create_body, AnthropicProvider, False),
+        ("Anthropic / create_kwargs", _anthropic_create_body, AnthropicProvider, True),
         ("Anthropic / messages", _anthropic_message_body, AnthropicProvider, True),
         ("Gemini / payload", _gemini_payload_body, GeminiProvider, True),
     ]
@@ -263,8 +263,12 @@ def test_the_openai_responses_path_without_the_override_keeps_the_profile():
     assert kwargs["top_p"] == 0.95
 
 
-def test_the_anthropic_create_kwargs_without_the_override_is_unchanged():
-    """⚠ 零行为变化：不传单次覆盖 ⇒ extra_body **只有** temperature（与改造前一致）。"""
+def test_the_anthropic_create_kwargs_without_the_override_keeps_the_profile():
+    """⚠ 不传单次覆盖 ⇒ 画像那份**原样**生效（与流式路径一致）。
+
+    ⚠ 第 32 批时这条断言是「extra_body **只有** temperature」—— 那是**账 A**的
+    现状（画像的键在这条路径上没生效）；第 34 批修好后断言随之翻正。
+    """
     from infrastructure.ai.providers.anthropic_provider import AnthropicProvider
 
     provider = object.__new__(AnthropicProvider)
@@ -273,17 +277,15 @@ def test_the_anthropic_create_kwargs_without_the_override_is_unchanged():
 
     kwargs = provider._build_create_kwargs(_prompt(), config)
 
-    assert kwargs["extra_body"] == {"temperature": config.temperature}
+    assert kwargs["extra_body"] == {"temperature": config.temperature, **PROFILE_EXTRA}
 
 
-def test_the_anthropic_create_kwargs_still_leaves_the_profile_extra_body_out():
-    """⚠ **如实钉住在案的 bug**（登记表「二十点十四·②」，本批**不修**）：
+def test_the_anthropic_create_kwargs_now_carries_the_profile_extra_body():
+    """⚠ 第 34 批（账 A）：``generate()`` 路径**也**要带画像的 extra_body。
 
-    Anthropic 的 ``generate()`` 路径**至今不带画像的 extra_body**
-    ⇒ 画像里的 ``reasoning_effort: max`` 在这条路径上没生效。
-
-    ⚠ 这条断言是**故意**钉住现状的：真去修它时，这条会红
-    ⇒ 那时必须同步更新登记表（并重新评估 A1 的耗时）。
+    ⚠ 这条断言在第 32 批是**反的**（当时如实钉住「画像的键在这条路径上不生效」
+    这个在案的 bug，并注明「真去修它时这条会红 ⇒ 同步更新登记表」）
+    ⇒ 现在 bug 已修（登记表「二十点十五」），断言随之翻正。
     """
     from infrastructure.ai.providers.anthropic_provider import AnthropicProvider
 
@@ -292,8 +294,23 @@ def test_the_anthropic_create_kwargs_still_leaves_the_profile_extra_body_out():
 
     kwargs = provider._build_create_kwargs(_prompt(), GenerationConfig())
 
-    assert "reasoning_effort" not in kwargs["extra_body"]
-    assert "top_p" not in kwargs["extra_body"]
+    assert kwargs["extra_body"]["reasoning_effort"] == "max"
+    assert kwargs["extra_body"]["top_p"] == 0.95
+
+
+def test_the_anthropic_create_kwargs_call_override_wins_over_the_profile():
+    """⚠ 账 A 修好后，合并语义必须与其它路径**一致**：同名键以**单次**为准。"""
+    from infrastructure.ai.providers.anthropic_provider import AnthropicProvider
+
+    provider = object.__new__(AnthropicProvider)
+    provider.settings = _settings(PROFILE_EXTRA)
+
+    kwargs = provider._build_create_kwargs(
+        _prompt(), GenerationConfig(extra_body={"reasoning_effort": "none"})
+    )
+
+    assert kwargs["extra_body"]["reasoning_effort"] == "none"
+    assert kwargs["extra_body"]["top_p"] == 0.95
 
 
 # ── ⑥ 生产入口（DynamicLLMService）必须把覆盖**透传**下去 ─────────────

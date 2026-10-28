@@ -197,8 +197,8 @@ class AnthropicProvider(BaseProvider):
 
         ⚠ 第 32 批：带上**单次调用**的 provider 参数覆盖（默认 ``None``
         ⇒ 与改造前**完全一致**）。
-        ⚠ 画像的 ``extra_body`` **不在**这里合并 —— 那是另一笔账
-        （见登记表「二十点十四·②」，本批**不修**：修了只会更慢）。
+        ⚠ 第 34 批（账 A）：**也**带上**画像**的 ``extra_body``
+        （与流式路径**同源** ⇒ 用户配的 provider 参数在两条路径上行为一致）。
         """
         model_id = require_resolved_model_id(
             config.model,
@@ -207,6 +207,10 @@ class AnthropicProvider(BaseProvider):
         )
         # 构建请求参数
         # anthropic 1.x 的 create() 签名不再含 temperature 等采样参数，需经 extra_body 透传到请求体
+        # ⚠ 第 34 批（账 A）：这里**必须**带**画像**的 extra_body ——
+        #   以前只有流式路径带 ⇒ 用户配的 provider 参数（reasoning_effort / thinking …）
+        #   **在非流式调用里根本没生效**（A1 审计走的就是非流式）。
+        # ⇒ 与其它路径**同源**：都用 `merge_extra_body`（画像 + 单次覆盖，同名键以单次为准）。
         create_kwargs = {
             "model": model_id,
             "max_tokens": config.max_tokens,
@@ -214,7 +218,7 @@ class AnthropicProvider(BaseProvider):
             "messages": [{"role": "user", "content": prompt.user}],
             "extra_body": {
                 "temperature": config.temperature,
-                **(config.extra_body or {}),
+                **merge_extra_body(self.settings, config),
             },
         }
         # Anthropic Messages API does not accept OpenAI-style response_format.
@@ -320,13 +324,37 @@ class AnthropicProvider(BaseProvider):
         """通过官方 SDK 流式读取，网关断开 raw SSE 时作为回退。"""
         model_id, payload = self._build_message_request(prompt, config, stream=False)
         logger.info("[Stream] Falling back to SDK stream for model=%s", model_id)
-        # anthropic 1.x 的 stream() 签名不再含 temperature，需经 extra_body 透传到请求体
-        sdk_payload = {key: value for key, value in payload.items() if key != "temperature"}
-        sdk_payload["extra_body"] = {"temperature": payload["temperature"]}
+        sdk_payload = self._build_sdk_stream_payload(payload)
         async with self.async_client.messages.stream(**sdk_payload) as stream:
             async for text in stream.text_stream:
                 if text:
                     yield text
+
+    @staticmethod
+    def _build_sdk_stream_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """把请求体拆成「SDK 顶层参数 + extra_body」（第 34 批 · 账 B）。
+
+        ⚠ 为什么拆（第 32 批实测）：``client.messages.stream()`` 的签名是
+          **显式关键字**（**没有** ``temperature``、**没有** ``top_p``、
+          也没有 ``reasoning_effort`` 之类）⇒ 把它们当**顶层 kwarg** 传进去
+          ⇒ **TypeError**（unexpected keyword argument）⇒ 这条兜底路径**根本跑不了**。
+          ⚠ 生产日志里它**从未触发**（"Falling back to SDK stream" 全是测试模型名）
+          ⇒ 属**潜伏**问题。
+
+        ⚠ 拆法：只有 SDK **认的**那几项留顶层（``model`` / ``max_tokens`` /
+          ``messages`` / ``system``），**其余全部**（含 ``temperature`` 与
+          画像的 provider 参数）塞进 ``extra_body`` ⇒ SDK 会把它原样并进请求 JSON。
+        ⇒ ⇒ **最终请求体与 httpx 路径逐字相同**（httpx 路径就是把整个 payload
+          当 JSON 发出去的）⇒ 行为不变，只是**不再崩**。
+        """
+        reserved = ("model", "max_tokens", "messages", "system")
+        sdk_payload: dict[str, Any] = {
+            key: value for key, value in payload.items() if key in reserved
+        }
+        extra = {key: value for key, value in payload.items() if key not in reserved}
+        if extra:
+            sdk_payload["extra_body"] = extra
+        return sdk_payload
 
     async def stream_generate(
         self,
