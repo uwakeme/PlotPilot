@@ -39,9 +39,11 @@ PERFORMANCE_YAML = REPO_ROOT / "config" / "performance.yaml"
 PRODUCTION_FACT_LOCK_CHARS = 4040
 PRODUCTION_FACT_LOCK_TOKENS = 2296
 
-#: 口径值：本批要保证的**下限**（事实锁槽位 / 每块字符）。
-FACT_LOCK_TOKEN_FLOOR = 4000
-PROSE_SLOT_CHAR_FLOOR = 5000
+#: 口径值：保证的**下限**（事实锁槽位 / 每块字符）。
+#: ⚠ 第 41 批：4000 → **10000** / 5000 → **12000**（用户拍板「真正吃 1M 窗口」）
+#:   ⇒ 这两个 floor 现在**钉住**新额度 ⇒ 退回旧值必红。
+FACT_LOCK_TOKEN_FLOOR = 10000
+PROSE_SLOT_CHAR_FLOOR = 12000
 
 
 class _Slot:

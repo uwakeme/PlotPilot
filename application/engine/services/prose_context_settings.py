@@ -71,7 +71,7 @@ DEFAULT_SLOTS: Tuple[str, ...] = (
 #:   （实测 fact_lock 块长 2052 > 2000）。
 #: ⇒ **按这个数推理余量会算错**；**总量**才是硬约束
 #:   （``PROSE_CONTEXT_SLOT_OVERHEAD_CHARS`` 与 composer 的兜底都按**实际长度**算）。
-DEFAULT_MAX_CHARS_PER_SLOT = 2000
+DEFAULT_MAX_CHARS_PER_SLOT = 12000
 
 #: 每块的**额外**开销（块标题 ``=== XXX ===`` + 截断标记）的预留字符数。
 #:

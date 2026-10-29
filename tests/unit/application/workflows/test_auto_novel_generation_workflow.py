@@ -12,6 +12,7 @@ from infrastructure.ai.prompt_utils import PromptTemplateUnavailable
 from application.engine.dtos.generation_result import GenerationResult
 from application.engine.dtos.scene_director_dto import SceneDirectorAnalysis
 from application.engine.services.context_builder import ContextBuilder
+from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
 from domain.novel.services.consistency_checker import ConsistencyChecker
 from domain.novel.services.storyline_manager import StorylineManager
 from domain.novel.repositories.plot_arc_repository import PlotArcRepository
@@ -167,7 +168,7 @@ class TestGenerateChapter:
             novel_id="novel-1",
             chapter_number=1,
             outline="Chapter 1 outline",
-            max_tokens=35000,
+            max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
             scene_director=None,
             # D-02：主路径必须转发 slot_weights。此前该调用点漏传，
             # 生产 daemon 恒走这条主路径 ⇒ 算好的权重算完即丢。
@@ -208,7 +209,7 @@ class TestGenerateChapter:
             novel_id="novel-1",
             chapter_number=1,
             outline="Chapter 1 outline",
-            max_tokens=35000,
+            max_tokens=DEFAULT_CONTEXT_MAX_TOKENS,
             scene_director=scene_director,
             slot_weights=None,
             character_context_selection=None,

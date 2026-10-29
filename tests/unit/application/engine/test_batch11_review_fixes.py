@@ -125,24 +125,42 @@ async def test_the_route_works_with_the_real_di_factory():
 def _fake_fact_lock_text() -> str:
     """一份**五节齐全**、且**足够长**的 FACT_LOCK 文本。
 
-    ⚠ 必须**长过**分配器的上限（1500 tokens × 1.5 = 2250 字），
+    ⚠ 必须**长过**分配器的上限（``MAX_FACT_LOCK_TOKENS`` tokens × 1.5 = 字符），
     否则根本不会发生截断 ⇒ 下面两条守卫会「因样本前提不成立而空过」。
+
+    ⚠ 第 41 批：两级上限都抬了（分配器 10000 tokens、正文 12000 字）
+      ⇒ 白名单的名字数**跟着当前上限算**（不写死数字）⇒ 以后再抬，这条自动跟随。
     """
-    names = "、".join(f"角色{i}" for i in range(400))
-    return (
-        "【绝对事实边界（一旦违背即为废稿）】\n\n"
-        f"角色白名单（只可使用以下有名字的角色）：\n"
-        f"   允许: {names}\n"
-        "   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！\n\n"
-        "已死亡角色（绝对不可复活、不可在当下时间线中出现）：\n"
-        "   禁止: 丁(配角) - 死于刀伤（死于第 3 章）\n\n"
-        "核心关系（不可更改）：\n"
-        "   甲 ——师父→ 乙\n\n"
-        "身份锁死：\n"
-        "   乙 = 表面是散修 | 真实身份是丙 | [已揭露] 丙才是真身\n\n"
-        "核心事件时间线（不可矛盾）：\n"
-        "   [第 3 章] 丁已死\n"
+    from application.engine.services.context_budget_allocator import (
+        ContextBudgetAllocator,
     )
+
+    allocator_cap = int(ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS * 1.5)
+
+    def _build(name_count: int) -> str:
+        names = "、".join(f"角色{i}" for i in range(name_count))
+        return (
+            "【绝对事实边界（一旦违背即为废稿）】\n\n"
+            f"角色白名单（只可使用以下有名字的角色）：\n"
+            f"   允许: {names}\n"
+            "   禁止: 创造任何其他有名字的角色！路人可以无名但不许命名！\n\n"
+            "已死亡角色（绝对不可复活、不可在当下时间线中出现）：\n"
+            "   禁止: 丁(配角) - 死于刀伤（死于第 3 章）\n\n"
+            "核心关系（不可更改）：\n"
+            "   甲 ——师父→ 乙\n\n"
+            "身份锁死：\n"
+            "   乙 = 表面是散修 | 真实身份是丙 | [已揭露] 丙才是真身\n\n"
+            "核心事件时间线（不可矛盾）：\n"
+            "   [第 3 章] 丁已死\n"
+        )
+
+    text = _build(400)
+    if len(text) > allocator_cap:
+        return text
+    # ⇒ 白名单一行是「超长行」⇒ 按字补足到**超过**分配器上限
+    per_name = 4
+    need = max(401, (allocator_cap - len(text)) // per_name + 401)
+    return _build(need)
 
 
 def test_the_named_sections_are_at_the_front():
@@ -328,25 +346,31 @@ def test_the_unset_word_count_is_written_as_zero_not_as_the_default():
 def test_the_named_sections_survive_the_prose_side_cut():
     """⚠ **B-1**（端到端）：走**真实的两级上限** ⇒ 点名必须仍在。
 
-    分配器：fact_lock 1500 tokens × 1.5 = **2250 字**
-    正文槽：``DEFAULT_MAX_CHARS_PER_SLOT`` = **2000 字**
-    ⇒ 第二个常量比第一个小 ⇒ 结尾的点名必被切掉（这正是复审量到的那条链）。
+    分配器：fact_lock ``MAX_FACT_LOCK_TOKENS`` tokens × 1.5 = **字符**
+    正文槽：``prose_context.max_chars_per_slot`` = **字符**
+    ⇒ 第二个上限比第一个小 ⇒ 结尾的点名必被切掉（这正是复审量到的那条链）。
+
+    ⚠ 第 41 批：两级上限都抬了 ⇒ 这里**不写死数字**，跟着当前常量走。
     """
+    from application.engine.services.context_budget_allocator import (
+        ContextBudgetAllocator,
+    )
     from application.engine.services.prose_context_settings import (
-        DEFAULT_MAX_CHARS_PER_SLOT,
+        get_prose_context_runtime_settings,
     )
 
     slot = ContextSlot(
         name="fact_lock",
         tier=PriorityTier.T0_CRITICAL,
         content=_fake_fact_lock_text(),
-        tokens=9999,
-        max_tokens=1500,
+        tokens=99999,
+        max_tokens=ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS,
         priority=120,
         section_headers=FACT_LOCK_SECTION_HEADERS,
     )
     cap_slots_by_own_limit({"fact_lock": slot}, chars_per_token_zh=1.5)
-    assert len(slot.content) > DEFAULT_MAX_CHARS_PER_SLOT, (
+    prose_cap = get_prose_context_runtime_settings().max_chars_per_slot
+    assert len(slot.content) > prose_cap, (
         "样本前提变了（分配器后的长度没超过正文槽上限 ⇒ 这条验不到东西）"
     )
     assert "身份锁死：" not in slot.content, "样本前提变了（身份锁死没被截掉）"

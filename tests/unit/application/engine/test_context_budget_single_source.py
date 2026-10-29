@@ -48,8 +48,8 @@ def _call_max_tokens_arg(path: Path, callee: str) -> list[ast.AST]:
 def _default_arg_ast(path: Path, func_name: str, arg_name: str) -> ast.AST | None:
     """取某个函数某个参数的**默认值 AST 节点**（不是值！）。
 
-    ⚠ 必须断言「默认值是那个常量」而不是「默认值等于 35000」——
-    后者对「写回字面量 35000」的变异**照样通过**（假绿）。
+    ⚠ 必须断言「默认值是那个常量」而不是「默认值等于 60000」——
+    后者对「写回字面量 60000」的变异**照样通过**（假绿）。
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
@@ -70,7 +70,9 @@ def _default_arg_ast(path: Path, func_name: str, arg_name: str) -> ast.AST | Non
 
 
 def test_context_budget_constant_is_the_single_source():
-    assert DEFAULT_CONTEXT_MAX_TOKENS == 35000
+    # ⚠ 第 41 批：35000 → 60000（用户拍板「真正吃 1M 上下文窗口」）
+    #   ⇒ 这个守卫**钉住数值** ⇒ 改预算必须改这里（否则改大了/改小了都没人知道）。
+    assert DEFAULT_CONTEXT_MAX_TOKENS == 60000
 
 
 def test_context_builder_defaults_use_the_constant():

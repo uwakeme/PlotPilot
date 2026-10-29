@@ -54,9 +54,9 @@ class _Char:
 
 
 class _Bible:
-    def __init__(self, characters):
+    def __init__(self, characters, timeline_notes=None):
         self.characters = characters
-        self.timeline_notes = []
+        self.timeline_notes = timeline_notes or []
 
 
 def _builder():
@@ -310,6 +310,12 @@ def _production_shaped_bible(character_count: int = 8) -> _Bible:
     ⚠ 形状来自**真实生产书**（``prodrealtest-001``）的实测：
     事实锁原始 3876 字 ⇒ 正文侧上限 2000 字
     ⇒ 刀口正好落在「身份锁死」这一节**中间** ⇒ 只有 4/8 个防火墙活下来。
+
+    ⚠ 第 41 批：两级上限抬到 **10000 tokens / 12000 字** ⇒ 原来这个 8 人样本
+      只有 2588 字 ⇒ **不再超过上限** ⇒ 这条守卫会「因前提失效而空过」
+      ⇒ 现在补一段**时间线尾巴**（生产长书就是这个形状：
+      **硬约束在前、流水账在后**）⇒ 刀口落在时间线里
+      ⇒ 8/8 个防火墙仍然全在，而**截断照样发生**（场景没被稀释掉）。
     """
     characters = []
     for index in range(character_count):
@@ -325,17 +331,26 @@ def _production_shaped_bible(character_count: int = 8) -> _Bible:
                 mental_state=f"心理{index}" + "状态" * 8,
             )
         )
-    return _Bible(characters)
+    timeline = [
+        SimpleNamespace(timestamp=f"第 {index} 章", event="某件事发生了。" * 4)
+        for index in range(1, 300)
+    ]
+    return _Bible(characters, timeline_notes=timeline)
 
 
 def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
     """⚠ **根因守卫**（第 24 批的核心）：**每个**角色的 POV 防火墙都必须送达。
 
-    ⚠ 走**真实链路**：分配器那一刀（1500 tokens）→ **真实的**正文 builder
-      （每块 2000 字）⇒ 断言的是**模型实际看得见**的文本。
+    ⚠ 走**真实链路**：分配器那一刀（``MAX_FACT_LOCK_TOKENS`` tokens）
+      → **真实的**正文 builder（每块上限）⇒ 断言的是**模型实际看得见**的文本。
 
     ⚠ 样本前提：原始事实锁必须**超过**正文上限 ⇒ 否则这条验的是空气。
+    ⚠ 第 41 批：两级上限都抬了 ⇒ 槽位上限**跟着当前常量**走（不写死 1500），
+      样本也**按当前上限重造**（补了时间线尾巴）⇒ 场景没被稀释。
     """
+    from application.engine.services.context_budget_allocator import (
+        ContextBudgetAllocator,
+    )
     from application.engine.services.context_budget_models import (
         BudgetAllocation,
         ContextSlot,
@@ -344,14 +359,15 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
     from application.engine.services.context_budget_policy import cap_slots_by_own_limit
     from application.engine.services.context_builder import ContextBuilder
     from application.engine.services.prose_context_settings import (
-        DEFAULT_MAX_CHARS_PER_SLOT,
+        get_prose_context_runtime_settings,
     )
 
     builder = _builder()
     text = builder._build_from_bible(_production_shaped_bible(), current_chapter=1)
 
-    assert len(text) > DEFAULT_MAX_CHARS_PER_SLOT, (
-        f"样本前提变了（原始事实锁只有 {len(text)} 字，没超过正文上限）"
+    prose_cap = get_prose_context_runtime_settings().max_chars_per_slot
+    assert len(text) > prose_cap, (
+        f"样本前提变了（原始事实锁只有 {len(text)} 字，没超过正文上限 {prose_cap}）"
     )
 
     slot = ContextSlot(
@@ -359,7 +375,7 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
         tier=PriorityTier.T0_CRITICAL,
         content=text,
         tokens=9999,
-        max_tokens=1500,
+        max_tokens=ContextBudgetAllocator.MAX_FACT_LOCK_TOKENS,
         priority=120,
         section_headers=FACT_LOCK_SECTION_HEADERS,
     )
