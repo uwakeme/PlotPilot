@@ -855,20 +855,24 @@ class ContextBudgetAllocator:
         )
 
         # ── T1-N: 故事线上下文（按汇流距离分级）── priority=72 ──
+        # ⚠ 第 46 批：槽位**恒存在**（内容可能为空）⇒ 「配置里选中的槽位名」
+        #   必须在分配器里**恒有** ⇒ 否则「配置写了、分配器没有」⇒ **静默为空**
+        #   （不报错、不留痕 ⇒ 看起来像「这块本来就没内容」）。
+        #   ⇒ 「槽位是否存在」与「有没有内容」**解耦**（与其它槽位一致）。
+        sl_content = ""
         if self.storyline_repo and self.confluence_repo:
             try:
                 sl_content = self._build_storyline_slot(novel_id, chapter_number)
-                if sl_content:
-                    slots["storyline_context"] = ContextSlot(
-                        name="故事线上下文(STORYLINE_CONTEXT)",
-                        tier=PriorityTier.T1_COMPRESSIBLE,
-                        content=sl_content,
-                        tokens=self.estimate_tokens(sl_content),
-                        max_tokens=1200,
-                        priority=72,
-                    )
             except Exception as _sl_err:
                 logger.warning(f"故事线上下文构建失败: {_sl_err}")
+        slots["storyline_context"] = ContextSlot(
+            name="故事线上下文(STORYLINE_CONTEXT)",
+            tier=PriorityTier.T1_COMPRESSIBLE,
+            content=sl_content,
+            tokens=self.estimate_tokens(sl_content),
+            max_tokens=1200,
+            priority=72,
+        )
 
         # ── T1: 世界核心规则（核心法则维度）── priority=71 ──
         # 单独抽出最高约束维度，确保预算压缩时仍清晰可见；
