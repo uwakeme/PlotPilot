@@ -178,12 +178,16 @@ class ContextBudgetAllocator:
     
     # 各槽位的默认上限
     MAX_FORESHADOWING_TOKENS = 2000
-    MAX_CHARACTER_ANCHORS_TOKENS = 1500
+    #: 第 43 批：1500 → **4000**（生产实测：原始 3691 字 ⇒ 此前丢 1468 字，
+    #:   丢掉的正是角色的**信念 / 禁忌 / 创伤触发**）
+    MAX_CHARACTER_ANCHORS_TOKENS = 4000
     MAX_GRAPH_SUBNETWORK_TOKENS = 1500
     MAX_ACT_SUMMARIES_TOKENS = 1500
     MAX_RECENT_CHAPTERS_TOKENS = 8000   # 扩容：N-1 完整 + N-2 半量 + N-3~5 预览
     MAX_VECTOR_RECALL_TOKENS = 5000
-    MAX_NARRATIVE_CONTRACT_TOKENS = 1400  # 向导五维 + 文风公约 + Bible 规则条目
+    #: 第 43 批：1400 → **4000**（生产实测：原始 4379 字 ⇒ 此前丢 2399 字，
+    #:   丢掉的正是**世界观五维 / 物理规律 / 技术接口**）
+    MAX_NARRATIVE_CONTRACT_TOKENS = 4000  # 向导五维 + 文风公约 + Bible 规则条目
     #: 事实锁槽位的上限（第 36 批：1500 → 4000）。
     #:
     #: ⚠ 为什么抬：生产实测（``prodrealtest-001`` 第 5 章）事实锁 **74 条 / 4040 字**
@@ -541,8 +545,8 @@ class ContextBudgetAllocator:
         # ── T0-2b: 创作契约（向导五维 + 文风公约 + Bible 规则）—— priority=122 ──
         narrative_contract = self._build_narrative_contract_slot(novel_id)
         # ⚠ 第 26 批：**声明分节标题** ⇒ 截断时点名「丢了哪一维」。
-        #   （实测：块长 4379 字 vs 预算 2000 字 ⇒ 必然被切；
-        #   不点名 ⇒ 模型以为「这个世界没有禁忌/没有历史」⇒ 静默失效。）
+        #   （第 43 批：上限 1400 → 4000 tokens ⇒ 生产书这块 4379 字
+        #   **装得下** ⇒ 生产上不再被切 ⇒ 但点名机制仍保留（长书/将来仍会切））
         from application.world.services.narrative_contract_text import (
             WORLDBUILDING_DIMENSION_SECTION_HEADERS,
         )
