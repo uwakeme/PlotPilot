@@ -308,6 +308,10 @@ class AutoNovelGenerationWorkflow:
         # V6 运行时上下文缓存（供 _build_prompt 使用）
         self._current_novel_id: str = ""
         self._current_chapter_number: int = 0
+        # E-06（第 53 批）：AI 的节奏配额指令（source=ai 时非空）。
+        # 「本章怎么写」由 AI 说了算 ⇒ 爽文约束块**不再叠加**代码写死的
+        # 「前三章爽文五原则」（两个互相打架的指令 ⇒ 等于 AI 没决定）。
+        self._ai_quota_instruction: str = ""
         
         # 强制初始化 StateExtractor（如果未提供）
         if state_extractor is None:
@@ -388,6 +392,12 @@ class AutoNovelGenerationWorkflow:
         effective_quota = self._resolve_rhythm_quota(
             novel_id, chapter_number, rhythm_quota
         )
+        # ⚠ E-06（第 53 批）：AI 真的给出了「本章怎么写」⇒ 记下来。
+        #   爽文约束块里那份**代码写死的前三章爽文五原则**就不再叠加
+        #   （两个互相打架的指令 ⇒ 等于 AI 没决定）。
+        #   AI 不可用（默认：``rhythm_quota.enabled`` 关着）⇒ 留空
+        #   ⇒ 回落代码块，**行为逐字一致**。
+        self._ai_quota_instruction = self._record_ai_quota_instruction(effective_quota)
         plot_tension = self._get_plot_tension(
             novel_id, chapter_number, effective_quota
         )
@@ -1770,6 +1780,20 @@ class AutoNovelGenerationWorkflow:
         ),
     }
 
+    @staticmethod
+    def _record_ai_quota_instruction(quota: Any) -> str:
+        """记录 AI 的「本章怎么写」指令；**非 AI 来源 ⇒ 空串**。
+
+        ⚠ E-06（第 53 批）：只有 ``source == "ai"`` 的配额才算「AI 说了怎么写」；
+        代码表回落（``source == "rule"``）与未评估（``source == ""``）
+        ⇒ 空串 ⇒ 爽文约束块**仍用代码写死的前三章原则**（逐位一致）。
+        """
+        from application.engine.services.rhythm_quota import SOURCE_AI
+
+        if str(getattr(quota, "source", "")) != SOURCE_AI:
+            return ""
+        return str(getattr(quota, "instruction", "") or "").strip()
+
     def _build_shuangwen_directive(
         self,
         chapter_number: int,
@@ -1801,7 +1825,11 @@ class AutoNovelGenerationWorkflow:
         parts: list[str] = []
 
         # ── 1. 前三章强力指令（冷启动保护）──
-        if 1 <= chapter_number <= 3:
+        # ⚠ E-06（第 53 批）：AI 的节奏配额已经给出「本章怎么写」时
+        #   **不再叠加**代码写死的这份 ⇒ 两个打架的指令等于 AI 没决定。
+        #   AI 不可用（默认：开关关着）⇒ 仍用代码块 ⇒ 行为逐字一致。
+        ai_instruction = str(getattr(self, "_ai_quota_instruction", "") or "").strip()
+        if 1 <= chapter_number <= 3 and not ai_instruction:
             early_directive = self._EARLY_CHAPTER_SHUANGWEN.get(chapter_number, "")
             if early_directive:
                 parts.append(early_directive)
