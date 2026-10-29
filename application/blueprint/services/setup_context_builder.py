@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Mapping, Optional
 from application.core.services.novel_service import NovelService
 from application.engine.theme.fusion_profile import FusionProfile, get_fusion_profile
 from application.world.services.bible_service import BibleService
+from application.world.worldbuilding_contract import (
+    worldbuilding_dimension_keys,
+    worldbuilding_dimension_labels,
+)
 
 
 class SetupContextBuilder:
@@ -125,11 +129,10 @@ class SetupContextBuilder:
             ("plot.fusion_contract", "fusion_contract"),
             ("worldbuilding.style", "style_hint"),
             ("worldbuilding.content", "worldbuilding_content"),
-            ("worldbuilding.core_rules", "core_rules"),
-            ("worldbuilding.geography", "geography"),
-            ("worldbuilding.society", "society"),
-            ("worldbuilding.culture", "culture"),
-            ("worldbuilding.daily_life", "daily_life"),
+            # A-06（第 56 批）：维度键集从**契约**读（此前这里是手写副本之一）
+            #   ⇒ 契约加一个维度，这里自动跟着加（此前要手改 5 行）。
+        ) + tuple(
+            (f"worldbuilding.{dim}", dim) for dim in worldbuilding_dimension_keys()
         ):
             value = variable_repo.get_value(key, novel_context_key)
             if value is None:
@@ -169,13 +172,8 @@ class SetupContextBuilder:
 
     @staticmethod
     def _worldview_summary(worldbuilding: Mapping[str, Any]) -> List[str]:
-        labels = {
-            "core_rules": "核心法则",
-            "geography": "地理生态",
-            "society": "社会结构",
-            "culture": "历史文化",
-            "daily_life": "沉浸感细节",
-        }
+        # A-06（第 56 批）：标签表从**契约**读（此前这里是手写副本之一）。
+        labels = worldbuilding_dimension_labels()
         lines: List[str] = []
         for key, label in labels.items():
             value = worldbuilding.get(key)

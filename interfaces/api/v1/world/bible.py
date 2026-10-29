@@ -41,6 +41,9 @@ from application.world.bible_generation_state import (
 )
 from application.world.worldbuilding_schema import WORLDBUILDING_DIMENSION_DEFS
 from interfaces.api.v1.world.bible_runtime_settings import get_bible_runtime_settings
+from application.world.worldbuilding_contract import (
+    worldbuilding_dimension_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -709,13 +712,8 @@ async def _sse_bible_generator(
                 raise RuntimeError(f"文风公约生成失败，已阻塞后续 Bible 流程: {e}") from e
 
             # 2. 单次 LLM 流式生成完整五维世界观（维度联动，增量解析各维）
-            dim_labels = {
-                "core_rules": "核心法则",
-                "geography": "地理生态",
-                "society": "社会结构",
-                "culture": "历史文化",
-                "daily_life": "沉浸感细节",
-            }
+            # A-06（第 56 批）：标签表从**契约**读（此前这里是手写副本之一）。
+            dim_labels = worldbuilding_dimension_labels()
             accumulated_wb: dict = {}
             saved_dim_snapshots: dict[str, dict] = {}
             announced_fields: set[tuple[str, str]] = set()

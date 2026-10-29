@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 from typing import Any, Mapping
+from application.world.worldbuilding_contract import (
+    worldbuilding_dimension_labels,
+)
 
 
 def render_variable_value(value: Any, *, render_mode: str = "raw", projection_key: str = "") -> Any:
@@ -164,13 +167,8 @@ def _locations_brief(value: Any) -> str:
 def _worldbuilding_context(value: Any) -> str:
     if not isinstance(value, Mapping):
         return _to_prompt_text(value)
-    labels = {
-        "core_rules": "核心法则",
-        "geography": "地理生态",
-        "society": "社会结构",
-        "culture": "历史文化",
-        "daily_life": "沉浸感细节",
-    }
+    # A-06（第 56 批）：标签表从**契约**读（此前这里是手写副本之一）。
+    labels = worldbuilding_dimension_labels()
     lines = []
     for key, label in labels.items():
         raw = value.get(key)

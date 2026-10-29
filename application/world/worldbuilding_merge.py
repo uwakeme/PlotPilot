@@ -40,12 +40,11 @@ def worldbuilding_entity_to_slices(wb: Any) -> Dict[str, Dict[str, str]]:
     """从世界观 ORM 实体得到五维 dict（仅为表内可表达的键）。"""
     if wb is None:
         return empty_worldbuilding_slices()
+    # A-06（第 56 批）：维度键集从**契约**读（此前这里是手写副本之一）
+    #   ⚠ 用 ``getattr(..., None)``：契约加了维度而实体还没有 ⇒ 不炸。
     raw = {
-        "core_rules": dict(wb.core_rules),
-        "geography": dict(wb.geography),
-        "society": dict(wb.society),
-        "culture": dict(wb.culture),
-        "daily_life": dict(wb.daily_life),
+        dim: dict(getattr(wb, dim, None) or {})
+        for dim in WORLD_BUILDING_DIMENSION_KEYS
     }
     return {
         dim: {

@@ -53,6 +53,20 @@ def worldbuilding_dimension_label(dim_key: str) -> str:
     return str(dim.get("label") or dim_key).strip() or dim_key
 
 
+def worldbuilding_dimension_labels() -> Dict[str, str]:
+    """全部维度的中文 label 映射（顺序 = 契约里的顺序）。
+
+    ⚠ A-06（第 56 批）：此前这张表在**两处**手写
+    （``variable_projection`` / ``setup_context_builder``）⇒ 契约一改，副本不会跟着改
+    （本仓最常见的「同一逻辑写两份」）⇒ 统一走这里。
+    """
+    contract = get_worldbuilding_contract()
+    return {
+        dim_key: worldbuilding_dimension_label(dim_key)
+        for dim_key in contract.dimensions.keys()
+    }
+
+
 def worldbuilding_field_label(field_key: str) -> str:
     """字段的短标签（取不到就回退到键名）。"""
     contract = get_worldbuilding_contract()
