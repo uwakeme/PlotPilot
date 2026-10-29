@@ -204,6 +204,9 @@ class ContextBudgetAllocator:
     # V8 优化：增加章末保留量，提升章节间连贯性
     PREV_CHAPTER_BRIDGE_HEAD_CHARS = 300   # 章首略览
     PREV_CHAPTER_BRIDGE_TAIL_CHARS = 2000  # 章末完整保留（原 1200 → 2000）
+    #: N-1 章「给全文」的上限（第 47 批）——**独立于**上面的两个参数
+    #: ⇒ 「给全文」与「章末保留多少」不再互相牵制（此前是隐式耦合的）。
+    PREV_CHAPTER_FULL_TEXT_MAX_CHARS = 3000
     OLDER_CHAPTER_HEAD_PREVIEW_CHARS = 500
 
     def __init__(
@@ -1905,11 +1908,12 @@ class ContextBudgetAllocator:
         return ""
 
     def _excerpt_immediate_previous_chapter(self, content: str) -> str:
-        """紧邻上一章正文：头短 + 章末长段，标明供本章开头承接。"""
+        """紧邻上一章正文：短章给**全文**；长章给章首略览 + 章末长段。"""
         return excerpt_immediate_previous_chapter(
             content,
             head_chars=self.PREV_CHAPTER_BRIDGE_HEAD_CHARS,
             tail_chars=self.PREV_CHAPTER_BRIDGE_TAIL_CHARS,
+            full_text_max_chars=self.PREV_CHAPTER_FULL_TEXT_MAX_CHARS,
         )
 
     def _get_recent_chapters(
@@ -1942,6 +1946,7 @@ class ContextBudgetAllocator:
                 prev_head_chars=self.PREV_CHAPTER_BRIDGE_HEAD_CHARS,
                 prev_tail_chars=self.PREV_CHAPTER_BRIDGE_TAIL_CHARS,
                 older_head_chars=self.OLDER_CHAPTER_HEAD_PREVIEW_CHARS,
+                prev_full_text_max_chars=self.PREV_CHAPTER_FULL_TEXT_MAX_CHARS,
             )
 
         except Exception as e:

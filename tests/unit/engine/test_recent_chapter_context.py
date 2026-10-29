@@ -11,20 +11,25 @@ def _chapter(number, title, content):
 
 
 def test_previous_chapter_excerpt_uses_head_and_tail_for_long_content():
+    # ⚠ 第 47 批：显式传 ``full_text_max_chars=0`` ⇒ 强制走「章首略览 + 章末节选」那一档
+    #   （「短章给全文」是**另一个**档位，由 tests/.../test_recent_chapter_full_text.py 钉）
     excerpt = excerpt_immediate_previous_chapter(
         "abcdefghij",
         head_chars=3,
         tail_chars=4,
+        full_text_max_chars=0,
     )
 
     assert excerpt == "【章首略览】\nabc……\n【章末节选，供本章开头承接】\nghij"
 
 
 def test_previous_chapter_excerpt_keeps_short_content_as_tail():
+    # ⚠ 同上：显式关掉「给全文」那一档，测「短内容**整段保留**」这个意图
     excerpt = excerpt_immediate_previous_chapter(
         "abc",
         head_chars=3,
         tail_chars=4,
+        full_text_max_chars=0,
     )
 
     assert excerpt == "【章末节选，供本章开头承接】\nabc"
@@ -41,6 +46,7 @@ def test_recent_chapters_context_applies_n1_n2_and_older_policies():
         prev_head_chars=3,
         prev_tail_chars=4,
         older_head_chars=5,
+        prev_full_text_max_chars=0,
     )
 
     assert "第 7 章：更早" in context
