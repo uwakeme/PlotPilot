@@ -1,0 +1,88 @@
+# F-12：「AI 味」分类学的**单一事实源**。
+#
+# 背景（读码核实）
+# ----------------
+# 改造前，**同一套审美标准**有两份：
+#   ① `application/audit/services/cliche_scanner.py` 的 51 条正则，
+#      每条带一个**中文分类**（微表情 / 声线 / 比喻 / 生理 / 句式 / 俗套 / 情绪 / 严禁词）
+#      ＋ 英文词检查的「语言混杂」；
+#   ② `infrastructure/ai/prompt_packages/nodes/anti-ai-chapter-audit/system.md`
+#      的 **11 大类别**（A–K），且它的输出 JSON 契约里 `category` 写的就是
+#      `"A/B/C/D/E/F/G/H/I/J/K"`。
+#
+# ⇒ 两份**互不相干**：机检报「微表情」，模型报「A」⇒ 审阅时**没法把机检结果
+# 映射到提示词的评分口径** ⇒ 这就是登记表 F-12 说的「分类学双份、可互相矛盾」。
+#
+# 现在
+# ----
+# 本文件是**类目词表的唯一来源**：类 id（A–K）＋ 中文名 ＋ 扫描器分类到类 id 的映射。
+#   · 扫描器的每条命中会带上 `taxonomy_class`（A–K）⇒ 与模型输出**同一套口径**；
+#   · 提示词里的类目标题必须与本文件**逐字一致**（守卫双向盯着）；
+#   · 只在代码侧出现的分类（机检的泛用桶 / 专用检查）单列在 `code_only_categories`
+#     ⇒ 它们**明确**不对应任何提示词类目，而不是「悄悄漏掉」。
+#
+# ⚠ 模式（那 51 条正则）**仍在代码里** —— 正则是「怎么判」，分类学是「判出来算什么」；
+#   把正则搬进数据文件是另一件事（会动 51 条行为），不在本条范围内。
+#
+# ⚠ 改这个文件**不需要** bump 提示词 bundle（提示词正文没变）；
+#   但守卫会要求提示词里的类目标题与这里**逐字一致** ⇒ 改标签就要同步改提示词。
+
+classes:
+  - id: A
+    label: 微表情滥用
+    code_checkable: true
+    scanner_categories: [微表情]
+  - id: B
+    label: 声线标签
+    code_checkable: true
+    scanner_categories: [声线]
+  - id: C
+    label: 比喻泛滥
+    code_checkable: true
+    scanner_categories: [比喻]
+  - id: D
+    label: 生理性描述
+    code_checkable: true
+    scanner_categories: [生理]
+  - id: E
+    label: 句式套路
+    code_checkable: true
+    scanner_categories: [句式]
+  # ⚠ 以下 6 类**没有**对应的正则模式 —— 它们判的是「语义/事实」，
+  #   单条正则表达不了 ⇒ 只能由模型判（提示词里有）。
+  - id: F
+    label: 叙事过度
+    code_checkable: false
+    scanner_categories: []
+  - id: G
+    label: 环境模板
+    code_checkable: false
+    scanner_categories: []
+  - id: H
+    label: 节奏断裂
+    code_checkable: false
+    scanner_categories: []
+  - id: I
+    label: 复述冗余
+    code_checkable: false
+    scanner_categories: []
+  - id: J
+    label: 生造词
+    code_checkable: false
+    scanner_categories: []
+  - id: K
+    label: 越界角色
+    code_checkable: false
+    scanner_categories: []
+
+# 只在**代码侧**出现的分类：机检能判、但提示词里没有对应类目。
+# ⚠ 显式登记 ⇒ 不是「悄悄漏掉」；改这些分类也要在这里登记。
+code_only_categories:
+  - name: 俗套
+    note: 泛用桶：不属于 A–K 任一类的通用 AI 味命中（机检侧兜底类）
+  - name: 情绪
+    note: 直接情绪标签（心中波澜 / 五味杂陈）—— 提示词目前没有对应类目
+  - name: 严禁词
+    note: 明确禁用的词 / 短语
+  - name: 语言混杂
+    note: N-1 专用检查：中文正文里夹带的外文词（跨全文语义，正则表表达不了）

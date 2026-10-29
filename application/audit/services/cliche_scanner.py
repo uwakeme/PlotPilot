@@ -16,6 +16,10 @@ import re
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 
+# ⚠ F-12：分类学的类 id（A–K）来自**单一事实源**（config/anti_ai_taxonomy.yaml）
+#   ⇒ 机检与提示词（模型输出）用**同一套口径**，两侧输出才可比。
+from application.audit.services.anti_ai_taxonomy import class_id_for_scanner_category
+
 
 # ── N-1：中文正文夹带英文词（可机检） ──────────────────────────────
 #
@@ -55,8 +59,15 @@ class ClicheHit:
     start: int         # 起始位置
     end: int           # 结束位置
     severity: str = "warning"     # "critical" | "warning" | "info"
-    category: str = ""            # 分类标签
+    category: str = ""            # 分类标签（扫描器侧的中文分类，**保持不变**）
     replacement_hint: str = ""    # 替换建议
+    #: ⚠ F-12：分类学的**类 id**（A–K），与提示词（模型输出）的口径一致。
+    #:
+    #: ⚠ 之前机检报中文分类（微表情）、模型报类 id（A）⇒ **两侧输出不可比**
+    #:   ⇒ 审阅时没法把机检结果映射到提示词的评分口径。
+    #: ⚠ 只在代码侧出现的分类（俗套 / 情绪 / 严禁词 / 语言混杂）**没有**类 id
+    #:   ⇒ 这里留空串（**不猜**），它们在词表里显式登记为 code_only。
+    taxonomy_class: str = ""
 
 
 # ─── 增强版 AI 生成文本俗套检测模式 ───
@@ -244,6 +255,8 @@ class ClicheScanner:
                     severity=severity,
                     category=category,
                     replacement_hint=hint,
+                    # ⚠ F-12：带上类 id（A–K），与提示词同一套口径。
+                    taxonomy_class=class_id_for_scanner_category(category),
                 )
                 hits.append(hit)
 
