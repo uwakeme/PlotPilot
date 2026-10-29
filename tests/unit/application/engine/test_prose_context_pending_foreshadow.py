@@ -1,24 +1,23 @@
-"""第 38 批：把「还有哪些伏笔挂着」送进**正文提示词**（伏笔回收链的前半段）。
+"""正文提示词的**硬事实块清单**（第 38 批建立、第 39 批扩成清单）。
 
-⚠ 病灶（生产实测）
-------------------
-伏笔回收是**两段**：
+⚠ 为什么要有这份清单
+--------------------
+「送哪几块进正文提示词」是这个系统的**语义决策**，不是随手加的：
+每加一块 ⇒ 模型多看见一份既成事实 ⇒ 但**也可能**变成「剧情指令」而与
+「以七段结构为唯一剧情骨架」打架。
 
-* **前半段** = 模型**看见**待回收清单（正文提示词里有没有这份清单）
-* **后半段** = 章后把回收**落库**（第 37 批修的那一段）
+⇒ ⇒ ⇒ 这份清单把两类块**分开钉住**：
 
-⇒ 第 37 批修的是后半段；前半段此前**整段缺失**：
-生产实测 **3 个真实正文 invocation**（prompt 12.2k~12.9k 字符）里
-「待回收伏笔」**一次都没出现** ⇒ 模型不知道要回收什么 ⇒ 回收无从发生。
-
-⇒ 而分配器里**本来就有**这个槽位（``pending_foreshadowings``，
-T1 / 1000 token / priority 70），且「七段剧本」阶段已经在用**同一份**文本
-（``build_foreshadow_context``）⇒ 现在两个阶段看到**同一份**清单。
+* **必须送**（既成事实：不得违反 / 不得重复 / 不得推翻）
+  = ``fact_lock`` / ``character_anchors`` / ``narrative_contract``
+  / ``pending_foreshadowings``（第 38 批）/ ``completed_beats`` + ``revealed_clues``（第 39 批）
+* **有意不送**（剧情指令：会与七段结构打架）
+  = ``debt_due``（它的构造器写明「放入 **[MUST_RESOLVE]** 块，**强迫大模型在本章填坑**」）
 
 ⚠ 守卫纪律：
-* 配置里写的槽位名必须**是分配器真有的**（⇒ 防「配置写了、分配器没有 ⇒ 静默空转」）
-  ⇒ 槽位名**从分配器真跑一遍拿**（不扫源码、不写死列表）
-* 端到端：走**真实**的 ``ContextBuilder._build_hard_facts``（不重写它的形状）
+* 配置里写的槽位名**必须是分配器真有的** ⇒ 槽位名**从分配器真跑一遍拿**
+  （不写死、不扫源码）⇒ 防「配置写了、分配器没有 ⇒ 那一块静默为空」
+* 端到端：走**真实** ``ContextBuilder._build_hard_facts``（不重写它的形状）
 """
 from __future__ import annotations
 
@@ -27,7 +26,21 @@ from application.engine.services.prose_context_settings import (
     get_prose_context_runtime_settings,
 )
 
-PENDING_SLOT = "pending_foreshadowings"
+#: **必须**送进正文提示词的硬事实块（既成事实）
+REQUIRED_SLOTS = (
+    "fact_lock",
+    "character_anchors",
+    "narrative_contract",
+    "pending_foreshadowings",
+    "completed_beats",
+    "revealed_clues",
+)
+
+#: **有意不送**的块（剧情指令 ⇒ 会与「七段结构是唯一剧情骨架」打架）
+#: ⚠ 送进去之前要先改这块的语义（⇒ 变成既成事实），不能顺手加。
+DELIBERATELY_EXCLUDED = {
+    "debt_due": "叙事债务到期提醒是 **[MUST_RESOLVE]**（强迫本章填坑）⇒ 剧情指令，不是既成事实",
+}
 
 
 class _Slot:
@@ -41,13 +54,19 @@ class _Allocation:
         self.slots = slots
 
 
-def test_the_prose_context_must_carry_the_pending_foreshadows():
-    """⚠ 正文提示词的硬事实块**必须**包含「待回收伏笔」（前半段）。"""
-    settings = get_prose_context_runtime_settings()
+def _real_allocator_slots() -> set:
+    from application.engine.services.context_budget_allocator import ContextBudgetAllocator
 
-    assert PENDING_SLOT in settings.slots, (
-        f"prose_context.slots 里没有 {PENDING_SLOT} ⇒ 模型看不见还挂着哪些线"
-    )
+    allocator = ContextBudgetAllocator()
+    return set(allocator._collect_all_slots("novel-1", 1, "章纲").keys())
+
+
+def test_every_required_hard_fact_block_is_sent_to_the_prose_prompt():
+    """⚠ 清单里的**每一块**都必须在 ``prose_context.slots`` 里。"""
+    slots = set(get_prose_context_runtime_settings().slots)
+
+    missing = [s for s in REQUIRED_SLOTS if s not in slots]
+    assert not missing, f"这些硬事实块没进正文提示词：{missing}"
 
 
 def test_every_configured_slot_must_exist_in_the_allocator():
@@ -56,44 +75,50 @@ def test_every_configured_slot_must_exist_in_the_allocator():
     ⚠ 否则那一块**静默为空**（builder 拿不到 slot 就跳过）⇒ 配置看着加了、其实没加。
     ⚠ 槽位名从**分配器真跑一遍**拿 ⇒ 不写死、也不扫源码。
     """
-    from application.engine.services.context_budget_allocator import ContextBudgetAllocator
-
-    allocator = ContextBudgetAllocator()
-    real_slots = set(
-        allocator._collect_all_slots("novel-1", 1, "章纲").keys()
-    )
-
+    real_slots = _real_allocator_slots()
     configured = set(get_prose_context_runtime_settings().slots)
 
     missing = configured - real_slots
     assert not missing, f"prose_context.slots 里这些槽位**分配器没有**（会静默为空）：{missing}"
-    assert PENDING_SLOT in real_slots, "分配器里没有待回收伏笔槽位了（槽位被改名/删除？）"
+    for required in REQUIRED_SLOTS:
+        assert required in real_slots, f"分配器里没有 {required} 槽位了（被改名/删除？）"
 
 
-def test_the_hard_facts_block_really_carries_the_pending_foreshadows():
-    """⚠ 端到端：真实 builder 的硬事实块里**真的有**那份清单。"""
-    settings = get_prose_context_runtime_settings()
-    pending_text = "待回收伏笔：\n   1. 封蜡离案即融，销票只剩一夜"
+def test_the_deliberately_excluded_blocks_stay_out():
+    """⚠ 有意不送的块**不许**被顺手加进来（那是剧情指令，不是既成事实）。"""
+    slots = set(get_prose_context_runtime_settings().slots)
+
+    for name, why in DELIBERATELY_EXCLUDED.items():
+        assert name not in slots, f"{name} 是有意不送的：{why}"
+
+
+def test_the_hard_facts_block_really_carries_the_three_memory_locks():
+    """⚠ 端到端：真实 builder 的硬事实块里**真的有**那三份记忆锁。"""
+    pending_text = "【待回收伏笔（爽文GC精选）】\n- Ch5 重要 即将到期: 封蜡离案即融"
+    beats_text = "【已完成节拍（以下事件已经发生过了，禁止在本章重复写一遍）】\n   [第5章] 沈砚青潜入地窖"
+    clues_text = "【截至目前已知的线索（读者和主角已经知道的信息）】\n   [真相] [第5章] 销票口诀后半句真义"
 
     allocation = _Allocation(
         {
             "fact_lock": _Slot("绝对事实边界(FACT_LOCK)", "角色白名单：沈砚青"),
-            PENDING_SLOT: _Slot("待回收伏笔", pending_text),
+            "pending_foreshadowings": _Slot("待回收伏笔", pending_text),
+            "completed_beats": _Slot("已完成节拍", beats_text),
+            "revealed_clues": _Slot("已揭露线索(REVEALED_CLUES)", clues_text),
         }
     )
 
     hard_facts = ContextBuilder._build_hard_facts(allocation)
 
-    assert PENDING_SLOT in settings.slots
-    assert "待回收伏笔" in hard_facts, "硬事实块里没有待回收伏笔"
-    assert "封蜡离案即融" in hard_facts, "硬事实块里没有待回收伏笔的内容"
+    assert "封蜡离案即融" in hard_facts, "硬事实块里没有待回收伏笔"
+    assert "沈砚青潜入地窖" in hard_facts, "硬事实块里没有已完成节拍"
+    assert "销票口诀后半句真义" in hard_facts, "硬事实块里没有已揭露线索"
 
 
 def test_the_pending_slot_does_not_squeeze_out_the_fact_lock():
-    """⚠ 加了一块**不许**把原有的硬事实挤掉（每块 5000 字 ⇒ 装得下）。"""
+    """⚠ 加了块**不许**把原有的硬事实挤掉（每块 5000 字 ⇒ 装得下）。"""
     settings = get_prose_context_runtime_settings()
 
     assert settings.max_chars_per_slot >= 5000, (
         "每块上限被调小了 ⇒ 事实锁会被挤（生产书的事实锁要 4040 字）"
     )
-    assert len(settings.slots) >= 4, "硬事实块少于 4 块 ⇒ 有一块被挤掉了"
+    assert len(settings.slots) >= len(REQUIRED_SLOTS), "硬事实块少于清单 ⇒ 有一块被挤掉了"
