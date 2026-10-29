@@ -32,6 +32,11 @@ class GeminiProvider(BaseProvider):
             trust_env=False,
         )
 
+    def _resolve_timeout(self, config: GenerationConfig) -> float | None:
+        """本次调用的超时上限（秒）；None ⇒ 用 httpx 客户端默认（逐字不变）。"""
+        value = getattr(config, "timeout_seconds", None)
+        return float(value) if value is not None else None
+
     async def generate(self, prompt: Prompt, config: GenerationConfig) -> GenerationResult:
         model_id = require_resolved_model_id(
             config.model,
@@ -47,6 +52,8 @@ class GeminiProvider(BaseProvider):
             params=query,
             headers=self._build_headers(stream=False),
             json=payload,
+            # ⚠ 第 50 批：单次调用的超时上限（None ⇒ 客户端默认，不改原行为）。
+            timeout=self._resolve_timeout(config) or httpx.USE_CLIENT_DEFAULT,
         )
         response.raise_for_status()
         data = response.json()
@@ -78,6 +85,8 @@ class GeminiProvider(BaseProvider):
             params=query,
             headers=self._build_headers(stream=True),
             json=payload,
+            # ⚠ 第 50 批：单次调用的超时上限（None ⇒ 客户端默认，不改原行为）。
+            timeout=self._resolve_timeout(config) or httpx.USE_CLIENT_DEFAULT,
         ) as response:
             response.raise_for_status()
             buffer = ''

@@ -211,12 +211,22 @@ def test_the_real_config_does_not_disable_this_feature():
     )
 
 
-def test_generation_profiles_have_no_decorative_timeout_keys():
-    """同族守卫：画像里**不许**再有 ``timeout_seconds`` / ``retries`` 键。
+def test_generation_profiles_have_no_decorative_retry_key():
+    """同族守卫：画像里**不许**出现 ``retries`` 键。
 
-    ⚠ 它们**全仓无人读**（``generation_config_from_profile`` 不读）
-    ⇒ 留着只会让人以为「调小它就能限超时」——上一份审查简报就信过同族的键。
-    ⚠ 注释里提到这两个词不算（那是在解释它们已被删）。
+    ⚠ 第 49 批（本守卫的初版）：画像里**不许**出现 ``timeout_seconds`` / ``retries``
+    —— 因为那时两个键**全仓无人读**（装饰品）。
+    ⚠ 第 50 批：**``timeout_seconds`` 现在真的被兑现了**
+    （进 ``GenerationConfig`` ⇒ 各 provider 每次调用都兑现）
+    ⇒ 那条「禁止这个键」的窄规则已过期 ⇒ 改成**通用版**：
+    「画像里出现的**每个键**都必须被兑现」——见
+    ``tests/unit/infrastructure/ai/test_generation_profile_timeout.py``。
+    ⇒ 但 ``retries`` **仍然没有被兑现**（重试预算分散在 provider 内部循环与结构化
+    JSON 管线两处，而 Anthropic 的 ``max_retries`` 是 SDK 客户端级 ⇒ 单次调用级
+    的旋钮在那条路径上兑现不了）⇒ 它**仍然不许出现**。
+
+    ⚠ 留着只会让人以为「调小它就能限重试」——上一份审查简报就信过同族的键。
+    ⚠ 注释里提到这个词不算（那是在解释它为什么被禁）。
     """
     lines = []
     for raw in PROFILES_YAML.read_text(encoding="utf-8").splitlines():

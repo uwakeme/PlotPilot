@@ -59,9 +59,15 @@ def generation_config_from_profile(
     """从画像构造 GenerationConfig，可用 overrides 覆盖。"""
     profile = get_generation_profile(name)
     profile.update({k: v for k, v in overrides.items() if v is not None})
+    # ⚠ 第 50 批：``timeout_seconds`` 现在**真的被读**了
+    #   （此前它在本文件里**无人读** ⇒ 画像里写它是装饰品）。
+    timeout_seconds = profile.get("timeout_seconds")
     return GenerationConfig(
         model=model or str(profile.get("model", "")),
         max_tokens=int(profile.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         temperature=float(profile.get("temperature", 1.0)),
         response_format=dict(response_format) if response_format is not None else profile.get("response_format"),
+        timeout_seconds=(
+            float(timeout_seconds) if timeout_seconds is not None else None
+        ),
     )

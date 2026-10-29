@@ -213,6 +213,17 @@ class OpenAIProvider(BaseProvider):
     # 🔥 记录已知不支持 json_schema 的 base_url（避免每次重试）
     _json_schema_unsupported_cache: set[str] = set()
 
+    def _resolve_timeout(self, config: GenerationConfig) -> float:
+        """本次调用的超时上限（秒）。
+
+        ⚠ 第 50 批：**单次调用**（画像里的 ``timeout_seconds``）优先，
+        否则用 provider 默认（``Settings.timeout_seconds``）。
+        ⚠ 默认值路径**逐字不变**（画像没写 ⇒ 还是 settings 那个）。
+        """
+        if getattr(config, "timeout_seconds", None) is not None:
+            return float(config.timeout_seconds)
+        return float(self.settings.timeout_seconds)
+
     def _build_chat_request_kwargs(
         self,
         messages: list[dict[str, str]],
@@ -234,7 +245,8 @@ class OpenAIProvider(BaseProvider):
             "extra_query": self.settings.extra_query or None,
             # ⚠ 第 32 批：画像的 extra_body + **单次调用**的覆盖（同名键以单次为准）
             "extra_body": merge_extra_body(self.settings, config) or None,
-            "timeout": self.settings.timeout_seconds,
+            # ⚠ 第 50 批：可由**单次调用**覆盖（此前只认 settings）。
+            "timeout": self._resolve_timeout(config),
         }
 
         # 🔥 response_format 自适应降级策略
@@ -277,6 +289,10 @@ class OpenAIProvider(BaseProvider):
             "input": [{"role": "user", "content": prompt.user}],
             "temperature": config.temperature,
             "max_output_tokens": config.max_tokens,
+            # ⚠ 第 50 批：Responses 这条路径此前**根本没有** timeout 键
+            #   （只靠 client 级默认）⇒ 单次调用的超时上限在这里**不会生效**。
+            #   ⚠ 这正是「新增能力要连带第二条请求体路径」的坑（第 32 批同款）。
+            "timeout": self._resolve_timeout(config),
         }
         # ⚠ 第 32 批：画像的 extra_body + **单次调用**的覆盖（同名键以单次为准）
         # ⚠ Responses API 没有 extra_body 字段 ⇒ 这些键**平铺**到请求体顶层

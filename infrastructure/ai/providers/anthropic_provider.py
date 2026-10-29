@@ -17,6 +17,10 @@ from .model_resolution import require_resolved_model_id
 
 logger = logging.getLogger(__name__)
 
+#: SDK 客户端级的默认超时（秒）—— 第 50 批提为常量，
+#: 避免「客户端构造」与「单次调用解析」两处各写一个 300。
+_SDK_CLIENT_TIMEOUT_SECONDS = 300.0
+
 
 def _json_response_instruction(response_format: dict[str, Any]) -> str:
     """Build prompt-side JSON constraints for Anthropic Messages API."""
@@ -104,7 +108,7 @@ class AnthropicProvider(BaseProvider):
 
         official_client_kw = {
             "api_key": settings.api_key,
-            "timeout": 300.0,  # 5 分钟超时
+            "timeout": _SDK_CLIENT_TIMEOUT_SECONDS,  # 5 分钟超时
             "max_retries": 2,
             "default_headers": {
                 # 产品标识：伪装官方 CLI 的 UA 会被端点按 CLI 客户端策略对待（限流/封禁口径不同）
@@ -188,6 +192,16 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Failed to generate text: {str(e)}") from e
 
+    def _resolve_timeout(self, config: GenerationConfig) -> float:
+        """本次调用的超时上限（秒）。
+
+        ⚠ 第 50 批：**单次调用**（画像里的 ``timeout_seconds``）优先，
+        否则用 SDK 客户端级的默认（300s，与改造前**逐字一致**）。
+        """
+        if getattr(config, "timeout_seconds", None) is not None:
+            return float(config.timeout_seconds)
+        return float(_SDK_CLIENT_TIMEOUT_SECONDS)
+
     def _build_create_kwargs(
         self,
         prompt: Prompt,
@@ -216,6 +230,8 @@ class AnthropicProvider(BaseProvider):
             "max_tokens": config.max_tokens,
             "system": prompt.system,
             "messages": [{"role": "user", "content": prompt.user}],
+            # ⚠ 第 50 批：单次调用的超时上限（SDK 顶层参数，**不是**请求体字段）。
+            "timeout": self._resolve_timeout(config),
             "extra_body": {
                 "temperature": config.temperature,
                 **merge_extra_body(self.settings, config),
@@ -291,6 +307,8 @@ class AnthropicProvider(BaseProvider):
             headers=headers,
             params=self.settings.extra_query or None,
             json=payload,
+            # ⚠ 第 50 批：单次调用的超时上限（httpx 每请求覆盖）。
+            timeout=self._resolve_timeout(config),
         ) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
@@ -316,15 +334,29 @@ class AnthropicProvider(BaseProvider):
                     if text_content:
                         yield text_content
 
+    def _build_sdk_stream_request(
+        self,
+        prompt: Prompt,
+        config: GenerationConfig,
+    ) -> tuple[str, dict[str, Any]]:
+        """SDK 流式调用的**顶层参数**（含 timeout）。
+
+        ⚠ 第 50 批：``timeout`` 必须是 **SDK 顶层参数** ——
+        放进 ``extra_body`` 会被当成请求体字段发给服务端（等于没设）。
+        """
+        model_id, payload = self._build_message_request(prompt, config, stream=False)
+        sdk_payload = self._build_sdk_stream_payload(payload)
+        sdk_payload["timeout"] = self._resolve_timeout(config)
+        return model_id, sdk_payload
+
     async def _stream_via_sdk(
         self,
         prompt: Prompt,
         config: GenerationConfig,
     ) -> AsyncIterator[str]:
         """通过官方 SDK 流式读取，网关断开 raw SSE 时作为回退。"""
-        model_id, payload = self._build_message_request(prompt, config, stream=False)
+        model_id, sdk_payload = self._build_sdk_stream_request(prompt, config)
         logger.info("[Stream] Falling back to SDK stream for model=%s", model_id)
-        sdk_payload = self._build_sdk_stream_payload(payload)
         async with self.async_client.messages.stream(**sdk_payload) as stream:
             async for text in stream.text_stream:
                 if text:

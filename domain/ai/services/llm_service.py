@@ -16,6 +16,7 @@ class GenerationConfig:
         temperature: float = 1.0,
         response_format: Optional[Dict] = None,
         extra_body: Optional[Dict] = None,
+        timeout_seconds: Optional[float] = None,
     ):
         self.model = model
         self.max_tokens = max_tokens
@@ -31,6 +32,20 @@ class GenerationConfig:
         #:
         #: ⚠ 默认 ``None`` ⇒ 行为与改造前**完全一致**（画像的 extra_body 原样生效）。
         self.extra_body = dict(extra_body) if extra_body else None
+        #: 本次调用的**超时上限**（秒）—— 第 50 批。
+        #:
+        #: ⚠ 为什么需要：``config/generation_profiles.yaml`` 里曾写过
+        #:   ``timeout_seconds: 30``，但**全仓无人读**（装饰品）⇒
+        #:   「这一类能力超时要短」当时**并没有生效**。
+        #:   真实上限在 provider 层（``Settings.timeout_seconds``，默认 300）⇒
+        #:   最坏 ~900s（3 次尝试 × 300s）。
+        #:
+        #: ⚠ 默认 ``None`` ⇒ **行为与改造前逐字一致**
+        #:   （provider 继续用它自己的默认：OpenAI 兼容走 ``Settings.timeout_seconds``，
+        #:   Anthropic 走 SDK 客户端级 300s，Gemini 走 httpx 客户端默认）。
+        self.timeout_seconds = (
+            float(timeout_seconds) if timeout_seconds is not None else None
+        )
         self.__post_init__()
 
     def __post_init__(self):
@@ -40,6 +55,8 @@ class GenerationConfig:
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be greater than 0")
         self.max_tokens = max(int(self.max_tokens), DEFAULT_MAX_OUTPUT_TOKENS)
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0 when set")
 
 
 class GenerationResult:

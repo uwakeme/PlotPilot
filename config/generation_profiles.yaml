@@ -5,8 +5,11 @@
 #   ⇒ ⇒ 留着会持续误导（**上一份审查简报就信过同族的 `timeout_seconds` / `retries`**）
 #   ⇒ ⇒ 已删；不设时取默认值 `DEFAULT_MAX_OUTPUT_TOKENS`（= 120000）⇒ **行为逐字不变**
 #   ⚠ 真实上限由 **provider** 决定（实测智谱 endpoint：合法范围 [1, 131072]）
+# ⚠ `provider_role` 已从本文件**移除**（第 50 批）：
+#   全仓**只有这一行**出现过它（`grep provider_role` 仅命中本行）
+#   ⇒ **无人读** ⇒ 装饰品（与同族的 `max_tokens` / `timeout_seconds` / `retries` 一类）
+#   ⇒ ⇒ 已删；provider 选型由**激活的生成画像**（`Settings.protocol`）决定，与本文件无关
 base_generation_profile:
-  provider_role: writing
   temperature: 0.3
 # ⚠ 复审 B2：本文件此前还有 ``timeout_seconds`` / ``retries`` 两个键，
 #   但 ``generation_config_from_profile`` **只读** model / max_tokens /
@@ -14,7 +17,14 @@ base_generation_profile:
 #   ⇒ 已删（留着只会让人以为「调小它就能限超时」—— 上一份审查简报就信了）。
 #   真实的超时/重试在 **provider 层**
 #   （``LLM_MAX_TOTAL_ATTEMPTS`` × ``Settings.timeout_seconds``）。
-#   要让超时可配 ⇒ 得改 ``domain`` 的 ``GenerationConfig`` + 各 provider ⇒ 留 P1。
+# ⚠ 第 50 批：**`timeout_seconds` 现在是真的被读了** ——
+#   `generation_config_from_profile` 会把它带进 `GenerationConfig.timeout_seconds`，
+#   各 provider 每次调用都兑现（OpenAI 兼容的 chat/responses 两条路径、Anthropic 的
+#   SDK/httpx 两条路径、Gemini 的 post/stream 两条路径）。
+#   ⇒ 想给某类能力一个短超时，现在**在画像里写 `timeout_seconds` 就行**。
+# ⚠ `retries` **仍然没有**做（留 P1）：重试预算分散在 provider 内部循环与结构化 JSON
+#   管线两处，而 Anthropic 的 `max_retries` 是 **SDK 客户端级**（构造时定死）
+#   ⇒ 单次调用级的旋钮在那条路径上**无法兑现** ⇒ 做了就是装饰品 ⇒ 不做。
 
 memory_extraction:
   extends: base_generation_profile
