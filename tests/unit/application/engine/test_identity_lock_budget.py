@@ -344,9 +344,14 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
     ⚠ 走**真实链路**：分配器那一刀（``MAX_FACT_LOCK_TOKENS`` tokens）
       → **真实的**正文 builder（每块上限）⇒ 断言的是**模型实际看得见**的文本。
 
-    ⚠ 样本前提：原始事实锁必须**超过**正文上限 ⇒ 否则这条验的是空气。
-    ⚠ 第 41 批：两级上限都抬了 ⇒ 槽位上限**跟着当前常量**走（不写死 1500），
-      样本也**按当前上限重造**（补了时间线尾巴）⇒ 场景没被稀释。
+    ⚠ **前提随修复而变**（这条守卫的演化史）：
+      * 第 24 批：原始事实锁 3876 字 > 上限 2000 字 ⇒ 刀口落在「身份锁死」中间
+        ⇒ 后 4 个角色的防火墙**没送到模型** ⇒ 那就是根因；
+      * 第 41 批：两级上限抬到 10000 tokens / 12000 字 ⇒ 生产形状不再超限；
+      * 第 42 批：时间线按预算收口 ⇒ 生产形状的事实锁**整条送得下**。
+      ⇒ ⇒ 现在断言的是**修复后的状态**：**压根不被切** ⇒ 8/8 个防火墙全在。
+      ⇒ ⚠ 「被切时不许切半防火墙」这个机制由本文件上面的
+        ``test_many_characters_produce_no_half_constraints`` 守着（用人为样本）。
     """
     from application.engine.services.context_budget_allocator import (
         ContextBudgetAllocator,
@@ -366,8 +371,9 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
     text = builder._build_from_bible(_production_shaped_bible(), current_chapter=1)
 
     prose_cap = get_prose_context_runtime_settings().max_chars_per_slot
-    assert len(text) > prose_cap, (
-        f"样本前提变了（原始事实锁只有 {len(text)} 字，没超过正文上限 {prose_cap}）"
+    assert len(text) <= prose_cap, (
+        f"样本前提变了（原始事实锁 {len(text)} 字，已超过正文上限 {prose_cap}）"
+        "⇒ 这条该改成「被切时也不许丢防火墙」"
     )
 
     slot = ContextSlot(
@@ -382,6 +388,9 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
     cap_slots_by_own_limit({"fact_lock": slot}, chars_per_token_zh=1.5)
     prose = ContextBuilder._build_hard_facts(BudgetAllocation(slots={"fact_lock": slot}))
 
+    # ⚠ 生产形状现在**整条送达** ⇒ 不该出现任何截断留痕
+    assert "已按上限截断" not in prose, "生产形状的事实锁被截断了（根因复发）"
+
     for index in range(8):
         assert f"{POV_MARK}{index}" in prose, (
             f"角色{index} 的 POV 防火墙没送到模型 ⇒ 它可以自由发挥"
@@ -393,7 +402,11 @@ def test_every_identity_constraint_reaches_the_model_within_the_prose_budget():
             rf"（POV防火墙：{re.escape(POV_MARK)}{index}[^）]*）", prose
         ), f"角色{index} 的防火墙被切半了"
     # ⚠ 模型必须知道「本块被截断了」⇒ 否则它以为事实锁是完整的
-    assert TRUNCATION_NOTICE.strip() in prose, "模型看不到「本块被截断了」的留痕"
+    # ⚠ 第 42 批：生产形状**不再被截断** ⇒ 反过来断言「没有截断留痕」
+    #   （有留痕反而说明它被切了 ⇒ 与上面那条矛盾 ⇒ 是回归信号）
+    assert TRUNCATION_NOTICE.strip() not in prose, (
+        "生产形状的事实锁不该被截断 ⇒ 却出现了截断留痕"
+    )
 
 
 def test_a_header_without_content_is_not_left_in_the_block():

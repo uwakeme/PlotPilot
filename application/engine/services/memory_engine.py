@@ -222,6 +222,23 @@ IDENTITY_AGE_MAX_CHARS = 8
 #: ⚠ 限长 40 字/地点 ⇒ 生产书 11 个地点 ≈ 440 字 ⇒ 事实锁总量仍在预算内。
 LOCATION_DESCRIPTION_MAX_CHARS = 40
 
+#: 「核心事件时间线」的**字符预算**（第 42 批）。
+#:
+#: ⚠ 为什么按**字符**而不是按条数（与蓝图侧 ``format_bible_context`` 同一口径）：
+#:   条数只是兜底，字符预算才是硬约束 —— 一条 5 字的「陆深抉择补全」和一条
+#:   500 字的事件占的 prompt 完全不同。
+#: ⚠ 实测（长书 529 章那本）：时间线 **2074 条 / 36618 字** ⇒ 占事实锁 **94%**
+#:   ⇒ 而硬约束节合计仅 2273 字 ⇒ **预算全被流水账吃掉了**。
+TIMELINE_MAX_CHARS = 4000
+#: 时间线的**条数兜底**（防「几百条 5 字事件」把预算吃光）。
+TIMELINE_MAX_ENTRIES = 200
+#: 单条「事件」限长（生产实测中位 13 字、最长 39 字）。
+TIMELINE_EVENT_MAX_CHARS = 40
+#: 单条「时间点」限长（生产实测 100% 有值，如「同夜九十秒倒计时内」）。
+TIMELINE_TIME_POINT_MAX_CHARS = 20
+#: 单条「事件描述」限长（生产实测 100% 有值，中位约 40 字）。
+TIMELINE_DESC_MAX_CHARS = 60
+
 
 def _split_hidden_profile(hidden: str) -> tuple[str, str]:
     """把 ``hidden_profile`` 拆成「秘密主体」与「POV 防火墙」。
@@ -675,17 +692,79 @@ class FactLockBuilder:
         return lines
 
     def _build_timeline_lines(self, bible) -> list[str]:
-        """从 Bible 的 timeline_notes 构建时间线"""
-        lines = []
-        if hasattr(bible, 'timeline_notes') and bible.timeline_notes:
-            for note in bible.timeline_notes:
-                # TimelineNote 可能有 timestamp / event / description 等属性
-                time_str = getattr(note, 'timestamp', '')
-                event_str = getattr(note, 'event', '') or getattr(note, 'description', '')
-                if event_str:
-                    entry = f"[{time_str}] {event_str}" if time_str else event_str
-                    lines.append(entry)
-        return lines
+        """构建「核心事件时间线」行（**只送最近的** + **按预算收口** + **如实留痕**）。
+
+        ⚠ 第 42 批（生产实测，长书 529 章那本）发现三个叠在一起的缺陷：
+
+        1. **字段残缺**：此前每行只有 ``event``（中位 **13 字**，「陆深抉择补全」那种）
+           ⇒ 而 ``description``（真正有信息量的一行，生产书 **100% 有值**）
+           与 ``time_point``（故事内时间点，**100% 有值**）**从来没进过模型**；
+        2. **砍错位置**：时间线是事实锁的**最后一节** ⇒ 预算紧时**最先被砍**
+           ⇒ 而最近的事件在**列表尾部** ⇒ **最该保留的先被砍掉**（最坏的砍法）；
+        3. **砍了不说**：2074 条里只给模型看一部分，却**没有任何提示**说还有更多。
+
+        ⇒ 改法（与蓝图侧 ``format_bible_context`` **同一口径**）：
+          ① 送 ``event + time_point + description``（三个字段都限长）；
+          ② **只取最近的一段**（列表**尾部** = 故事顺序的末尾）⇒ 按**字符预算**收口；
+          ③ 丢了 N 条 ⇒ **如实说**（不装作那就是全部）。
+
+        ⚠ 「尾部 = 最近」这个前提的证据与边界（生产实测）：
+          * ``bible_timeline_notes.sort_order`` 实测**全为 0**（两本书都是）
+            ⇒ 读取的 ``ORDER BY sort_order, id`` 实际是**按 id 排**；
+          * 而 id **字典序单调递增** ⇒ 列表顺序 = 写入顺序；
+          * 内容内在次序也对得上（「封面进度条**第二**次逆向跳跃」在中段、
+            「**第三**次」在末尾）；
+          * ⚠ 但 ``created_at`` **不单调** ⇒ 这些条目是**批量回填**的，不是逐章追加
+            ⇒ ⇒ 「尾部 ≈ 最近」是**推断**，不是有章号字段可证的事实
+            ⇒ ⇒ 正因如此，留痕必须**如实**（模型得知道还有更早的没给它）。
+        """
+        notes = list(getattr(bible, "timeline_notes", None) or [])
+        candidates = []
+        for note in notes:
+            event = str(getattr(note, "event", "") or "").strip()
+            if not event:
+                continue
+            candidates.append((note, event))
+        if not candidates:
+            return []
+
+        picked: list[str] = []
+        used = 0
+        # ⚠ 从**尾部**（最近）往前取 ⇒ 但渲染时**恢复故事顺序**
+        for note, event in reversed(candidates):
+            if len(picked) >= TIMELINE_MAX_ENTRIES:
+                break
+            head = _truncate_with_mark(event, TIMELINE_EVENT_MAX_CHARS)
+            time_point = str(getattr(note, "time_point", "") or "").strip()
+            if time_point:
+                head = (
+                    f"{head}（"
+                    f"{_truncate_with_mark(time_point, TIMELINE_TIME_POINT_MAX_CHARS)}）"
+                )
+            desc = str(getattr(note, "description", "") or "").strip()
+            entry = (
+                f"{head}：{_truncate_with_mark(desc, TIMELINE_DESC_MAX_CHARS)}"
+                if desc
+                else head
+            )
+            cost = len(entry) + 1
+            # ⚠ 第一条**总是**收（宁可一条，也不要空节）
+            if picked and used + cost > TIMELINE_MAX_CHARS:
+                break
+            picked.append(entry)
+            used += cost
+
+        if not picked:
+            return []
+        picked.reverse()  # 恢复故事顺序（模型读的是历史，不该倒着读）
+        dropped = len(candidates) - len(picked)
+        if dropped > 0:
+            # ⚠ 与蓝图侧 ``_dropped_note`` **同一措辞口径**：砍了就要说
+            picked.append(
+                f"（另有 {dropped} 条更早的时间线事件未注入："
+                "受事实锁篇幅限制，非本作品没有）"
+            )
+        return picked
 
 
 # ============================================================

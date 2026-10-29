@@ -184,34 +184,42 @@ def _delivered_fact_lock(text: str) -> str:
 def test_the_long_book_keeps_its_hard_constraints_whole():
     """⚠ **本批的根因守卫**：长书里硬约束**一条都不许丢**。
 
-    ⇒ 事实锁原始 30000+ 字 ⇒ 分配器切到 15000 字 ⇒ builder 切到 12000 字
-    ⇒ 硬约束节（白名单 / 地点 / 身份锁）**全部在**（它们在最前面）
-    ⇒ 被切掉的只有**时间线尾巴**（低价值流水账）。
+    ⚠ 第 42 批之后（时间线按预算收口）：长书形状的事实锁 **≤ 每块上限**
+    ⇒ **不再触发任何截断** ⇒ 硬约束节（白名单 / 地点 / 身份锁）**全部在**
+    ⇒ 被砍掉的只有**时间线尾巴**（低价值流水账）—— 而现在它连被砍都不用了。
+
+    ⚠ 第 41 批（时间线还没修）时这条断言的是「被切了但硬约束仍全在」；
+    ⇒ 第 42 批把「超限」这个前提消掉了 ⇒ 断言随之改成「**压根不被切**」。
     """
     builder = _builder()
     text = builder._build_from_bible(_long_book_shaped_bible(), current_chapter=1)
-    assert len(text) > PROSE_SLOT_CHAR_CAP, "样本前提变了（没超过正文上限）"
+    assert len(text) <= PROSE_SLOT_CHAR_CAP, (
+        f"样本前提变了（{len(text)} 字又超过正文上限 {PROSE_SLOT_CHAR_CAP}）"
+        "⇒ 这条该改回「被切时硬约束仍全在」"
+    )
 
     prose = _delivered_fact_lock(text)
 
     assert "角色白名单（只可使用以下有名字的角色）：" in prose, "白名单被切掉了"
     assert "身份锁死：" in prose, "身份锁死被切掉了 ⇒ POV 防火墙会跟着丢"
     assert prose.count("POV防火墙") == 8, "POV 防火墙不是 8/8"
-    # ⇒ 被切掉的**只有**时间线，而且必须**被点名**（模型得知道）
-    assert "被截掉的小节" in prose, "时间线被切了却没点名"
-    assert "核心事件时间线" in prose.split("被截掉的小节", 1)[1][:200], "点名里没有时间线"
 
 
 def test_the_long_book_delivers_far_more_than_the_old_cap():
-    """⚠ 第 41 批的**收益**可量化：送达量从 5000 字 → 12000+ 字。"""
+    """⚠ 第 41 批的**收益**可量化：送达量比旧上限（5000 字）大得多。
+
+    ⚠ 第 42 批之后总长**变小**了（时间线按预算收口 ⇒ 事实锁 6641 字而不是
+    30000+ 字）⇒ 但那是**完整**的 6641 字，不是被砍剩的 5000 字。
+    ⇒ 所以这条钉的是「**比旧上限大**」，不是某个具体数字。
+    """
     builder = _builder()
     text = builder._build_from_bible(_long_book_shaped_bible(), current_chapter=1)
 
     prose = _delivered_fact_lock(text)
     fact_block = prose.split("===", 2)[-1]
 
-    assert len(fact_block) > 10000, (
-        f"送达量只有 {len(fact_block)} 字 ⇒ 抬上限没生效？"
+    assert len(fact_block) > 5000, (
+        f"送达量只有 {len(fact_block)} 字 ⇒ 不比旧的 5000 字上限多 ⇒ 抬上限白抬了"
     )
 
 
