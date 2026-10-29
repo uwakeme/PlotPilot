@@ -35,6 +35,31 @@ LOCATION_IMPORTANCE_VALUES = ("core", "important", "normal")
 #: 地点类型（与前端 LOCATION_TYPE_META 对齐）
 LOCATION_TYPE_VALUES = ("city", "region", "building", "faction", "realm")
 
+#: 地点类型的**中文标签**（与前端 ``LOCATION_TYPE_META`` 的 label 对齐）——第 40 批。
+#:
+#: ⚠ 为什么需要：事实锁的地点白名单要告诉模型「这是什么地方」
+#:   ⇒ 类型是其中**最便宜**的一层线索 ⇒ 而 ``location_type`` 存的是**英文枚举**
+#:   （生产书：``building`` / ``faction`` / ``realm`` / ``city`` / ``region``）
+#:   ⇒ 直接塞进**中文**提示词里是「英文 token 混在中文里」⇒ 模型读得到、但费 token。
+#:
+#: ⚠ 词表比 ``LOCATION_TYPE_VALUES`` **多两个**（``natural`` / ``other``）：
+#:   ``domain/bible/entities/location.py`` 的注释把这两个列为合法值，
+#:   且 ``bible_mapper`` 读库时**默认**填 ``"other"``
+#:   ⇒ 只认 5 个的话，**默认加载的地点**会丢掉类型。
+#:
+#: ⚠ 前端另有一份等价标签表（``frontend/src/domain/knowledge.ts``）——
+#:   跨层不可共享代码 ⇒ 这里与它**保持一致**，改一处要改两处
+#:   （日后若收进 ``shared/taxonomy/`` 可再合并）。
+LOCATION_TYPE_LABELS: dict[str, str] = {
+    "city": "城市",
+    "region": "区域",
+    "building": "建筑",
+    "faction": "势力",
+    "realm": "领域",
+    "natural": "自然",
+    "other": "其他",
+}
+
 
 def _pick(value: Any, allowed: tuple[str, ...]) -> str:
     """取值；不在合法词表里 ⇒ 空串（未评估）。**不猜、不回落**。"""
@@ -59,3 +84,17 @@ def normalize_location_type(value: Any) -> str:
     （秘境），而它其实是室内场景 —— 关键词猜的是**语义**，模型已经给过答案。
     """
     return _pick(value, LOCATION_TYPE_VALUES)
+
+
+def location_type_label(value: Any) -> str:
+    """地点类型的**中文标签**；空 ⇒ 空串；不认识 ⇒ **原样返回**。
+
+    ⚠ 与 :func:`normalize_location_type` 的差别（**故意的**）：
+      ``normalize`` 是「分类口径」—— 不在词表里就判**未评估**（不猜）；
+      本函数是**展示**—— 提示词里丢掉一个真实但未知的类型，比显示原始值更糟
+      ⇒ 所以这里**原样返回**，不回落成空串。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return LOCATION_TYPE_LABELS.get(text.lower(), text)

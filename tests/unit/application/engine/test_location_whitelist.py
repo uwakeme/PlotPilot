@@ -136,7 +136,9 @@ def test_the_whitelist_helpers_are_shared():
     bible = _Bible(_characters())
 
     assert location_names(bible) == LOCATION_NAMES
-    lines = location_whitelist_lines(location_names(bible))
+    # ⚠ 第 40 批：地点白名单的输入从「名字列表」改成 **locations 对象**
+    #   （为了带上类型 + 描述）⇒ 调用形状跟着变。
+    lines = location_whitelist_lines(bible.locations)
     assert lines[0] == FACT_LOCK_HEADER_LOCATION_WHITELIST
     assert all(name in lines[1] for name in LOCATION_NAMES)
     # 角色白名单同构（防止只给地点写、角色没有）

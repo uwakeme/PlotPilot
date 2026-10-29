@@ -27,7 +27,9 @@ from unittest.mock import Mock
 from application.world.services.bible_classification import (
     CHARACTER_IMPORTANCE_VALUES,
     LOCATION_IMPORTANCE_VALUES,
+    LOCATION_TYPE_LABELS,
     LOCATION_TYPE_VALUES,
+    location_type_label,
     normalize_character_importance,
     normalize_location_importance,
     normalize_location_type,
@@ -169,3 +171,57 @@ def test_prompt_packages_ask_the_model_for_the_classification():
     assert '"importance"' in chars, "bible-characters 没要求模型给 importance"
     assert '"location_type"' in locs, "bible-locations 没要求模型给 location_type"
     assert '"importance"' in locs, "bible-locations 没要求模型给 importance"
+
+
+# ======================================================================
+#  E. 第 40 批：地点类型的**中文标签**（给中文提示词用）
+#
+#  ⚠ 为什么需要：``location_type`` 存的是**英文枚举**
+#    （生产书：building / faction / realm / city / region）
+#    ⇒ 事实锁要告诉模型「这是什么地方」⇒ 类型是最便宜的一层线索
+#    ⇒ 但英文 token 混进**中文**提示词里费 token ⇒ 翻成中文标签。
+# ======================================================================
+
+
+def test_the_location_type_label_is_chinese():
+    """⚠ 期望值**写死字面量**（不许用被测模块导出的常量算期望值）。"""
+    assert location_type_label("city") == "城市"
+    assert location_type_label("region") == "区域"
+    assert location_type_label("building") == "建筑"
+    assert location_type_label("faction") == "势力"
+    assert location_type_label("realm") == "领域"
+    # ⚠ 英文枚举**不许**原样出现在中文提示词里
+    for raw in ("city", "region", "building", "faction", "realm"):
+        assert location_type_label(raw) != raw, raw
+
+
+def test_an_unknown_location_type_is_kept_as_is():
+    """⚠ **展示**与**分类**的差别（故意的）：
+
+    ``normalize_location_type`` 是分类口径 —— 不在词表里就判「未评估」；
+    ``location_type_label`` 是**展示** —— 提示词里丢掉一个真实但未知的类型，
+    比显示原始值更糟 ⇒ 原样返回，不回落成空串。
+    """
+    assert location_type_label("城堡") == "城堡"
+    assert location_type_label("some_new_type") == "some_new_type"
+
+
+def test_an_empty_location_type_label_is_empty():
+    assert location_type_label("") == ""
+    assert location_type_label(None) == ""
+    assert location_type_label("   ") == ""
+
+
+def test_every_canonical_location_type_has_a_label():
+    """⚠ 词表里的每一个类型都必须有中文标签（漏一个 ⇒ 提示词里出英文）。"""
+    for raw in LOCATION_TYPE_VALUES:
+        assert LOCATION_TYPE_LABELS.get(raw), raw
+
+
+def test_the_label_table_covers_the_defaults_used_by_the_loader():
+    """⚠ ``bible_mapper`` 读库时**默认**填 ``"other"`` ⇒ 它必须有标签。
+
+    ⚠ 只认 5 个词的话，**默认加载的地点**会丢掉类型（静默）。
+    """
+    assert LOCATION_TYPE_LABELS.get("other") == "其他"
+    assert LOCATION_TYPE_LABELS.get("natural") == "自然"

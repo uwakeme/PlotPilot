@@ -45,6 +45,7 @@ from application.engine.services.memory_engine_settings import (
     MemoryEngineRuntimeSettings,
     get_memory_engine_runtime_settings,
 )
+from application.world.services.bible_classification import location_type_label
 from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.memory_extraction import MEMORY_EXTRACTION_CONTRACT
 from infrastructure.ai.prompt_gateway import PromptGatewayError, get_prompt_gateway
@@ -195,6 +196,32 @@ IDENTITY_MENTAL_MAX_CHARS = 20
 #:   ⇒ 删掉会让「只有公开面」的角色整行消失）⇒ 只能限长。
 IDENTITY_PUBLIC_MAX_CHARS = 60
 
+#: 身份锁里「性别 / 年龄」的限长（字符）——第 40 批。
+#:
+#: ⚠ 为什么必须进（生产实测）：Bible 的 ``Character.gender`` / ``age`` **全部有值**
+#:   （生产书 8 个角色都有：沈砚青=女/25、郑铁珊=男/56…），
+#:   而事实锁此前**只给** ``description`` ⇒ 性别/年龄**没进模型**
+#:   ⇒ ⇒ 第 21 批生产实测抓到的「郑铁珊（基准=男）被正文写成女性」
+#:   **根因就在这里** ⇒ ⇒ 性别/年龄是**极硬**的事实（写错即人物失格）。
+#:
+#: ⚠ 为什么放在**身份锁**这一节（而不是「角色设定」节）：
+#:   「角色设定」节排在硬约束**之后** ⇒ 预算紧时**先被切**
+#:   ⇒ ⇒ 性别/年龄必须跟「已揭露的秘密 + POV 防火墙」放在一起才活得下来。
+#: ⚠ 限长很紧（各 8 字）⇒ 生产书全部 8 个角色加起来才 26 字。
+IDENTITY_GENDER_MAX_CHARS = 8
+IDENTITY_AGE_MAX_CHARS = 8
+
+#: 地点白名单里「类型 + 一句话描述」的限长（字符）——第 40 批。
+#:
+#: ⚠ 为什么必须加（生产实测）：``Location`` 有 ``description``（89~132 字/条，全是
+#:   **很硬的设定事实**：九缸地窖底下埋着九口老铜缸、回声戏院后台是压票的老印刷机、
+#:   济生当是贺九「只收不问」的当铺兼帮会账房…），
+#:   而地点白名单此前**只给名字** ⇒ ⇒ 模型**不知道这些地方是什么地方**
+#:   ⇒ ⇒ 场景写错（把地窖写成阁楼、把后台写成前厅）没有任何防线。
+#:
+#: ⚠ 限长 40 字/地点 ⇒ 生产书 11 个地点 ≈ 440 字 ⇒ 事实锁总量仍在预算内。
+LOCATION_DESCRIPTION_MAX_CHARS = 40
+
 
 def _split_hidden_profile(hidden: str) -> tuple[str, str]:
     """把 ``hidden_profile`` 拆成「秘密主体」与「POV 防火墙」。
@@ -267,15 +294,35 @@ def location_names(bible) -> List[str]:
     return [loc.name for loc in locations if getattr(loc, "name", "")]
 
 
-def location_whitelist_lines(names: List[str]) -> List[str]:
-    """地点白名单的**文本行**（生成侧与审计侧**同一份** ⇒ 不会漂）。"""
-    if not names:
+def location_whitelist_lines(locations: List[Any]) -> List[str]:
+    """地点白名单的**文本行**（生成侧与审计侧**同一份** ⇒ 不会漂）。
+
+    ⚠ 第 40 批：除了**名字**，还给「类型 + 一句话描述」
+      ⇒ 此前只给名字 ⇒ 模型**不知道这些地方是什么地方**
+      ⇒ 场景写错（把地窖写成阁楼、把后台写成前厅）没有任何防线
+      ⇒ 实测：生产书 11 个地点的 description 共 1203 字（全是硬设定），
+      限长 40 字/条 ⇒ ≈ 440 字。
+    """
+    locs = [loc for loc in (locations or []) if getattr(loc, "name", "")]
+    if not locs:
         return []
-    return [
+    lines = [
         FACT_LOCK_HEADER_LOCATION_WHITELIST,
-        f"   允许: {', '.join(names)}",
+        f"   允许: {', '.join(loc.name for loc in locs)}",
         "   禁止: 创造其他有名字的地点！无名场所可以用，但不许起名成新地点。",
     ]
+    # 逐个地点：类型 + 一句话描述（限长，砍了要留痕）
+    for loc in locs:
+        bits = []
+        loc_type = location_type_label(getattr(loc, "location_type", ""))
+        if loc_type:
+            bits.append(f"（{loc_type}）")
+        desc = (getattr(loc, "description", "") or "").strip()
+        if desc:
+            bits.append(_truncate_with_mark(desc, LOCATION_DESCRIPTION_MAX_CHARS))
+        if bits:
+            lines.append(f"   {loc.name}{''.join(bits)}")
+    return lines
 
 
 class FactLockBuilder:
@@ -341,7 +388,10 @@ class FactLockBuilder:
             facts.append("\n".join(wl_lines))
 
         # 地点白名单（第 31 批）：与生成侧**同一份** ⇒ 审计才判得了「自造地点」
-        loc_wl_lines = location_whitelist_lines(location_names(bible))
+        # ⚠ 第 40 批：同一份**输入**（Bible 的 locations）⇒ 两侧连「类型+描述」都同源
+        loc_wl_lines = location_whitelist_lines(
+            getattr(bible, "locations", None) or []
+        )
         if loc_wl_lines:
             facts.append("\n".join(loc_wl_lines))
 
@@ -379,9 +429,13 @@ class FactLockBuilder:
         # ── 1b. 地点白名单（与审计侧同一份：``location_whitelist_lines``）──
         # ⚠ 第 31 批：与「角色白名单」同构的**「只可使用」硬约束**
         #   ⇒ 模型不会自造有名字的地点 ⇒ 审计侧才判得了「未登记地点」。
-        loc_names = location_names(bible)
-        if loc_names:
-            lines.extend(location_whitelist_lines(loc_names))
+        # ⚠ 第 40 批：输入改成 Bible 的 **locations**（不是名字列表）
+        #   ⇒ 白名单里除了名字，还有「类型 + 一句话描述」
+        #   ⇒ 而两侧共用**同一个函数 + 同一份输入** ⇒ 不会漂。
+        locations = getattr(bible, "locations", None) or []
+        loc_wl_lines = location_whitelist_lines(locations)
+        if loc_wl_lines:
+            lines.extend(loc_wl_lines)
             lines.append("")
 
         # ── 2. 已死亡角色（从描述/关系中推断，或标记为 dead 的）──
@@ -575,6 +629,17 @@ class FactLockBuilder:
         for char in characters:
             name = char.name
             identity_parts = []
+
+            # 性别 / 年龄（第 40 批）：**极硬**的身份事实 ⇒ 放在最前（先被切就晚了）
+            facts = []
+            gender = (getattr(char, "gender", "") or "").strip()
+            if gender:
+                facts.append(_truncate_with_mark(gender, IDENTITY_GENDER_MAX_CHARS))
+            age = (getattr(char, "age", "") or "").strip()
+            if age:
+                facts.append(_truncate_with_mark(age, IDENTITY_AGE_MAX_CHARS))
+            if facts:
+                identity_parts.append(" / ".join(facts))
 
             # 公开面（**限长但保留**）：见上面的说明 ⇒ 不能删
             if char.public_profile:
