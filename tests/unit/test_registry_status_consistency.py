@@ -159,3 +159,50 @@ def test_todo_rows_must_not_claim_a_guard():
         if GUARD_RE.findall(notes):
             bad.append(cid)
     assert not bad, f"这些行标着 ○，但备注点名了守卫（状态列过期）：{bad}"
+
+
+# ── 第十节「圈选」表 ↔ 主表状态列（两张表互锁）────────────────────────
+
+
+def _checked_ids_in_selection_table() -> set[str]:
+    """第十节圈选表里标了 ``[x]`` 的条目编号。
+
+    ⚠ 那一段是围栏代码块，形态是
+    ``第 0 批（20 · 静默失效）I-03 [x] I-04 [x] …``（编号后可能带 ``*`` 脚注标记）。
+    """
+    text = REG.read_text(encoding="utf-8")
+    start = text.find("## 十、圈选")
+    assert start > 0, "找不到第十节「圈选」"
+    fence_start = text.find("```", start)
+    fence_end = text.find("```", fence_start + 3)
+    assert fence_start > 0 and fence_end > fence_start, "圈选表的围栏代码块没找到"
+    block = text[fence_start + 3 : fence_end]
+
+    ids: set[str] = set()
+    for m in re.finditer(r"\b([A-Z]-\d\d)\*?\s*\[x\]", block):
+        ids.add(m.group(1))
+    return ids
+
+
+def test_checked_items_in_the_selection_table_match_the_main_table_status():
+    """⚠ **两张表必须互锁**（第 55 批新增）。
+
+    第十节圈选表标 ``[x]`` 的条目，主表状态**必须**是 ``✓``（或 ``◐`` 且写明还剩什么）。
+
+    ⚠ 为什么需要：第 55 批查出 **23 行**在圈选表里早已标 ``[x]``、主表却仍是 ``○``
+    （状态格从未更新过）⇒ 登记表自述的老毛病「**选活时会选错**」又长回来了
+    ⇒ 光靠「状态 ↔ 备注」互锁抓不到它（那 23 行**没有备注**）
+    ⇒ 必须把**两张表**也互锁起来。
+    """
+    statuses = {cid: status for cid, status, _ in _main_rows()}
+    stale = []
+    for cid in sorted(_checked_ids_in_selection_table()):
+        status = statuses.get(cid)
+        if status is None:
+            continue  # 主表里没有这一行（例如只在圈选表里出现）⇒ 不在本守卫范围
+        if status not in ("✓", "◐"):
+            stale.append("%s=%s" % (cid, status))
+    assert not stale, (
+        f"圈选表里已标 [x]、主表却不是 ✓/◐ 的条目：{stale}"
+        "（状态列过期 ⇒ 选活时会选错）"
+    )
