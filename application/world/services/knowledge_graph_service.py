@@ -30,6 +30,18 @@ class KnowledgeGraphService:
         self.chapter_element_repo = chapter_element_repo
         self.story_node_repo = story_node_repo
 
+    def resolve_story_node_id(self, novel_id: str, chapter_number: int) -> Optional[str]:
+        """按「小说 + 正文章节号」解析出 KG 口径的 chapter_id。
+
+        ⚠ **KG 口径**：`infer_from_chapter` 收的是 ``story_nodes.id``
+        （``chapter_elements.chapter_id`` JOIN 的就是它），**不是** ``chapters.id``。
+        两套 id 空间不同 —— 传错会让推断「查不到章节」并静默返回空列表。
+
+        返回 ``None`` 表示「这本书没有这一章的结构节点」（没有可推断的对象），
+        调用方要能把它与「推断出 0 条」区分开。
+        """
+        return self.story_node_repo.get_chapter_node_id(novel_id, chapter_number)
+
     async def infer_from_chapter(self, chapter_id: str) -> List[Triple]:
         """
         从章节推断三元组

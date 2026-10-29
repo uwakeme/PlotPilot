@@ -527,15 +527,17 @@ class SqliteKnowledgeRepository:
     def find_story_node_id_for_chapter_number(
         self, novel_id: str, chapter_number: int
     ) -> Optional[str]:
-        row = self.db.fetch_one(
-            """
-            SELECT id FROM story_nodes
-            WHERE novel_id = ? AND node_type = 'chapter' AND number = ?
-            LIMIT 1
-            """,
-            (novel_id, chapter_number),
+        """按「小说 + 正文章节号」找章节结构节点 id。
+
+        ⚠ 委派给 ``StoryNodeRepository.get_chapter_node_id`` ——
+        这段 KG 口径（``story_nodes.id``，**不是** ``chapters.id``）在仓储里只留**一份实现**，
+        免得两处 SQL 各改各的、悄悄漂成两个口径。
+        """
+        from infrastructure.persistence.database.story_node_repository import (
+            StoryNodeRepository,
         )
-        return row["id"] if row else None
+
+        return StoryNodeRepository(self.db).get_chapter_node_id(novel_id, chapter_number)
 
     def list_chapter_inference_evidence(
         self, novel_id: str, story_node_id: str

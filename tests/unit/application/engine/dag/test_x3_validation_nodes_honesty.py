@@ -153,12 +153,19 @@ async def test_foreshadow_node_failure_is_unassessed():
 
 @pytest.mark.asyncio
 async def test_narrative_node_failure_is_unassessed():
+    """依赖失败 ⇒ 显式「未评估」。
+
+    ⚠ 第 48 批：输出键从 `summary`/`events`/`triples`/`causal_edges` 改成
+    章后管线**真实返回**的布尔标志（`narrative_sync_ok` 等）——
+    旧端口名宣称输出内容列表，而 `run_after_chapter_saved` 只返回标志位，
+    端口本身就是 fiction。**本守卫的意图（失败 ⇒ 未评估）不变**，只跟着换了键名。
+    """
     node = NarrativeNode()
     result = await node.execute({"content": "正文"}, {"novel_id": "n-1"})
 
     assert result.status == NodeStatus.ERROR
-    assert result.outputs["summary"] is None
-    assert result.outputs["triples"] is None
+    assert result.outputs["narrative_sync_ok"] is None
+    assert result.outputs["triples_extracted"] is None
     assert result.outputs["state"] == AssessmentState.UNASSESSED
     assert result.error
 

@@ -258,6 +258,36 @@ def get_knowledge_repository() -> SqliteKnowledgeRepository:
     return SqliteKnowledgeRepository(get_database())
 
 
+def get_knowledge_graph_service():
+    """获取知识图谱推断服务（`KnowledgeGraphService`）。
+
+    三个仓储缺一不可 —— 构造函数的三个参数都是必选位置参数，
+    无参构造必然 TypeError。
+
+    ⚠ **KG 口径**：``infer_from_chapter`` 收的是 ``story_nodes.id``
+    （``chapter_elements.chapter_id`` JOIN 的就是它），**不是** ``chapters.id``；
+    按「小说 + 章节号」取 id 请走
+    ``KnowledgeGraphService.resolve_story_node_id``。
+    """
+    from application.world.services.knowledge_graph_service import (
+        KnowledgeGraphService,
+    )
+    from infrastructure.persistence.database.chapter_element_repository import (
+        ChapterElementRepository,
+    )
+    from infrastructure.persistence.database.story_node_repository import (
+        StoryNodeRepository,
+    )
+    from infrastructure.persistence.database.triple_repository import TripleRepository
+
+    db = get_database()
+    return KnowledgeGraphService(
+        TripleRepository(db),
+        ChapterElementRepository(db.db_path),
+        StoryNodeRepository(db),
+    )
+
+
 def get_storyline_repository() -> SqliteStorylineRepository:
     """获取 Storyline 仓储（SQLite）。"""
     return SqliteStorylineRepository(get_database())

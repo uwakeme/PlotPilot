@@ -197,6 +197,8 @@ class TensionNode(BaseNode):
         color="#f59e0b",
         input_ports=[
             NodePort(name="content", data_type=PortDataType.TEXT, required=True),
+            NodePort(name="novel_id", data_type=PortDataType.TEXT, required=False),
+            NodePort(name="chapter_number", data_type=PortDataType.SCORE, required=False),
         ],
         output_ports=[
             NodePort(name="plot_tension", data_type=PortDataType.SCORE),
@@ -217,12 +219,17 @@ class TensionNode(BaseNode):
         import time
         start = time.time()
         content = inputs.get("content", "")
+        novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+        raw_chapter_number = inputs.get("chapter_number") or context.get("chapter_number") or 0
+        try:
+            chapter_number = int(raw_chapter_number)
+        except (TypeError, ValueError):
+            chapter_number = 0
 
         # ⚠ X-03：旧实现把异常吞成一条 warning、分数停在 0.0、节点恒 SUCCESS。
-        # 而 `TensionScoringService.score` **不存在**（真实方法是 score_chapter）、
+        # 而 `TensionScoringService.score` **不存在**（真实方法是 score_chapter），
         # 且构造函数要 llm_service ⇒ 这一步**每次都失败** ⇒ 张力节点从未真正评过分。
-        # 现在：失败 ⇒ 显式「未评估」（分数为 None），不再谎报 0 分通过。
-        # ⚠ 正确装配（score_chapter + 真实 llm_service）见 ledger 的 X3 段。
+        # 现在：走 DI 工厂 + 真实方法；失败 ⇒ 显式「未评估」（分数为 None），不再谎报 0 分通过。
         plot_tension: Any = None
         emotional_tension: Any = None
         pacing_tension: Any = None
@@ -231,15 +238,31 @@ class TensionNode(BaseNode):
         error = ""
 
         try:
-            from application.analyst.services.tension_scoring_service import TensionScoringService
-            novel_id = context.get("novel_id", "")
-            svc = TensionScoringService()
-            result = await svc.score(novel_id, content)
-            if result:
-                plot_tension = getattr(result, "plot_tension", 0.0)
-                emotional_tension = getattr(result, "emotional_tension", 0.0)
-                pacing_tension = getattr(result, "pacing_tension", 0.0)
-                composite = getattr(result, "composite", 0.0)
+            if not novel_id:
+                raise ValueError("缺 novel_id，张力未评估（不写入无主评分）")
+            if chapter_number < 1:
+                raise ValueError(
+                    f"缺真实 chapter_number（拿到 {raw_chapter_number!r}），张力未评估"
+                )
+
+            from application.analyst.services.tension_scoring_service import (
+                TensionScoringService,
+            )
+            from interfaces.api.dependencies import get_llm_service
+
+            svc = TensionScoringService(get_llm_service())
+            dims = await svc.score_chapter(content, chapter_number)
+
+            # 服务在「提示词渲染失败 / LLM 解析失败」时返回 UNEVALUATED(-1) 哨兵
+            # （domain/novel/value_objects/tension_dimensions.py:8）——
+            # 那不是「张力 0 分」，是「没评出来」⇒ 同样按未评估处理，绝不回填 0。
+            if not dims.is_evaluated:
+                raise ValueError("TensionScoringService 返回未评估哨兵（-1）")
+
+            plot_tension = float(dims.plot_tension)
+            emotional_tension = float(dims.emotional_tension)
+            pacing_tension = float(dims.pacing_tension)
+            composite = float(dims.composite_score)
             state = AssessmentState.DECIDED
         except Exception as e:
             error = f"TensionScoringService 调用失败: {e}"
@@ -408,9 +431,11 @@ class ForeshadowCheckNode(BaseNode):
         start = time.time()
 
         # ⚠ X-03：旧实现把异常吞成 warning、计数停在 0、节点恒 SUCCESS。
-        # 而 `ForeshadowingRepository.find_by_novel` **不存在**
-        # （真实方法是 get_by_novel_id）⇒ 这一步**每次都失败**。
-        # 现在：失败 ⇒ 显式「未评估」，不再谎报「0 条待回收」。
+        # 而 `ForeshadowingRepository` 是**抽象基类**（domain/novel/repositories/），
+        # 构造它必然 TypeError；而且 `find_by_novel` 这个方法**根本不存在**
+        # （真实入口是 `SqliteForeshadowingRepository.get_by_novel_id`）
+        # ⇒ 这一步**每次都失败**。
+        # 现在：走 DI 工厂 + 真实仓储；失败 ⇒ 显式「未评估」，不再谎报「0 条待回收」。
         recovered: Any = None
         pending: Any = None
         recovery_rate: Any = None
@@ -418,15 +443,25 @@ class ForeshadowCheckNode(BaseNode):
         error = ""
 
         try:
-            from domain.novel.repositories.foreshadowing_repository import ForeshadowingRepository
-            from infrastructure.persistence.database.connection import get_database
-            db = get_database()
-            repo = ForeshadowingRepository(db)
-            novel_id = inputs.get("novel_id") or context.get("novel_id", "")
-            all_f = repo.find_by_novel(novel_id)
-            recovered = len([f for f in all_f if getattr(f, 'status', '') == 'recovered'])
-            pending = len([f for f in all_f if getattr(f, 'status', '') == 'pending'])
+            novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+            if not novel_id:
+                raise ValueError("缺 novel_id，伏笔雷达未评估")
+
+            from domain.novel.value_objects.foreshadowing import ForeshadowingStatus
+            from domain.novel.value_objects.novel_id import NovelId
+            from interfaces.api.dependencies import get_foreshadowing_repository
+
+            # ⚠ `get_by_novel_id` 对**不存在的书**返回 None ——
+            # 那不是「这本书 0 条伏笔」，是「没有可评估的对象」⇒ 按未评估处理。
+            registry = get_foreshadowing_repository().get_by_novel_id(NovelId(novel_id))
+            if registry is None:
+                raise ValueError(f"小说 {novel_id} 不存在，伏笔雷达未评估")
+
+            items = registry.foreshadowings
+            recovered = len([f for f in items if f.status == ForeshadowingStatus.RESOLVED])
+            pending = len([f for f in items if f.status == ForeshadowingStatus.PLANTED])
             total = recovered + pending
+            # 分母只算「已回收 + 待回收」；ABANDONED（已放弃）不算待回收。
             recovery_rate = (recovered / total * 100) if total > 0 else 0.0
             state = AssessmentState.DECIDED
         except Exception as e:
@@ -467,12 +502,18 @@ class NarrativeNode(BaseNode):
         color="#06b6d4",
         input_ports=[
             NodePort(name="content", data_type=PortDataType.TEXT, required=True),
+            NodePort(name="novel_id", data_type=PortDataType.TEXT, required=False),
+            NodePort(name="chapter_number", data_type=PortDataType.SCORE, required=False),
         ],
         output_ports=[
-            NodePort(name="summary", data_type=PortDataType.TEXT),
-            NodePort(name="events", data_type=PortDataType.LIST),
-            NodePort(name="triples", data_type=PortDataType.LIST),
-            NodePort(name="causal_edges", data_type=PortDataType.LIST),
+            # ⚠ X-03：旧端口名（summary / events / triples / causal_edges）宣称输出
+            # **内容列表**，而章后管线真实返回的是**布尔标志** ⇒ 端口即 fiction。
+            # 改成真实标志位，能力与出口对齐。
+            NodePort(name="narrative_sync_ok", data_type=PortDataType.BOOLEAN),
+            NodePort(name="triples_extracted", data_type=PortDataType.BOOLEAN),
+            NodePort(name="causal_edges_stored", data_type=PortDataType.BOOLEAN),
+            NodePort(name="foreshadow_stored", data_type=PortDataType.BOOLEAN),
+            NodePort(name="vector_stored", data_type=PortDataType.BOOLEAN),
         ],
         prompt_variables=["content"],
         is_configurable=True,
@@ -492,35 +533,61 @@ class NarrativeNode(BaseNode):
         # 而 `ChapterAftermathPipeline.run_narrative_sync` **不存在**
         # （真实入口是 run_after_chapter_saved）、且构造函数要 knowledge_service +
         # llm_service ⇒ 这一步**每次都失败**。
-        # 现在：失败 ⇒ 显式「未评估」，不再谎报「同步完成但没内容」。
-        # ⚠ 正确装配见 ledger 的 X3 段。
-        summary: Any = None
-        events: Any = None
-        triples: Any = None
-        causal_edges: Any = None
+        # 现在：走 DI 工厂（生产同一套装配）+ 真实入口；
+        # 失败 ⇒ 显式「未评估」，不再谎报「同步完成但没内容」。
+        narrative_sync_ok: Any = None
+        triples_extracted: Any = None
+        causal_edges_stored: Any = None
+        foreshadow_stored: Any = None
+        vector_stored: Any = None
         state = AssessmentState.UNASSESSED
         error = ""
 
         try:
-            from application.engine.services.chapter_aftermath_pipeline import ChapterAftermathPipeline
-            novel_id = context.get("novel_id", "")
-            pipeline = ChapterAftermathPipeline()
-            result = await pipeline.run_narrative_sync(novel_id, content)
-            if result:
-                summary = getattr(result, "summary", "")
-                events = getattr(result, "events", [])
-                triples = getattr(result, "triples", [])
-                causal_edges = getattr(result, "causal_edges", [])
+            novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+            raw_chapter_number = inputs.get("chapter_number") or context.get("chapter_number") or 0
+            try:
+                chapter_number = int(raw_chapter_number)
+            except (TypeError, ValueError):
+                chapter_number = 0
+
+            if not novel_id:
+                raise ValueError("缺 novel_id，叙事同步未评估")
+            if chapter_number < 1:
+                raise ValueError(
+                    f"缺真实 chapter_number（拿到 {raw_chapter_number!r}），叙事同步未评估"
+                )
+            if not str(content).strip():
+                raise ValueError("正文为空，叙事同步未评估")
+
+            from interfaces.api.dependencies import get_chapter_aftermath_pipeline
+
+            pipeline = get_chapter_aftermath_pipeline()
+            result = await pipeline.run_after_chapter_saved(
+                novel_id, chapter_number, content
+            )
+            # ⚠ 章后管线自己吞掉子步骤异常、只返回**布尔标志** ——
+            # `narrative_sync_ok=False` 意味着「没同步成」，不是「同步了但没内容」
+            # ⇒ 按未评估处理，不谎报「已完成」。
+            if not result.get("narrative_sync_ok"):
+                raise ValueError("ChapterAftermathPipeline 叙事同步未成功")
+
+            narrative_sync_ok = True
+            triples_extracted = bool(result.get("triples_extracted"))
+            causal_edges_stored = bool(result.get("causal_edges_stored"))
+            foreshadow_stored = bool(result.get("foreshadow_stored"))
+            vector_stored = bool(result.get("vector_stored"))
             state = AssessmentState.DECIDED
         except Exception as e:
             error = f"ChapterAftermathPipeline 调用失败: {e}"
             logger.warning(error)
 
         outputs = {
-            "summary": summary,
-            "events": events,
-            "triples": triples,
-            "causal_edges": causal_edges,
+            "narrative_sync_ok": narrative_sync_ok,
+            "triples_extracted": triples_extracted,
+            "causal_edges_stored": causal_edges_stored,
+            "foreshadow_stored": foreshadow_stored,
+            "vector_stored": vector_stored,
         }
         if state is AssessmentState.UNASSESSED:
             return _unassessed_result(outputs, error, int((time.time() - start) * 1000))
@@ -573,18 +640,53 @@ class KGInferNode(BaseNode):
         # （triple_repo / chapter_element_repo / story_node_repo），
         # 且 `infer_from_chapter` 只收**一个** chapter_id
         # （节点传的是 novel_id + chapter_number 两个）⇒ 这一步**每次都失败**。
-        # 现在：失败 ⇒ 显式「未评估」，不再谎报「没有三元组」。
-        # ⚠ 正确装配（真实仓储 + chapter_id 口径）见 ledger 的 X3 段。
+        # 现在：走 DI 工厂 + 真实仓储 + 正确的 id 口径；
+        # 失败 ⇒ 显式「未评估」，不再谎报「没有三元组」。
         inferred_triples: Any = None
         state = AssessmentState.UNASSESSED
         error = ""
 
         try:
-            from application.world.services.knowledge_graph_service import KnowledgeGraphService
-            novel_id = inputs.get("novel_id") or context.get("novel_id", "")
-            chapter_number = inputs.get("chapter_number") or context.get("chapter_number", 0)
-            svc = KnowledgeGraphService()
-            inferred_triples = await svc.infer_from_chapter(novel_id, chapter_number)
+            novel_id = inputs.get("novel_id") or context.get("novel_id") or ""
+            raw_chapter_number = inputs.get("chapter_number") or context.get("chapter_number") or 0
+            try:
+                chapter_number = int(raw_chapter_number)
+            except (TypeError, ValueError):
+                chapter_number = 0
+
+            if not novel_id:
+                raise ValueError("缺 novel_id，知识图谱推断未评估")
+            if chapter_number < 1:
+                raise ValueError(
+                    f"缺真实 chapter_number（拿到 {raw_chapter_number!r}），知识图谱推断未评估"
+                )
+
+            from interfaces.api.dependencies import get_knowledge_graph_service
+
+            svc = get_knowledge_graph_service()
+            # ⚠ KG 口径：`infer_from_chapter` 收的是 **story_nodes.id**
+            # （`chapter_elements.chapter_id` JOIN 的就是它），**不是** `chapters.id`
+            # —— 传错 id 会让推断静默查空、报「0 条三元组」。
+            story_node_id = svc.resolve_story_node_id(novel_id, chapter_number)
+            if not story_node_id:
+                raise ValueError(
+                    f"小说 {novel_id} 第 {chapter_number} 章没有结构节点（story_nodes），"
+                    "知识图谱推断未评估"
+                )
+
+            triples = await svc.infer_from_chapter(story_node_id)
+            inferred_triples = [
+                {
+                    "id": t.id,
+                    "subject_type": t.subject_type,
+                    "subject_id": t.subject_id,
+                    "predicate": t.predicate,
+                    "object_type": t.object_type,
+                    "object_id": t.object_id,
+                    "confidence": t.confidence,
+                }
+                for t in triples
+            ]
             state = AssessmentState.DECIDED
         except Exception as e:
             error = f"KnowledgeGraphService 调用失败: {e}"
