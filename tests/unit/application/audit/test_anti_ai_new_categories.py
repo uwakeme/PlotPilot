@@ -170,8 +170,15 @@ def test_the_bundle_version_was_bumped_and_registered():
     assert tuple(int(n) for n in nums[:3]) >= (5, 48, 0), f"bundle 版本没 bump（当前 {version}）"
     version_nodes = meta.get("version_nodes") or {}
     assert base in version_nodes, f"version_nodes 里没有 {base}"
-    assert "anti-ai-chapter-audit" in version_nodes[base], (
-        f"version_nodes[{base}] 里没有登记 anti-ai-chapter-audit"
+    # ⚠ 第 54 批修：这个包被改过是**历史事实**（可能早于当前版本）⇒
+    #   扫**全部**版本条目找它（只查当前版本 ⇒ 任何后续 bump 都误红）。
+    registered_in = [
+        v
+        for v, nodes in version_nodes.items()
+        if "anti-ai-chapter-audit" in (nodes or [])
+    ]
+    assert registered_in, (
+        "version_nodes 的任何一版都没登记 anti-ai-chapter-audit"
     )
     assert f"v{base}:" in str(meta.get("changelog") or ""), f"changelog 里缺 v{base} 条目"
 

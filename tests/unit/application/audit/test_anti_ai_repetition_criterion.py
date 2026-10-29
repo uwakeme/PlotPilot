@@ -185,8 +185,15 @@ def test_bundle_version_was_bumped_for_this_change():
 
     version_nodes = meta.get("version_nodes") or {}
     assert base in version_nodes, f"当前版本 {base} 在 version_nodes 里没有条目"
-    assert NODE_KEY in version_nodes[base], (
-        f"version_nodes[{base}] 里没有 {NODE_KEY} ⇒ "
+    # ⚠ 第 54 批修：「这个包被改过」是**历史事实**，可能发生在**更早**的一版
+    #   （本包是 5.47.0 引入的，5.48.0 又改过一次 ⇒ 只查**当前版本**的话，
+    #   任何一次后续 bump 都会把这条守卫**误打红**）。
+    # ⇒ 扫**全部**版本条目找它（意图不变：那个包必须被登记过）。
+    registered_in = [
+        v for v, nodes in version_nodes.items() if NODE_KEY in (nodes or [])
+    ]
+    assert registered_in, (
+        f"version_nodes 的任何一版都没登记 {NODE_KEY} ⇒ "
         "「这一版改了哪些提示词包」漏了它（审计脚本会指不出来）"
     )
 
