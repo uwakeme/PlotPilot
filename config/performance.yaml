@@ -301,6 +301,20 @@ ai_participation:
 style_preset_match:
   timeout_seconds: 30
 
+# J-01：目标章数 / 终局预算提案的**硬超时**（秒）。
+#
+# ⚠ 复审 B2（第 49 批补做）：``config/generation_profiles.yaml`` 里原先写的
+#   ``timeout_seconds: 30`` / ``retries: 0`` **全仓无人读**（装饰品）
+#   ⇒ 「提案超时要短」当时**并没有生效**；那两个键已删（留着只会骗人）。
+#   真实上限在 **provider 层**（``LLM_MAX_TOTAL_ATTEMPTS`` ×
+#   ``Settings.timeout_seconds`` ⇒ 最坏 ~900s）⇒ 用户点「继续写」可能被一个
+#   慢模型卡住十几分钟。
+# ⇒ 这里加**服务自己**的硬闸（与 J-02 的 ``style_preset_match`` 同款）：
+#   超时 ⇒ 回落**引擎默认公式**（``source=fallback``），不编造提案。
+# ⚠ 守卫 ``test_j01_target_budget_timeout.py`` 盯住这个值与「真的来自配置」。
+target_budget_proposal:
+  timeout_seconds: 30
+
 # D-02：上下文槽位权重。由 AI 判断本章最需要哪几类记忆并给出权重(0-1)，
 # 代码在 tier 预算内换算成 token。**只开 enabled 不会生效** ——
 # shadow 默认 true，权重只记录不施加。两条都要改才对。

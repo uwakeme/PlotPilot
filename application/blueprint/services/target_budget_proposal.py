@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -51,6 +52,31 @@ from application.blueprint.services.target_budget_schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: 本次模型调用的**硬上限**（秒）—— **默认值**；实际值从
+#: ``config/performance.yaml`` 的 ``target_budget_proposal.timeout_seconds`` 读。
+#:
+#: ⚠ 复审 B2（第 49 批补做）：``config/generation_profiles.yaml`` 里原先写的
+#:   ``timeout_seconds: 30`` / ``retries: 0`` **全仓无人读**（装饰品）⇒
+#:   「提案超时要短」当时**并没有生效**（键已删）。真实上限在 **provider 层**
+#:   （``LLM_MAX_TOTAL_ATTEMPTS`` × ``Settings.timeout_seconds`` ⇒ 最坏 ~900s）
+#:   ⇒ 用户点「继续写」可能被一个慢模型卡住十几分钟。
+#: ⇒ 这里**真的**加一道硬闸：超时 ⇒ 回落**引擎默认公式**（**不编造**提案）。
+DEFAULT_TIMEOUT_SECONDS = 30
+
+
+def resolve_proposal_timeout_seconds() -> int:
+    """本次模型调用的硬上限（秒）—— 从配置读，读不到用默认值。"""
+    try:
+        from application.core.config.config_loader import get_config
+        from application.core.config.runtime_settings_utils import section_value
+
+        section = getattr(get_config(), "target_budget_proposal", None)
+        raw = section_value(section, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        value = int(raw)
+    except Exception:  # noqa: BLE001
+        value = DEFAULT_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_TIMEOUT_SECONDS
 
 
 class TargetBudgetProposalService:
@@ -128,6 +154,7 @@ class TargetBudgetProposalService:
                 variables.get("novel_id"),
             )
             return None
+        timeout_seconds = resolve_proposal_timeout_seconds()
         try:
             rendered = get_prompt_gateway().render(
                 TARGET_BUDGET_PROPOSAL_CONTRACT,
@@ -147,7 +174,20 @@ class TargetBudgetProposalService:
                 },
             )
             config = generation_config_from_profile("target_budget_proposal")
-            result = await self._llm.generate(rendered.prompt, config)
+            result = await asyncio.wait_for(
+                self._llm.generate(rendered.prompt, config),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            # ⚠ 复审 B2（第 49 批）：provider 层的真实上限是 ~900s ⇒ 这里自己加一道硬闸。
+            #   ⚠ wait_for 取消的是协程；provider 走 httpx 异步调用 ⇒ 取消会**断连**
+            #     ⇒ 省下的是「**继续重试 / 继续等**」的那部分，不是上游已花掉的算力。
+            logger.warning(
+                "目标预算提案超时（>%ss），回落引擎默认公式 novel=%s",
+                timeout_seconds,
+                variables.get("novel_id"),
+            )
+            return None
         except Exception as exc:
             logger.warning(
                 "目标预算提案调用失败，回落引擎默认公式 novel=%s: %s",
