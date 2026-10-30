@@ -143,6 +143,7 @@ import {
   type MacroPartNode,
   type MacroVolumeNode,
   type MacroActNode,
+  type MacroMergeWarning,
 } from '../../api/planning'
 import { formatApiError, getApiErrorDetail } from '../../utils/apiError'
 
@@ -317,10 +318,20 @@ async function confirmSave() {
   }
   isConfirming.value = true
   try {
-    await planningApi.confirmMacro(props.novelId, {
+    const result = (await planningApi.confirmMacro(props.novelId, {
       structure: doneStructure.value as unknown as Record<string, unknown>[],
-    })
-    message.success('叙事骨架已写入结构树', { duration: 2500 })
+    })) as { warnings?: MacroMergeWarning[] } | undefined
+    // H-05：warning 档（旧节点仍承载未动笔的章节）不阻断写入，
+    // 但作者必须看见 —— 否则「没报错」会被读成「一切正常」。
+    const warnings = result?.warnings ?? []
+    if (warnings.length > 0) {
+      message.warning(
+        `结构已写入，但有 ${warnings.length} 个旧节点仍承载未动笔的章节，已保留待你手动处理`,
+        { duration: 6000 },
+      )
+    } else {
+      message.success('叙事骨架已写入结构树', { duration: 2500 })
+    }
     emit('confirmed')
     show.value = false
   } catch (e: unknown) {

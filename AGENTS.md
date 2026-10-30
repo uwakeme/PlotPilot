@@ -59,6 +59,12 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
   结构性冲突（新结构会孤立已有正文的章节）必须上抛 —— 守护进程侧暂停待人工处理，
   API 侧回 409（与 `POST /macro/confirm` 一致），**不许**退化成 500。
   守卫：`tests/unit/engine/test_macro_structure_conflict_guard.py`。
+- **宏观结构合并的冲突分两档**（H-05，2026-10-29 补）：
+  `fatal` = 节点下**已有正文** ⇒ 阻断重构（不变量，原样保留）；
+  `warning` = 节点下**只有未动笔的章节** ⇒ 不阻断，但旧节点**保留**
+  （不删、不替作者搬家），并在合并结果 / 守护进程日志 / 前端提示里显式告知。
+  ⚠ 「有没有正文」判据不明（缺 `has_prose` 位）时一律按 `fatal` 处理 —— 宁可阻断，不可丢稿。
+  守卫：`tests/unit/application/audit/test_h05_merge_conflict_severity.py`。
 
 ## Testing instructions
 

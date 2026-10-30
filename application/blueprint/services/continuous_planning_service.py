@@ -244,6 +244,29 @@ def _first_text(*candidates) -> Optional[str]:
     return None
 
 
+def _chapter_node_has_prose(node) -> bool:
+    """该章节结构节点是否**已有正文**（H-05 风险分级的唯一判据）。
+
+    口径与写回侧同源：`story_node_progress_sync` 把 `chapters` 的真实字数/状态
+    镜像到 `story_nodes`（引擎写作路径会回写，迁移 015 负责回填存量），
+    这里再认一次 `content`（手动建章路径只写 content）。
+
+    ⚠ 判据不明时返回 True（宁可阻断，不可丢稿）：
+    「没测出来」与「确实没有正文」必须可分辨 ——
+    只有**证明过**没有正文，才允许把冲突降级成 warning。
+    """
+    try:
+        if int(getattr(node, "word_count", 0) or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    status = str(getattr(node, "status", "") or "").strip().lower()
+    if status and status != "draft":
+        # 已完成 / 审阅中 ⇒ 有内容
+        return True
+    return bool(str(getattr(node, "content", "") or "").strip())
+
+
 def _sanitize_llm_json_output(raw: str) -> str:
     content = (raw or "").strip()
     content = re.sub(r"\x1b\[[0-9;]*m", "", content)
@@ -1548,6 +1571,10 @@ class ContinuousPlanningService:
                 "title": node.title,
                 "description": node.description,
                 "order_index": node.order_index,
+                # H-05：告诉合并引擎「这一章到底动笔没有」——
+                # 缺这一位时引擎按「有正文」处理（最坏情况），
+                # 所以这里必须**每章都给**，不能漏。
+                "has_prose": _chapter_node_has_prose(node),
             }
             for node in old_nodes_entities
         ]
@@ -1561,12 +1588,20 @@ class ContinuousPlanningService:
         plan = engine.execute_diff()
         logger.info(f"[SafeMerge] Merge plan: creates={len(plan.creates)}, updates={len(plan.updates)}, deletes={len(plan.deletes)}, conflicts={len(plan.conflicts)}")
 
-        # 阶段 3：冲突检测 - 红色阻断
+        # 阶段 3：冲突检测 —— H-05 风险分级
+        #   fatal（有正文章节）⇒ 红色阻断，不落库
+        #   warning（只有未动笔的章节）⇒ 不阻断，但旧节点保留 + 结果里显式提示
         if plan.has_fatal_conflict:
-            logger.error(f"[SafeMerge] Fatal conflicts detected: {plan.conflicts}")
+            logger.error(f"[SafeMerge] Fatal conflicts detected: {plan.fatal_conflicts}")
             raise MergeConflictException(
                 message="重构导致部分已有正文的章节孤立",
-                conflicts=plan.conflicts
+                conflicts=plan.fatal_conflicts
+            )
+        if plan.warnings:
+            logger.warning(
+                "[SafeMerge] %s 个旧节点仍承载未动笔的章节，已保留待人工处理：%s",
+                len(plan.warnings),
+                [str(w.get("title") or w.get("node_id")) for w in plan.warnings],
             )
 
         # 阶段 4：执行合并 - 原子性事务
@@ -1580,7 +1615,9 @@ class ContinuousPlanningService:
         logger.info(f"[SafeMerge] Merge completed successfully: {plan.summary}")
         return {
             "success": True,
-            "summary": plan.summary
+            "summary": plan.summary,
+            # H-05：warning 档必须**有出口** —— 不阻断，但作者要看得见。
+            "warnings": plan.warnings,
         }
 
     async def _count_macro_structure_nodes(self, novel_id: str) -> int:
@@ -1612,12 +1649,18 @@ class ContinuousPlanningService:
         其余异常才回退（那些是偶发失败，回退是合理的容忍）。
         """
         try:
-            await self.confirm_macro_plan_safe(novel_id=novel_id, structure=structure)
+            safe_result = await self.confirm_macro_plan_safe(novel_id=novel_id, structure=structure)
             count = await self._count_macro_structure_nodes(novel_id)
             return {
                 "success": True,
                 "created_nodes": count,
                 "message": f"已同步 {count} 个结构节点",
+                # H-05：warning 档一路透传（守护进程 / API 都要看得见）
+                "warnings": (
+                    safe_result.get("warnings", [])
+                    if isinstance(safe_result, dict)
+                    else []
+                ),
             }
         except MergeConflictException:
             # 结构性冲突：绝不回退到「不检查已有数据」的一次性写入。
@@ -1696,6 +1739,8 @@ class ContinuousPlanningService:
             "success": True,
             "created_nodes": confirm["created_nodes"],
             "message": confirm.get("message", ""),
+            # H-05：warning 档透传到调用方（守护进程据此打日志、API 据此回前端）
+            "warnings": confirm.get("warnings", []) if isinstance(confirm, dict) else [],
         }
 
     # ==================== 幕级规划 ====================

@@ -628,6 +628,21 @@ export function streamActChapterPlan(
 
 // ==================== API ====================
 
+/**
+ * H-05：宏观结构合并的**非致命**冲突（旧节点仍承载未动笔的章节）。
+ * 后端已保留旧节点、不阻断写入；前端必须把这条提示显示出来 ——
+ * 否则「没报错」会被读成「一切正常」。
+ */
+export interface MacroMergeWarning {
+  node_id: string
+  title: string
+  node_type: string
+  reason: string
+  severity: 'warning'
+  carried_chapters: number
+  written_chapters: number
+}
+
 export const planningApi = {
   // ==================== 宏观规划 ====================
 

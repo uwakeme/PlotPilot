@@ -309,7 +309,7 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
         return
 
     try:
-        await host.planning_service.apply_macro_plan_from_llm_result(
+        apply_result = await host.planning_service.apply_macro_plan_from_llm_result(
             result,
             novel_id=novel.novel_id.value,
             target_chapters=target_chapters,
@@ -340,6 +340,19 @@ async def run_macro_planning(host: "DaemonHostProtocol", novel: Novel) -> None:
             writing_substep_label="宏观规划 · 结构冲突待处理",
         )
         return
+
+    # H-05：warning 档（旧节点仍承载未动笔的章节）不阻断落库，
+    # 但必须有人看见 —— 旧节点已保留，等作者自己处理。
+    merge_warnings = []
+    if isinstance(apply_result, dict):
+        merge_warnings = apply_result.get("warnings") or []
+    if merge_warnings:
+        logger.warning(
+            "[%s] 宏观结构已落库，但有 %s 个旧节点仍承载未动笔的章节（已保留待人工处理）：%s",
+            novel.novel_id.value,
+            len(merge_warnings),
+            [str(w.get("title") or w.get("node_id")) for w in merge_warnings],
+        )
 
     host._update_shared_state(
         novel.novel_id.value,
