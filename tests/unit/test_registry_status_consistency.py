@@ -78,17 +78,25 @@ def _main_rows() -> list[tuple[str, str, str]]:
 
     ⚠ **不按固定列下标取** —— 备注里含 ``|`` 的行会被 split 切歪
     ⇒ ⇒ 只靠「行内标记」与「补记锚点」定位。
+
+    ⚠ 状态**只认状态格里的那个标记**（补记锚点之前）——
+    此前这里取的是「整行里第一个 ✓，没有才取第一个标记」，
+    ⇒ 「状态格写着 ◐、补记里写着 ✓」这种**过期状态**会被读成 ✓
+    ⇒ 「唯一标记 / ✓ 必须点名守卫 / ◐ 必须写明残留」三条互锁规则
+    全部合法通过 ⇒ G-04 那样过期了很久的状态列就这么漏了过去
+    ⇒ ⇒ 状态只看状态格；补记里出现标记不算状态。
     """
     rows = []
     for line in REG.read_text(encoding="utf-8").splitlines():
         if not (line.startswith("| ") and _is_main_row(line)):
             continue
-        marks = [m.start() for m in re.finditer(r"[○✓◐]", line)]
+        anchor = NOTES_ANCHOR.search(line)
+        head = line[: anchor.start()] if anchor else line
+        marks = [m.start() for m in re.finditer(r"[○✓◐]", head)]
         if not marks:
             continue
         cid = line.split("|")[1].strip()
-        status = line[next((i for i in marks if line[i] == "✓"), marks[0])]
-        anchor = NOTES_ANCHOR.search(line)
+        status = head[marks[0]]
         notes = line[anchor.start():] if anchor else ""
         rows.append((cid, status, notes))
     return rows
@@ -140,6 +148,11 @@ def test_partial_rows_must_still_have_residuals():
 
     ⚠ 残留措辞不只一种（「未做 / 仍未做 / 仍没有 / 还没 / 未实现…」）
     ⇒ 词表与清理脚本 ``_t45_clean_pass3.py`` 的 ``RESIDUAL_MARKERS`` **保持一致**。
+
+    ⚠ 这条是**词表启发式**，会命中无关语境
+    （G-04 的补记里就有「还没回收的线不能因为上限而消失」这种「还没」）
+    ⇒ 它**不是**「过期状态」的主防线；
+    主防线是 :func:`test_status_comes_from_the_status_cell_not_from_the_notes`。
     """
     bad = []
     for cid, status, notes in _main_rows():
@@ -159,6 +172,26 @@ def test_todo_rows_must_not_claim_a_guard():
         if GUARD_RE.findall(notes):
             bad.append(cid)
     assert not bad, f"这些行标着 ○，但备注点名了守卫（状态列过期）：{bad}"
+
+
+def test_status_comes_from_the_status_cell_not_from_the_notes():
+    """⚠ 状态格说「部分完成」、补记却自称「已做完」 ⇒ 状态列过期。
+
+    为什么单开一条：G-04 那一行状态格写着 ◐、补记第一句就是「本行已做完」，
+    而代码形状（`coerce_urgency` / `MAX_ITEMS_PER_CATEGORY` /
+    `INJECT_ITEMS_PER_CATEGORY` / `trimmed_items`）与三个守卫文件都在
+    ⇒ 这笔**早已做完**，状态格是过期残留。
+
+    ⚠ 此前这条漏过去，是因为状态取「整行里第一个 ✓」
+    ⇒ 补记里的 ✓ 把状态格的 ◐ 掩盖了（见 `_main_rows` 的注释）。
+    """
+    stale = []
+    for cid, status, notes in _main_rows():
+        if status != "◐":
+            continue
+        if "已做完" in notes:
+            stale.append(cid)
+    assert not stale, f"这些行状态格是 ◐、补记却说做完了（状态列过期）：{stale}"
 
 
 # ── 第十节「圈选」表 ↔ 主表状态列（两张表互锁）────────────────────────
