@@ -20,6 +20,12 @@
 
 ⚠ 上限的**真实**边界是 **provider**（实测智谱 endpoint：合法范围 ``[1, 131072]``）
 ⇒ ⇒ 抬这个数会**让每次调用 400**，所以「想输出更多」不是这条路。
+
+⚠ 2026-10-30 用户拍板：**地板按设计保留**（不改小、也不给「小输出」开口子）。
+理由：地板是**下限**不是上限 ⇒ 传 1000000 就是 1000000（**大值永远自由**）；
+120000 在当前端点合法；max_tokens 是上限不是实耗 ⇒ **成本不受影响**。
+⇒ 下面第 ③ 条把「向下也生效」钉成契约，别让下一个人当成 bug 顺手修
+（那会一次性改 38 处从未在真实小上限下跑过的行为）。
 """
 from __future__ import annotations
 
@@ -27,7 +33,10 @@ import pathlib
 
 import yaml
 
-from domain.ai.services.llm_service import DEFAULT_MAX_OUTPUT_TOKENS
+from domain.ai.services.llm_service import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    GenerationConfig,
+)
 from infrastructure.ai.generation_profiles import (
     generation_config_from_profile,
     load_generation_profiles,
@@ -60,6 +69,32 @@ def test_the_output_budget_floor_is_pinned():
     ⇒ ⇒ 地板**必须** ≤ 131072，否则每次调用都被 400 拒。
     """
     assert DEFAULT_MAX_OUTPUT_TOKENS == EXPECTED_OUTPUT_BUDGET
+
+
+def test_the_floor_is_a_lower_bound_by_design():
+    """⚠ 地板是**下限**（不是上限）—— 这是**按设计保留**的契约（2026-10-30 用户拍板）。
+
+    ⚠ **向上永远自由**：填多少就是多少（``max(x, 120000)``）
+    ⇒ 「地板会卡住上限 / 填了没生效」是误解。
+
+    ⚠ **向下没有口子**：任何 ``max_tokens < 120000`` 的入参都被抬到 120000
+    ⇒ 生产代码里 38 处调用点（张力打分 512 / 情绪账本 1500 / 节拍表 2048 /
+    章末抽取 4096 / DAG 节点 1500~4000 / 沙盒 240 …）**实际发出去的都是 120000**
+    ⇒ ⇒ **「限输出提速」这条杠杆在 domain 层用不了**
+    （第 33 批审计提速之所以必须「关思考 + 一起封顶」就是这个原因：
+    thinking 的 token 与正文**共用**同一个输出预算）。
+
+    ⚠ 钉住它的意义：让「向下没口子」成为**有意识的契约** ——
+    否则下一个人看到 38 处传小值却发 120000，会当成 bug 去「顺手修」，
+    而那会一次性改 38 处**从未在真实小上限下跑过**的行为（JSON 可能被截断、
+    正文可能砍半截）。
+    """
+    assert GenerationConfig(max_tokens=512).max_tokens == EXPECTED_OUTPUT_BUDGET
+    assert GenerationConfig(max_tokens=2048).max_tokens == EXPECTED_OUTPUT_BUDGET
+    assert GenerationConfig(max_tokens=4096).max_tokens == EXPECTED_OUTPUT_BUDGET
+
+    # 向上自由：填多少就是多少
+    assert GenerationConfig(max_tokens=1_000_000).max_tokens == 1_000_000
 
 
 def test_every_profile_still_gets_the_same_output_budget():
