@@ -240,6 +240,59 @@ export function updatePlotField(
   ;(target as Record<string, unknown>)[key] = value
 }
 
+/**
+ * J-03：阶段数边界 —— **与后端不变量 I1 一致**（`stage_plan_invariants.MIN_STAGES/MAX_STAGES`）。
+ *
+ * ⚠ 这是前端的一份**副本**（前端拿不到 Python 常量）⇒ 由守卫
+ *   `tests/unit/application/blueprint/test_j03_stage_add_remove_ui.py` 钉住两侧相同。
+ */
+export const MIN_STAGE_COUNT = 3
+export const MAX_STAGE_COUNT = 8
+
+export function canAddPlotStage(stageCount: number): boolean {
+  return stageCount < MAX_STAGE_COUNT
+}
+
+export function canRemovePlotStage(stageCount: number): boolean {
+  return stageCount > MIN_STAGE_COUNT
+}
+
+/**
+ * 追加一个空阶段。
+ *
+ * ⚠ 同时**清空所有阶段区间** —— 后端规则是「要么全部不填、要么全部填」，
+ *   新阶段没有区间 ⇒ 不清空就会变成「混用」⇒ 保存时被拒（报错不透明）。
+ *   清空后回到「全不填」⇒ 保存时由后端按目标章数重新分配。
+ */
+export function addPlotStage(
+  stagePlan: PlotOutlineDTO['stage_plan'],
+): PlotOutlineDTO['stage_plan'] {
+  if (!canAddPlotStage(stagePlan.length)) return stagePlan
+  return [
+    ...stagePlan.map(stage => ({
+      ...stage,
+      chapter_start: undefined,
+      chapter_end: undefined,
+    })),
+    {
+      phase: '',
+      label: '',
+      range_percent: '',
+      summary: '',
+    },
+  ]
+}
+
+/** 删掉一个阶段；阶段数已达下限时**不动**（后端不变量 I1 的下限）。 */
+export function removePlotStage(
+  stagePlan: PlotOutlineDTO['stage_plan'],
+  index: number,
+): PlotOutlineDTO['stage_plan'] {
+  if (!canRemovePlotStage(stagePlan.length)) return stagePlan
+  if (index < 0 || index >= stagePlan.length) return stagePlan
+  return stagePlan.filter((_, i) => i !== index)
+}
+
 export function stageContentFieldKeys(stage: PlotOutlineDTO['stage_plan'][number]): string[] {
   const record = stage as unknown as Record<string, unknown>
   const keys = Object.keys(record).filter(key => !PLOT_STAGE_META_KEYS.has(key))

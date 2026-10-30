@@ -619,6 +619,14 @@
                       <div class="plot-stage-edit-header">
                         <n-tag size="tiny" type="default" round>{{ stage.label }}</n-tag>
                         <span class="plot-subline-name">{{ stageRangePercentLabel(stage) }}</span>
+                        <!-- J-03：作者可以删阶段（阶段数下界由后端不变量 I1 把关，前端同步守住） -->
+                        <n-button
+                          size="tiny"
+                          quaternary
+                          type="error"
+                          :disabled="!canRemoveStage"
+                          @click="removeStage(index)"
+                        >删除</n-button>
                       </div>
                       <div class="plot-stage-chapter-row">
                         <n-input-number
@@ -652,6 +660,18 @@
                           @update:value="updatePlotField(stage, key, $event)"
                         />
                       </div>
+                    </div>
+                    <!-- J-03：作者可以加阶段；越界时按钮禁用并说明原因（而不是提交一个会被后端拒的请求） -->
+                    <div class="plot-stage-edit-actions">
+                      <n-button size="tiny" quaternary type="primary" :disabled="!canAddStage" @click="addStage">
+                        添加阶段
+                      </n-button>
+                      <span v-if="!canAddStage" class="plot-subline-hint">
+                        阶段数已达上限 {{ MAX_STAGE_COUNT }}，不能再加
+                      </span>
+                      <span v-else-if="!canRemoveStage" class="plot-subline-hint">
+                        阶段数已达下限 {{ MIN_STAGE_COUNT }}，不能再删
+                      </span>
                     </div>
                   </div>
                 </n-space>
@@ -826,15 +846,21 @@ import {
   type GeneratedCharacterPayload,
 } from '@/onboarding/characterSetupModel'
 import {
+  addPlotStage,
   buildEditablePlotOutlinePayload as buildPlotOutlinePayload,
   buildStageRangePercentLabel,
+  canAddPlotStage,
+  canRemovePlotStage,
   clonePlotOutline,
   createEmptyPlotOutline,
   extractPlotOutlineFromResult,
   getPlotOutlineTopFieldKeys,
+  MAX_STAGE_COUNT,
+  MIN_STAGE_COUNT,
   normalizePlotOutlineShape,
   plotFieldLabel,
   plotFieldText,
+  removePlotStage,
   stageContentFieldKeys,
   updatePlotField,
   validateEditablePlotOutline,
@@ -1134,6 +1160,24 @@ const plotOutlineCommitted = ref(false)
 const plotOutlineSessionId = ref('')
 const step4RestoredFromCache = ref(false)
 const editablePlotOutline = ref<PlotOutlineDTO>(createEmptyPlotOutline())
+// J-03：作者可以增删阶段（阶段数 ∈ [3,8]，与后端不变量 I1 一致）。
+const canAddStage = computed(() =>
+  canAddPlotStage(editablePlotOutline.value.stage_plan.length),
+)
+const canRemoveStage = computed(() =>
+  canRemovePlotStage(editablePlotOutline.value.stage_plan.length),
+)
+
+function addStage() {
+  editablePlotOutline.value.stage_plan = addPlotStage(editablePlotOutline.value.stage_plan)
+}
+
+function removeStage(index: number) {
+  editablePlotOutline.value.stage_plan = removePlotStage(
+    editablePlotOutline.value.stage_plan,
+    index,
+  )
+}
 const syncingPlotOutlineDraft = ref(false)
 const plotOutlineStatus = ref<PlotOutlineStatus>('idle')
 const plotOutlineTopFieldKeys = computed(() => {
