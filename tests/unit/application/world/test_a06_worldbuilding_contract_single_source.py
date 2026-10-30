@@ -26,9 +26,15 @@
 - 6 的 16 个短标签**下沉到契约 YAML**（``field_labels`` 段），前端从 bundle 读；
 - 7 的五维数组改为从 bundle 派生。
 
-**保留形状声明但用守卫钉住**（5 与前端表单）——
+**保留形状声明但用守卫钉住**（5 与前端表单的**静态类型**）——
 它们是 **API 契约 / 表单形状**，动态化会丢 IDE 补全、且前端零测试设施 ⇒
 改成「显式声明 + 守卫断言与契约一致」⇒ 契约一改而它们没改，**守卫会红**。
+
+⚠ **第 57 批补充**：前端表单的**运行时值**已改为从 bundle 派生
+（``WorldbuildingPanel.vue`` 的表单形状、``WizardSkeleton.vue`` 的维度表），
+但**静态类型**仍是 API 契约（``Worldbuilding``）⇒ **IDE 补全不丢**、
+类型检查仍能挡住「字段名写错」⇒ 「保留形状声明」那条纪律的**好处都还在**，
+而**运行时的第二份真相**没了。守卫同时盯住两侧。
 
 守卫要点
 --------
@@ -51,6 +57,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 CONTRACT_YAML = ROOT / "shared/taxonomy/worldbuilding_contract_cn_v1.yaml"
 FRONTEND_PANEL = ROOT / "frontend/src/components/workbench/WorldbuildingPanel.vue"
+FRONTEND_SKELETON = ROOT / "frontend/src/components/onboarding/WizardSkeleton.vue"
 FRONTEND_CONTRACT = ROOT / "frontend/src/domain/worldbuilding/contract.ts"
 FRONTEND_MODEL = ROOT / "frontend/src/onboarding/bibleSetupModel.ts"
 ROUTES = ROOT / "interfaces/api/v1/world/worldbuilding_routes.py"
@@ -60,6 +67,15 @@ def _contract_fields() -> dict[str, list[str]]:
     contract = get_worldbuilding_contract()
     return {
         dim: list((cfg.get("fields") or {}).keys())
+        for dim, cfg in contract.dimensions.items()
+    }
+
+
+def _contract_labels() -> dict[str, str]:
+    """维度 → 中文 label（与契约一致）。"""
+    contract = get_worldbuilding_contract()
+    return {
+        dim: str(cfg.get("label") or dim).strip() or dim
         for dim, cfg in contract.dimensions.items()
     }
 
@@ -258,3 +274,44 @@ def test_frontend_panel_dimension_count_is_not_hardcoded():
 
     assert "/ 5) * 100" not in source, "完成度分母还写死 5"
     assert "SECTION_KEYS.length" in source, "完成度分母没有用维度数"
+
+
+# ── 第 57 批：前端的**运行时**形状也不许手写 ─────────────────────────────
+
+
+def test_frontend_skeleton_dimensions_come_from_the_bundle():
+    """骨架屏的维度表（key ＋ 中文标签）必须从 bundle 派生。
+
+    ⚠ 第 57 批之前这里是手写的一份 ⇒ 契约加一维 / 改标签，骨架屏不会跟着改
+    ⇒ 而骨架屏显示的正是「现在在生成哪一维」⇒ 用户会看到一个**不存在的维度**。
+    """
+    source = _strip_comments(FRONTEND_SKELETON.read_text(encoding="utf-8"))
+
+    assert "getWorldbuildingDimensionKeys()" in source, (
+        "骨架屏没有从 bundle 派生维度表"
+    )
+    assert "getWorldbuildingDimensionLabel(" in source, (
+        "骨架屏没有从 bundle 读维度中文标签"
+    )
+    for label in _contract_labels().values():
+        assert f"label: '{label}'" not in source, (
+            f"骨架屏还手写着维度标签 {label!r}"
+        )
+
+
+def test_frontend_panel_form_shape_comes_from_the_bundle():
+    """面板的表单形状（5 维 × 字段名）必须从 bundle 派生。
+
+    ⚠ 静态类型仍是 API 契约（``Worldbuilding``）⇒ IDE 补全与类型检查都还在
+    ⇒ 这里只禁掉**运行时的第二份真相**（手写的字段名字面量）。
+    """
+    source = _strip_comments(FRONTEND_PANEL.read_text(encoding="utf-8"))
+
+    assert "getDimensionFieldOrder(" in source, (
+        "面板的表单形状没有从 bundle 派生"
+    )
+    for dim, fields in _contract_fields().items():
+        for field in fields:
+            assert f"{field}: ''" not in source, (
+                f"面板还手写着字段名 {field!r}（维度 {dim}）"
+            )

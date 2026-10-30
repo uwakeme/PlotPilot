@@ -295,8 +295,11 @@ import { useMessage } from 'naive-ui'
 import {
   FlashOutline, EarthOutline, PeopleOutline, LibraryOutline, LayersOutline, BulbOutline,
 } from '@vicons/ionicons5'
-import { worldbuildingApi } from '@/api/worldbuilding'
-import { getWorldbuildingDimensionKeys } from '@/domain/worldbuilding/contract'
+import { worldbuildingApi, type Worldbuilding } from '@/api/worldbuilding'
+import {
+  getDimensionFieldOrder,
+  getWorldbuildingDimensionKeys,
+} from '@/domain/worldbuilding/contract'
 import { runtimePerformance } from '@/config/performance'
 import { formatApiError } from '@/utils/apiError'
 
@@ -310,13 +313,23 @@ const dataLoaded = ref(false)
 const isDirty = ref(false)
 const lastSavedAt = ref('')
 
-const formData = ref({
-  core_rules:  { power_system: '', physics_rules: '', magic_tech: '' },
-  geography:   { terrain: '', climate: '', resources: '', ecology: '' },
-  society:     { politics: '', economy: '', class_system: '' },
-  culture:     { history: '', religion: '', taboos: '' },
-  daily_life:  { food_clothing: '', language_slang: '', entertainment: '' },
-})
+// A-06（第 57 批）：表单形状从**契约 bundle** 派生
+//   （此前这里手写了「5 维 × 字段名」两张表 ⇒ 契约加字段，这里不会跟着加）。
+type SectionKey = 'core_rules' | 'geography' | 'society' | 'culture' | 'daily_life'
+
+function emptyWorldbuildingForm(): Record<SectionKey, Record<string, string>> {
+  const dims = getWorldbuildingDimensionKeys() as SectionKey[]
+  return Object.fromEntries(
+    dims.map((dim) => [
+      dim,
+      Object.fromEntries(getDimensionFieldOrder(dim).map((field) => [field, ''])),
+    ]),
+  ) as Record<SectionKey, Record<string, string>>
+}
+
+// ⚠ 静态类型用 **API 契约**（Worldbuilding），运行时值从 bundle 派生；
+//   两者一致由守卫 ``test_api_dto_fields_match_the_contract`` 钉住（DTO 逐字段 == 契约）。
+const formData = ref<Worldbuilding>(emptyWorldbuildingForm() as unknown as Worldbuilding)
 
 // ── Controlled collapse ──────────────────────────────────────────
 const ALL_NAMES = ['core', 'geo', 'society', 'culture', 'daily']
@@ -328,8 +341,6 @@ function toggleAll() {
 }
 
 // ── Section status ───────────────────────────────────────────────
-type SectionKey = 'core_rules' | 'geography' | 'society' | 'culture' | 'daily_life'
-
 function sectionValues(key: SectionKey): string[] {
   return Object.values(formData.value[key] as Record<string, string>)
 }
@@ -401,13 +412,14 @@ const loadWorldbuilding = async () => {
     if (isEmpty) {
       message.warning('世界观尚未创建，首次保存时将自动创建')
     } else {
-      formData.value = {
-        core_rules:  data.core_rules  || formData.value.core_rules,
-        geography:   data.geography   || formData.value.geography,
-        society:     data.society     || formData.value.society,
-        culture:     data.culture     || formData.value.culture,
-        daily_life:  data.daily_life  || formData.value.daily_life,
-      }
+      // A-06（第 57 批）：维度集合从 SECTION_KEYS 派生（不再手写五维）。
+      formData.value = Object.fromEntries(
+        SECTION_KEYS.map((k) => [
+          k,
+          (data as unknown as Record<string, Record<string, string>>)[k]
+            || formData.value[k],
+        ]),
+      ) as unknown as Worldbuilding
     }
   } catch (error: unknown) {
     message.error(formatApiError(error, '加载世界观失败'))

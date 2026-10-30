@@ -95,6 +95,11 @@
 </template>
 
 <script setup lang="ts">
+import {
+  getWorldbuildingDimensionKeys,
+  getWorldbuildingDimensionLabel,
+} from '@/domain/worldbuilding/contract'
+
 const props = withDefaults(
   defineProps<{
     /** 骨架屏类型 */
@@ -113,13 +118,12 @@ const props = withDefaults(
   }
 )
 
-const dimensions = [
-  { key: 'core_rules', label: '核心法则' },
-  { key: 'geography', label: '地理生态' },
-  { key: 'society', label: '社会结构' },
-  { key: 'culture', label: '历史文化' },
-  { key: 'daily_life', label: '沉浸感细节' },
-]
+// A-06（第 57 批）：维度键与中文标签都从**契约 bundle** 派生
+//   （此前这里是手写的一份 ⇒ 契约加一维 / 改标签，这里不会跟着改）。
+const dimensions = getWorldbuildingDimensionKeys().map((key) => ({
+  key,
+  label: getWorldbuildingDimensionLabel(key),
+}))
 </script>
 
 <style scoped>
