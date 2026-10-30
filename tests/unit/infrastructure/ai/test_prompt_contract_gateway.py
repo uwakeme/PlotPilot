@@ -1,4 +1,4 @@
-﻿"""AI 能力契约与 prompt_packages 一致性测试。"""
+"""AI 能力契约与 prompt_packages 一致性测试。"""
 from __future__ import annotations
 
 from pathlib import Path

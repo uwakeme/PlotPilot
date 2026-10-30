@@ -163,6 +163,13 @@ AI_PARTICIPATION_CORE_PIPELINE_MODULES: frozenset[str] = frozenset(
     {
         "application/ai/llm_control_service.py",
         "application/ai/structured_json_pipeline.py",
+        # ── 第 63 批：AI 调用通道（CPMS invocation）的**统一出模型口** ──
+        # `AttemptService.generate / generate_streaming` 直接调 `LLMService`
+        # ⇒ 正文生成（chapter.generate.prose）、A1 审计、章后同步、桥接修复…
+        # **全部**经它 ⇒ 关掉它 = 写不出书 ⇒ 归核心链路，不要求自己接闸。
+        # ⚠ 它之前**从来没被归类过**：文件带 BOM ⇒ 覆盖扫描（ast.parse）静默跳过它
+        # ⇒ 总闸的覆盖清单一直是残缺的 ⇒ 第 63 批去掉 BOM 才暴露出来。
+        "application/ai_invocation/services.py",
         "application/analyst/services/state_extractor.py",
         "application/analyst/services/tension_analyzer.py",
         "application/audit/services/book_review_service.py",

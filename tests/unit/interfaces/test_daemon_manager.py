@@ -14,6 +14,29 @@ from interfaces.daemon_manager import (
 )
 
 
+class _FakeSupervisor:
+    """监督者替身：只记录 start/stop，不起真线程、不碰真锁。"""
+
+    def __init__(self, *_args, **_kwargs):
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+    def state(self):
+        return {
+            "enabled": False,
+            "running": False,
+            "restart_attempts": 0,
+            "last_restart_at": None,
+            "last_error": "",
+        }
+
+
 class FakeEvent:
     def __init__(self):
         self.was_set = False
@@ -54,6 +77,11 @@ def test_daemon_manager_status_reads_process_state():
         log_level=20,
         log_file="logs/test.log",
         shared_state_provider=lambda: {},
+        # ⚠ 必须注入桩（第 63 批）：默认实现会**读真锁**并 taskkill 掉
+        #   **正在运行的**守护进程 ⇒ 跑一次门禁就静默停摆。
+        orphan_daemon_cleaner=lambda *a, **k: 0,
+        # ⚠ 也不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
         lifecycle_settings_provider=lambda: DaemonLifecycleSettings(
             graceful_join_timeout_seconds=0.25,
             terminate_join_timeout_seconds=0.5,
@@ -70,6 +98,11 @@ def test_daemon_manager_start_respects_disable_auto_daemon():
         log_level=20,
         log_file="logs/test.log",
         shared_state_provider=lambda: {},
+        # ⚠ 必须注入桩（第 63 批）：默认实现会**读真锁**并 taskkill 掉
+        #   **正在运行的**守护进程 ⇒ 跑一次门禁就静默停摆。
+        orphan_daemon_cleaner=lambda *a, **k: 0,
+        # ⚠ 也不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
         settings_provider=lambda: BackendSettings(disable_auto_daemon=True),
         process_factory=lambda **kwargs: calls.append(kwargs),
     )
@@ -87,6 +120,11 @@ def test_daemon_manager_stop_signals_and_terminates_stuck_process(monkeypatch):
         log_level=20,
         log_file="logs/test.log",
         shared_state_provider=lambda: {},
+        # ⚠ 必须注入桩（第 63 批）：默认实现会**读真锁**并 taskkill 掉
+        #   **正在运行的**守护进程 ⇒ 跑一次门禁就静默停摆。
+        orphan_daemon_cleaner=lambda *a, **k: 0,
+        # ⚠ 也不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
         lifecycle_settings_provider=lambda: DaemonLifecycleSettings(
             graceful_join_timeout_seconds=0.25,
             terminate_join_timeout_seconds=0.5,
@@ -105,7 +143,7 @@ def test_daemon_manager_stop_signals_and_terminates_stuck_process(monkeypatch):
     assert manager.stop_event is None
 
 
-def test_daemon_process_injects_ai_stream_queue(monkeypatch):
+def test_daemon_process_injects_ai_stream_queue(monkeypatch, tmp_path):
     """子进程入口收到 ai_queue 时必须注入 ai_stream_bus。
 
     `build_daemon` 是 `run_autopilot_daemon_process` **内部** import 的，
@@ -133,11 +171,15 @@ def test_daemon_process_injects_ai_stream_queue(monkeypatch):
     monkeypatch.setattr(start_daemon_module, "build_daemon", _boom)
 
     sentinel = object()
+    # ⚠ 必须用**临时锁**（第 63 批）：原先不传 lock_path ⇒ 用的是**真锁**
+    #   ⇒ 这条测试会去抢真锁（抢不到就提前退出 ⇒ 断言假失败；抢到了更糟：
+    #   测试进程会变成真守护进程的持有者）。
     daemon_manager.run_autopilot_daemon_process(
         stop_event=type("E", (), {"is_set": lambda self: True})(),
         log_level=logging.INFO,
         log_file="",
         ai_queue=sentinel,
+        lock_path=str(tmp_path / "inject-test.lock"),
     )
 
     assert injected.get("queue") is sentinel
@@ -207,6 +249,11 @@ def test_daemon_manager_start_passes_ai_queue_to_child(monkeypatch):
         log_level=20,
         log_file="logs/test.log",
         shared_state_provider=lambda: shared_state,
+        # ⚠ 必须注入桩（第 63 批）：默认实现会**读真锁**并 taskkill 掉
+        #   **正在运行的**守护进程 ⇒ 跑一次门禁就静默停摆。
+        orphan_daemon_cleaner=lambda *a, **k: 0,
+        # ⚠ 也不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
         process_factory=_process_factory,
         event_factory=FakeEvent,
         # 必须注入桩：默认实现会往真实 data/daemon.pid 写一个假 PID，
@@ -330,6 +377,9 @@ def _install_process_probe(monkeypatch, rows, recorded_pid=None):
     monkeypatch.setattr(
         "interfaces.daemon_manager._recorded_daemon_pid", lambda: recorded_pid
     )
+    # ⚠ 第 63 批：测试套件默认打开 `PLOTPILOT_SKIP_ORPHAN_CLEANUP`
+    #   （不许扫真进程）⇒ 这几条要验**清扫真实行为** ⇒ 自己把它删掉。
+    monkeypatch.delenv("PLOTPILOT_SKIP_ORPHAN_CLEANUP", raising=False)
     return killed
 
 
@@ -441,6 +491,11 @@ def test_daemon_manager_records_and_clears_pid(monkeypatch):
         log_level=20,
         log_file="logs/test.log",
         shared_state_provider=lambda: {},
+        # ⚠ 必须注入桩（第 63 批）：默认实现会**读真锁**并 taskkill 掉
+        #   **正在运行的**守护进程 ⇒ 跑一次门禁就静默停摆。
+        orphan_daemon_cleaner=lambda *a, **k: 0,
+        # ⚠ 也不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
         process_factory=lambda **kw: _P(),
         event_factory=FakeEvent,
         pid_recorder=recorded.append,

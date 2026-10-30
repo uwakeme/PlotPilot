@@ -266,6 +266,18 @@ daemon:
     terminate_join_timeout_seconds: 1.0
     sigkill_join_timeout_seconds: 1.0
     windows_taskkill_timeout_seconds: 3.0
+  # ── 守护进程监督者（第 63 批）：守护进程被外部静默杀掉时自动拉起 ──
+  # ⚠ 三条安全约束：① 只在单实例锁空闲时才拉起（否则会杀另一个实例的守护进程）
+  #   ② 退避 + 次数上限（防重启风暴）③ 关机流程里不再拉起。
+  supervisor:
+    enabled: true
+    # ⚠ 取值**故意**与 DaemonSupervisorSettings 的默认值不同 ——
+    #   否则「代码根本不读这个键」也会绿（值碰巧一样）⇒ 反装饰品守卫必须有牙齿。
+    poll_seconds: 17.0
+    initial_backoff_seconds: 25.0
+    max_backoff_seconds: 240.0
+    max_restarts: 4
+    reset_after_seconds: 1500.0
 
 # ─── AI 参与度开关（默认全部关闭 = 行为与改造前逐位一致）────────────────────
 # 打开顺序建议：先只开一个、观察 shadow 日志，再关 shadow 真正施加。

@@ -8,20 +8,40 @@ import multiprocessing
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Dict
 
 from application.core.config.config_loader import get_config
 from application.core.config.runtime_settings_utils import positive_float, section_value
-from infrastructure.runtime.daemon_lock import DaemonLock, read_holder_pid
+from infrastructure.runtime.daemon_lock import DaemonLock, is_lock_held, read_holder_pid
 from interfaces.api.settings import BackendSettings, get_backend_settings
 
 
 logger = logging.getLogger(__name__)
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+#: **测试期间不许扫真进程**（第 63 批）。
+#:
+#: 为什么需要：单测里 ``TestClient(app).get("/health")`` **会跑 app 的 lifespan**
+#: ⇒ ``BackendLifecycle.startup()`` ⇒ ``cleanup_orphans()``
+#: ⇒ 真的 ``cleanup_orphan_python_processes()`` ⇒ 扫**真进程表**
+#: ⇒ 按命令行匹配把**正在运行的** API（``interfaces.main``）与守护子进程
+#: （PID 记录）**一起 taskkill**。
+#: ⇒ ⇒ 2026-10-30 实测：**跑一次门禁，正在跑的后端就没了**（无任何日志、无崩溃事件）。
+#:
+#: ⇒ 打开这个变量 ⇒ 两个清扫入口都直接返回 ⇒ **测试套件永远不会杀真进程**。
+#: （要验清扫真实行为的单测自己 ``monkeypatch.delenv`` 掉它。）
+SKIP_ORPHAN_CLEANUP_ENV = "PLOTPILOT_SKIP_ORPHAN_CLEANUP"
+
+
+def _orphan_cleanup_skipped() -> bool:
+    """清扫是否被开关跳过。"""
+    value = os.environ.get(SKIP_ORPHAN_CLEANUP_ENV, "")
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -115,6 +135,225 @@ def get_daemon_lifecycle_settings() -> DaemonLifecycleSettings:
             defaults.daemon_lock_retry_seconds,
         ),
     )
+
+
+@dataclass(frozen=True)
+class DaemonSupervisorSettings:
+    """守护进程监督者的口径（第 63 批）。
+
+    全部来自 ``config/performance.yaml`` 的 ``daemon.supervisor`` 段。
+    """
+
+    #: 总闸：关掉 ⇒ 监督者完全不启动（守护进程死了也不管）。
+    enabled: bool = True
+    #: 多久看一次守护进程还活着。
+    poll_seconds: float = 15.0
+    #: 第一次拉起前的等待（之后指数退避）。
+    initial_backoff_seconds: float = 30.0
+    #: 退避上限。
+    max_backoff_seconds: float = 300.0
+    #: 连续拉起多少次之后放弃（不再自动拉起，但仍继续记 error）。
+    max_restarts: int = 5
+    #: 守护进程稳定存活多久之后，退避计数清零。
+    reset_after_seconds: float = 1800.0
+
+
+def get_daemon_supervisor_settings() -> DaemonSupervisorSettings:
+    """读 ``daemon.supervisor`` 段（读不到 ⇒ 用默认值）。"""
+    daemon = getattr(get_config(), "daemon", None)
+    section = section_value(daemon, "supervisor", None)
+    defaults = DaemonSupervisorSettings()
+    return DaemonSupervisorSettings(
+        enabled=bool(section_value(section, "enabled", defaults.enabled)),
+        poll_seconds=positive_float(
+            section_value(section, "poll_seconds", defaults.poll_seconds),
+            defaults.poll_seconds,
+        ),
+        initial_backoff_seconds=positive_float(
+            section_value(
+                section, "initial_backoff_seconds", defaults.initial_backoff_seconds
+            ),
+            defaults.initial_backoff_seconds,
+        ),
+        max_backoff_seconds=positive_float(
+            section_value(section, "max_backoff_seconds", defaults.max_backoff_seconds),
+            defaults.max_backoff_seconds,
+        ),
+        max_restarts=max(
+            1, int(section_value(section, "max_restarts", defaults.max_restarts))
+        ),
+        reset_after_seconds=positive_float(
+            section_value(section, "reset_after_seconds", defaults.reset_after_seconds),
+            defaults.reset_after_seconds,
+        ),
+    )
+
+
+class DaemonSupervisor:
+    """守护进程死了自动拉起（带退避 + 上限 + 显式日志）。
+
+    为什么需要它（2026-10-30 实测）
+    --------------------------------
+    守护子进程被**外部静默硬杀**过：无日志、无 traceback、Windows 事件日志无记录
+    ⇒ API 还活着、``/health`` 仍 200，但**自动驾驶静默停摆**（书不写了），
+    而界面上完全看不出异常（前端从不读 ``daemon_process.running``）。
+
+    三条安全约束（少一条都会闯祸）
+    ------------------------------
+    1. **只在单实例锁空闲时才拉起** —— 否则 ``manager.start()`` 里的
+       ``cleanup_orphan_daemon()`` 会去杀**另一个实例**的守护进程
+       ⇒ 两个实例互抢、抖动。
+    2. **退避 + 次数上限** —— 防重启风暴（被反复杀时不会变成拉锯）。
+    3. **停止后不再拉起** —— 关机流程里绝不能把守护进程复活。
+
+    ``_check_once`` 的返回值（动作名，便于测试与日志）::
+
+        alive             守护进程活着 ⇒ 什么都不做
+        locked_elsewhere  守护进程不在，但锁被别人持有 ⇒ 不拉起（不是我们的事）
+        backoff           退避窗口内 ⇒ 先等等
+        exhausted         超过拉起次数上限 ⇒ 不再拉起（但继续记 error）
+        restarted         拉起成功
+        failed            拉起失败
+        stopped           监督者已被要求停止
+    """
+
+    def __init__(
+        self,
+        manager: "AutopilotDaemonManager",
+        settings: DaemonSupervisorSettings,
+        logger_: logging.Logger | None = None,
+        *,
+        lock_probe: Callable[[], bool] = is_lock_held,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._manager = manager
+        self._settings = settings
+        self._logger = logger_ or logger
+        self._lock_probe = lock_probe
+        self._clock = clock
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._restart_attempts = 0
+        self._next_allowed_at = 0.0
+        self._alive_since: float | None = None
+        self._last_restart_at: float | None = None
+        self._last_error: str = ""
+
+    # ── 生命周期 ────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """启动监督线程（已在跑 ⇒ 什么都不做）。"""
+        if not self._settings.enabled:
+            self._logger.info("守护进程监督者已禁用（daemon.supervisor.enabled=false）")
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="DaemonSupervisor", daemon=True
+        )
+        self._thread.start()
+        self._logger.info(
+            "守护进程监督者已启动（轮询 %.0fs，拉起上限 %d 次）",
+            self._settings.poll_seconds,
+            self._settings.max_restarts,
+        )
+
+    def stop(self) -> None:
+        """停止监督线程（停止后**绝不再拉起**守护进程）。"""
+        self._stop_event.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
+
+    # ── 状态（给 /health 用）────────────────────────────────────────────
+
+    def state(self) -> Dict[str, Any]:
+        return {
+            "enabled": self._settings.enabled,
+            "running": self._thread is not None and self._thread.is_alive(),
+            "restart_attempts": self._restart_attempts,
+            "last_restart_at": self._last_restart_at,
+            "last_error": self._last_error,
+        }
+
+    # ── 主循环 ──────────────────────────────────────────────────────────
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(self._settings.poll_seconds):
+                return
+            try:
+                self._check_once()
+            except Exception as exc:  # noqa: BLE001 —— 监督者自己不能崩
+                self._logger.error("守护进程监督者自身异常: %s", exc, exc_info=True)
+
+    def _check_once(self) -> str:
+        """检查一次守护进程存活状态，返回动作名。"""
+        if self._manager.status().running:
+            if self._alive_since is None:
+                self._alive_since = self._clock()
+            self._maybe_reset_backoff()
+            return "alive"
+
+        # 守护进程不在了
+        self._alive_since = None
+
+        if self._stop_event.is_set():
+            return "stopped"
+
+        # 🔒 锁被别人持有 ⇒ 另一个实例的守护进程在跑 ⇒ 不许抢
+        if self._lock_probe():
+            self._logger.info(
+                "守护进程不在了，但单实例锁被占用（别的实例在跑守护进程）⇒ 不拉起"
+            )
+            return "locked_elsewhere"
+
+        now = self._clock()
+        if now < self._next_allowed_at:
+            return "backoff"
+
+        if self._restart_attempts >= self._settings.max_restarts:
+            self._logger.error(
+                "守护进程已连续拉起失败 %d 次（上限 %d）⇒ 停止自动拉起，需人工介入",
+                self._restart_attempts,
+                self._settings.max_restarts,
+            )
+            return "exhausted"
+
+        self._restart_attempts += 1
+        self._logger.error("检测到守护进程已死（第 %d 次拉起）", self._restart_attempts)
+        try:
+            self._manager.start()
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = str(exc)
+            self._logger.error("拉起守护进程失败: %s", exc, exc_info=True)
+            self._schedule_next()
+            return "failed"
+
+        self._last_error = ""
+        self._last_restart_at = now
+        self._logger.info("守护进程已重新拉起（第 %d 次）", self._restart_attempts)
+        self._schedule_next()
+        return "restarted"
+
+    def _schedule_next(self) -> None:
+        """排下一次允许拉起的时间（指数退避，封顶 ``max_backoff_seconds``）。"""
+        delay = min(
+            self._settings.initial_backoff_seconds
+            * (2 ** max(0, self._restart_attempts - 1)),
+            self._settings.max_backoff_seconds,
+        )
+        self._next_allowed_at = self._clock() + delay
+
+    def _maybe_reset_backoff(self) -> None:
+        """守护进程稳定存活够久 ⇒ 退避计数清零（下次真死时从头再来）。"""
+        if self._restart_attempts == 0 or self._alive_since is None:
+            return
+        if self._clock() - self._alive_since >= self._settings.reset_after_seconds:
+            self._restart_attempts = 0
+            self._next_allowed_at = 0.0
 
 
 def is_expected_daemon_shutdown_exception(exc: BaseException) -> bool:
@@ -552,6 +791,12 @@ def cleanup_orphan_python_processes(logger_: logging.Logger | None = None) -> No
     自身与所有祖先进程一律跳过；解释器路径含 "plotpilot" 不构成命中理由。
     """
     log = logger_ or logger
+    if _orphan_cleanup_skipped():
+        log.info(
+            "已按 %s 跳过残留进程清扫（测试期间：不许杀掉开发者正在跑的后端）",
+            SKIP_ORPHAN_CLEANUP_ENV,
+        )
+        return
     lifecycle_settings = get_daemon_lifecycle_settings()
     log.info("检查残留进程（当前 PID=%s）...", os.getpid())
 
@@ -602,6 +847,12 @@ def cleanup_orphan_daemon(
     返回被杀掉的进程数。
     """
     log = logger_ or logger
+    if _orphan_cleanup_skipped():
+        log.info(
+            "已按 %s 跳过孤儿守护进程清理（测试期间：不许杀掉正在运行的守护进程）",
+            SKIP_ORPHAN_CLEANUP_ENV,
+        )
+        return 0
     lifecycle_settings = get_daemon_lifecycle_settings()
 
     holder_pid = read_holder_pid(Path(lock_path) if lock_path else None)
@@ -647,6 +898,10 @@ class AutopilotDaemonManager:
         pid_recorder: Callable[[int], None] = record_daemon_pid,
         pid_recorder_clear: Callable[[], None] = clear_daemon_pid,
         orphan_daemon_cleaner: Callable[..., int] = cleanup_orphan_daemon,
+        supervisor_settings_provider: Callable[[], DaemonSupervisorSettings] = (
+            get_daemon_supervisor_settings
+        ),
+        supervisor_factory: Callable[["AutopilotDaemonManager"], "DaemonSupervisor"] | None = None,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._log_level = log_level
@@ -659,6 +914,10 @@ class AutopilotDaemonManager:
         self._pid_recorder = pid_recorder
         self._pid_recorder_clear = pid_recorder_clear
         self._orphan_daemon_cleaner = orphan_daemon_cleaner
+        self._supervisor_settings_provider = supervisor_settings_provider
+        #: 监督者的构造口（测试注入假实现 ⇒ 守卫不许起真线程、不许碰真锁）。
+        self._supervisor_factory = supervisor_factory
+        self._supervisor: DaemonSupervisor | None = None
         self.process = None
         self.stop_event = None
 
@@ -668,6 +927,29 @@ class AutopilotDaemonManager:
             running=running,
             pid=self.process.pid if self.process else None,
         )
+
+    def _ensure_supervisor(self) -> DaemonSupervisor:
+        """拿到（并按需创建）监督者。"""
+        if self._supervisor is None:
+            if self._supervisor_factory is not None:
+                self._supervisor = self._supervisor_factory(self)
+            else:
+                self._supervisor = DaemonSupervisor(
+                    self, self._supervisor_settings_provider(), self._logger
+                )
+        return self._supervisor
+
+    def supervisor_state(self) -> Dict[str, Any]:
+        """监督者状态（给 /health 用；守护进程被外部杀掉时这里能看出来）。"""
+        if self._supervisor is None:
+            return {
+                "enabled": bool(self._supervisor_settings_provider().enabled),
+                "running": False,
+                "restart_attempts": 0,
+                "last_restart_at": None,
+                "last_error": "",
+            }
+        return self._supervisor.state()
 
     def cleanup_orphans(self) -> None:
         cleanup_orphan_python_processes(self._logger)
@@ -753,8 +1035,16 @@ class AutopilotDaemonManager:
         # 守护子进程命令行不含任何可识别标识，只能靠 PID 记录在下次启动时清理。
         self._pid_recorder(self.process.pid)
         self._logger.info("守护进程已创建并启动（独立进程模式，流式队列 + AI 事件队列 + 共享状态 + 持久化队列已传递）")
+        # 🔒 监督者：守护进程被外部杀掉时自动拉起（第 63 批）。
+        # ⚠ 放在**守护进程真的起来之后** —— `DISABLE_AUTO_DAEMON=1` 时不起守护进程，
+        #   也就没有东西要监督。
+        self._ensure_supervisor().start()
 
     def stop(self) -> None:
+        # 🔒 先停监督者 —— 否则它会在关机流程里把守护进程复活（第 63 批）。
+        if self._supervisor is not None:
+            self._supervisor.stop()
+            self._supervisor = None
         daemon_pid = self.process.pid if self.process else None
 
         try:

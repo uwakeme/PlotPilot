@@ -21,6 +21,12 @@ def pytest_configure(config):
 
     os.environ.setdefault("PLOTPILOT_ALLOW_DIRECT_SQLITE_WRITES", "1")
 
+    # ⚠ 第 63 批：**测试期间不许扫真进程**。
+    #   单测里 `TestClient(app)` 会跑 app 的 lifespan ⇒ 启动期清扫 ⇒
+    #   把**正在运行的**后端（API + 守护进程）一起 taskkill ⇒
+    #   ⇒ 跑一次门禁，开发者正在跑的后端就没了（2026-10-30 实测，无任何日志）。
+    os.environ.setdefault("PLOTPILOT_SKIP_ORPHAN_CLEANUP", "1")
+
     # 测试日志**不许**写进生产的 ``logs/plotpilot.log``。
     #
     # ⚠ 第 16 批实测踩过：跑门禁时，测试的**预期**错误日志（迁移失败之类）

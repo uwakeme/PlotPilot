@@ -43,6 +43,30 @@ from infrastructure.runtime.daemon_lock import (
 )
 from interfaces.daemon_manager import cleanup_orphan_daemon, run_autopilot_daemon_process
 
+class _FakeSupervisor:
+    """监督者替身：只记录 start/stop，不起真线程、不碰真锁。"""
+
+    def __init__(self, *_args, **_kwargs):
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+    def state(self):
+        return {
+            "enabled": False,
+            "running": False,
+            "restart_attempts": 0,
+            "last_restart_at": None,
+            "last_error": "",
+        }
+
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,12 +244,15 @@ def _plant_holder(lock_path: pathlib.Path, pid: int) -> None:
     )
 
 
-def test_startup_cleanup_kills_the_live_lock_holder(lock_path, tmp_path):
+def test_startup_cleanup_kills_the_live_lock_holder(lock_path, tmp_path, monkeypatch):
     """锁文件里记着一个**活着的** pid ⇒ 启动期必须把它杀掉。
 
     ⚠ 场景：上一个 API 实例被强杀 ⇒ 它的守护进程变孤儿（父没了，但它还活着）
        ⇒ 新实例启动时必须先把它杀掉，否则两个守护进程同时跑同一本书。
     """
+    # ⚠ 第 63 批：测试套件默认打开 `PLOTPILOT_SKIP_ORPHAN_CLEANUP`
+    #   （不许扫真进程）⇒ 这几条要验**清扫真实行为** ⇒ 自己把它删掉。
+    monkeypatch.delenv("PLOTPILOT_SKIP_ORPHAN_CLEANUP", raising=False)
     sleeper = _spawn(_child_sleep, 300.0)
     try:
         _plant_holder(lock_path, sleeper.pid)
@@ -240,15 +267,17 @@ def test_startup_cleanup_kills_the_live_lock_holder(lock_path, tmp_path):
             sleeper.join(timeout=10)
 
 
-def test_startup_cleanup_ignores_a_dead_holder(lock_path):
+def test_startup_cleanup_ignores_a_dead_holder(lock_path, monkeypatch):
     """锁文件里的 pid 已经不在了（陈旧记录）⇒ 不许乱杀任何进程。"""
+    monkeypatch.delenv("PLOTPILOT_SKIP_ORPHAN_CLEANUP", raising=False)
     _plant_holder(lock_path, 999999)
     killed = cleanup_orphan_daemon(logger, lock_path=lock_path)
     assert killed == 0, f"陈旧记录不该触发任何清理（killed={killed}）"
 
 
-def test_startup_cleanup_does_nothing_without_a_lock_file(tmp_path):
+def test_startup_cleanup_does_nothing_without_a_lock_file(tmp_path, monkeypatch):
     """没有锁文件 ⇒ 没有孤儿可清（返回 0，不抛异常）。"""
+    monkeypatch.delenv("PLOTPILOT_SKIP_ORPHAN_CLEANUP", raising=False)
     assert cleanup_orphan_daemon(logger, lock_path=tmp_path / "missing.lock") == 0
 
 
@@ -280,6 +309,8 @@ def test_the_manager_cleans_the_orphan_before_starting_a_new_daemon():
         settings_provider=lambda: BackendSettings(disable_auto_daemon=False),
         process_factory=lambda **kwargs: calls.append("process"),
         orphan_daemon_cleaner=_cleaner,
+        # ⚠ 必须注入桩（第 63 批）：不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
     )
 
     with pytest.raises(_Sentinel):
@@ -306,6 +337,8 @@ def test_the_manager_cleans_the_orphan_even_when_the_auto_daemon_is_disabled():
         settings_provider=lambda: BackendSettings(disable_auto_daemon=True),
         process_factory=lambda **kwargs: calls.append("process"),
         orphan_daemon_cleaner=lambda *a, **k: (calls.append("cleanup"), 0)[1],
+        # ⚠ 必须注入桩（第 63 批）：不许起真监督线程（它会轮询并可能拉起守护进程）。
+        supervisor_factory=_FakeSupervisor,
     )
 
     manager.start()

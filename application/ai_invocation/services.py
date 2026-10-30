@@ -1,4 +1,4 @@
-﻿"""AI Invocation 会话与 attempt 服务。"""
+"""AI Invocation 会话与 attempt 服务。"""
 from __future__ import annotations
 
 import logging

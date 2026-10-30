@@ -1,4 +1,4 @@
-﻿"""测试 SnapshotService 的引擎状态支持"""
+"""测试 SnapshotService 的引擎状态支持"""
 import sqlite3
 import tempfile
 from pathlib import Path

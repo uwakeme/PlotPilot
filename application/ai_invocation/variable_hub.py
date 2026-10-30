@@ -1,4 +1,4 @@
-﻿"""Variable Hub 最小解析底座。"""
+"""Variable Hub 最小解析底座。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -59,6 +59,25 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
   结构性冲突（新结构会孤立已有正文的章节）必须上抛 —— 守护进程侧暂停待人工处理，
   API 侧回 409（与 `POST /macro/confirm` 一致），**不许**退化成 500。
   守卫：`tests/unit/engine/test_macro_structure_conflict_guard.py`。
+- **跑门禁不许杀掉正在运行的后端**（2026-10-30 补）：
+  单测里 `TestClient(app)` **会跑 app 的 lifespan** ⇒ 启动期「残留进程清扫」
+  ⇒ 扫**真进程表** ⇒ 按命令行匹配把**正在运行的** API（`interfaces.main`）
+  与守护子进程（PID 记录）**一起 taskkill** ⇒ **跑一次门禁，后端就没了**
+  （且无任何日志、无崩溃事件 ⇒ 极难定位）。
+  ⇒ 已加安全阀 `PLOTPILOT_SKIP_ORPHAN_CLEANUP=1`：`tests/conftest.py` 全局打开
+  ⇒ **整个测试套件永远不会杀真进程**（要验清扫真实行为的单测自己 `delenv`）。
+  ⇒ 单测里构造 `AutopilotDaemonManager(...)` **必须**注入 `orphan_daemon_cleaner`
+  与 `supervisor_factory` 两个桩（AST 守卫盯着整个 `tests/` 目录）。
+  ⇒ 单测里调 `run_autopilot_daemon_process(...)` **必须**传临时 `lock_path`
+  （不传就去抢**真锁**）。
+- **守护进程死了会自动拉起**（第 63 批，`DaemonSupervisor`）：
+  守护子进程被外部静默硬杀过（无日志、无崩溃事件）⇒ API 还活着、`/health` 仍 200，
+  但**自动驾驶静默停摆**（界面完全无感）。⇒ 监督者带退避 + 次数上限把它拉起来，
+  三条约束：① **只在单实例锁空闲时**才拉起（否则会杀另一个实例的守护进程）
+  ② 退避 + 上限（防重启风暴）③ **关机流程里不再拉起**。
+  状态在 `GET /health` 的 `daemon_supervisor` 字段里。
+  守卫：`tests/unit/interfaces/test_daemon_supervisor.py`、
+  `tests/unit/interfaces/test_orphan_cleanup_isolation.py`。
 - **宏观结构合并的冲突分两档**（H-05，2026-10-29 补）：
   `fatal` = 节点下**已有正文** ⇒ 阻断重构（不变量，原样保留）；
   `warning` = 节点下**只有未动笔的章节** ⇒ 不阻断，但旧节点**保留**

@@ -1,4 +1,4 @@
-﻿"""生成画像配置读取工具。"""
+"""生成画像配置读取工具。"""
 from __future__ import annotations
 
 from functools import lru_cache

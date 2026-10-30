@@ -1,4 +1,4 @@
-﻿"""InvocationSpec 加载服务。"""
+"""InvocationSpec 加载服务。"""
 from __future__ import annotations
 
 from dataclasses import replace

@@ -279,7 +279,8 @@ def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
     @created.get("/health")
     async def health_check():
         uptime = time.time() - STARTUP_TIME
-        daemon_status = _get_daemon_manager().status()
+        manager = _get_daemon_manager()
+        daemon_status = manager.status()
         return {
             "status": "healthy",
             "version": APP_RELEASE_VERSION,
@@ -289,6 +290,9 @@ def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
                 "running": daemon_status.running,
                 "pid": daemon_status.pid,
             },
+            # 第 63 批：监督者状态 —— 守护进程被外部静默杀掉时，这里能看出来
+            # （`daemon_process.running=false` 且 `daemon_supervisor.restart_attempts>0`）。
+            "daemon_supervisor": manager.supervisor_state(),
         }
 
     frontend_dir = app_settings.frontend_dir

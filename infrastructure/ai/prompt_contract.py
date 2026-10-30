@@ -1,4 +1,4 @@
-﻿"""AI 能力契约的轻量值对象。"""
+"""AI 能力契约的轻量值对象。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

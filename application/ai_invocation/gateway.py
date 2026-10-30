@@ -1,4 +1,4 @@
-﻿"""AIInvocationGateway：AI 调用唯一编排入口。"""
+"""AIInvocationGateway：AI 调用唯一编排入口。"""
 from __future__ import annotations
 
 from typing import Callable

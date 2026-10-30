@@ -1,4 +1,4 @@
-﻿"""AI Invocation 子域导出。"""
+"""AI Invocation 子域导出。"""
 from application.ai_invocation.dtos import (
     AdoptionCommit,
     AdoptionCommitStatus,

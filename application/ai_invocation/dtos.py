@@ -1,4 +1,4 @@
-﻿"""AI Invocation 子域公共 DTO。"""
+"""AI Invocation 子域公共 DTO。"""
 from __future__ import annotations
 
 import hashlib

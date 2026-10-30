@@ -1,4 +1,4 @@
-﻿"""chapter-summarizer 能力契约。"""
+"""chapter-summarizer 能力契约。"""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
