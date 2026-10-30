@@ -224,6 +224,15 @@ def mark_truncated(content: str, target_chars: int, *, section_headers=()) -> st
     return f"{notice}{TRUNCATION_NOTICE}{kept}{TRUNCATION_MARKER}"
 
 
+#: 权重为 0 时给模型的**占位说明**（第 67 批 · S-2）。
+#:
+#: ⚠ 为什么需要：权重 0 ⇒ 槽位内容**完全不给** ⇒ 模型看不到这一节存在
+#:   ⇒ 「被上下文规划裁掉」与「本来就没有这一节」**不可分辨**
+#:   ⇒ 那是本项目反复清理的「没测出来被说成没有」同族问题。
+#: ⚠ 它**不计 token**（预算已按权重定死）⇒ 账面比实际略低（≤ 15 tokens/槽位）。
+WEIGHT_ZERO_PLACEHOLDER = "（本节由上下文规划标记为当前章不需要，未提供内容）"
+
+
 #: 兼容旧名（内部曾用下划线前缀）。
 _mark_truncated = mark_truncated
 
@@ -294,8 +303,15 @@ def truncate_t0_slots(
     #   （否则直接调用它的路径会漏掉这一步）。
     cap_slots_by_own_limit(t0_slots, chars_per_token_zh=chars_per_token_zh)
 
-    for slot in t0_slots.values():
-        # ── 第 2 步：按总量预算裁（插入顺序，装得下就装） ───────────
+    # ⚠ 第 67 批（S-1）：**按价值排序**（priority 降序），不再按 dict 插入顺序。
+    #   ⚠ 以前是「插入顺序」⇒ 牺牲谁取决于**槽位被放进字典的先后**
+    #     ⇒ 以后新增一个 T0 槽位就可能**悄悄改变**被牺牲的对象。
+    #   ⚠ 今天两者恰好一致（构造顺序就是 priority 降序）⇒ 行为**逐位不变**；
+    #     但从今天起「牺牲谁」由**价值**决定，而不是由代码顺序决定。
+    #   ⚠ 排序**稳定** ⇒ 同 priority 的槽位保持原顺序。
+    ordered_slots = sorted(t0_slots.values(), key=lambda s: -float(s.priority))
+    for slot in ordered_slots:
+        # ── 第 2 步：按总量预算裁（按价值，装得下就装） ───────────
         if total + slot.tokens <= budget:
             total += slot.tokens
             continue
@@ -383,11 +399,17 @@ def allocate_tier(
         raw = (slot_weights or {}).get(slot_key)
         if raw is None:
             return int(slot.max_tokens)
+        if isinstance(raw, bool):
+            # ⚠ 第 67 批（S-2）：布尔不是权重（float(True) == 1.0 = 满分）
+            return int(slot.max_tokens)
         try:
             weight = float(raw)
         except (TypeError, ValueError):
             return int(slot.max_tokens)
-        weight = max(0.0, min(1.0, weight))
+        if not (0.0 <= weight <= 1.0):
+            # ⚠ 第 67 批（S-2）：**越界权重不生效**（fail-closed）⇒ 保留完整上限。
+            #   ⚠ 以前是把负数钳到 0 ⇒ 权重 0 ⇒ 槽位被**整块清空**且模型侧无痕。
+            return int(slot.max_tokens)
         return int(min(int(slot.max_tokens), int(slot.max_tokens * weight)))
 
     total_used = 0
@@ -398,9 +420,19 @@ def allocate_tier(
         if cap is not None and slot.tokens > cap:
             original = slot.tokens
             target_chars = int(cap * chars_per_token_zh)
-            # S-06：权重压低上限时也**不许裸 ...** ⇒ 要说明。
-            slot.content = _mark_truncated(slot.content, target_chars) if cap > 0 else ""
-            slot.tokens = cap
+            if cap > 0:
+                # S-06：权重压低上限时也**不许裸 ...** ⇒ 要说明。
+                slot.content = _mark_truncated(slot.content, target_chars)
+                slot.tokens = cap
+            else:
+                # ⚠ 第 67 批（S-2）：权重 0 ⇒ 内容不给，但**留一句占位说明**。
+                #   ⚠ 以前是 ``content = ""`` ⇒ 这一节从上下文里**彻底消失**
+                #     ⇒ 模型看不到它存在过 ⇒ 「被裁掉」与「本来就没有」不可分辨
+                #     （与本项目反复清理的「没测出来被说成没有」同族）。
+                #   ⚠ 占位说明**不计 token**（预算已按权重定死）
+                #     ⇒ 账面比实际**略低**（≤ 15 tokens/槽位）⇒ 文档写明这个取舍。
+                slot.content = WEIGHT_ZERO_PLACEHOLDER
+                slot.tokens = 0
             compression_log.append(
                 f"按权重压缩 {name}: {original} → {cap} tokens"
             )

@@ -126,11 +126,21 @@ def test_catalog_covers_every_registered_slot():
     assert not extra, f"目录里有不存在的槽位（AI 报了也无效）：{sorted(extra)}"
 
 
-def test_sanitize_drops_unknown_and_clamps_range():
+def test_sanitize_drops_unknown_and_rejects_out_of_range():
+    """⚠ 第 68 批（S-2）**更正**了本用例的旧期望。
+
+    旧写法是「越界**钳到** [0,1]」⇒ 负数被钳成 0 ⇒ 权重 0 ⇒ 槽位被**整块清空**
+    ⇒ AI 只要返回**一个负数**，那一节就没了，而且**模型侧无痕**。
+
+    ⇒ 现在：越界值**整个键被丢弃**（不生效）⇒ 该槽位按「没有权重」处理
+    ⇒ 保留完整上限 ⇒ **坏值不能抹掉内容**（fail-closed）。
+    """
     assert sanitize_weights({"不存在": 1.0}) == {}
     assert sanitize_weights({"vector_recall": "垃圾"}) == {}
-    assert sanitize_weights({"vector_recall": 5.0}) == {"vector_recall": 1.0}
-    assert sanitize_weights({"vector_recall": -1.0}) == {"vector_recall": 0.0}
+    assert sanitize_weights({"vector_recall": 5.0}) == {}, "越界权重不该被钳成 1.0"
+    assert sanitize_weights({"vector_recall": -1.0}) == {}, "越界权重不该被钳成 0.0"
+    assert sanitize_weights({"vector_recall": True}) == {}, "JSON 的 true 不是权重"
+    assert sanitize_weights({"vector_recall": 0.25}) == {"vector_recall": 0.25}
     assert sanitize_weights("不是字典") == {}
     assert sanitize_weights(None) == {}
 
@@ -218,12 +228,23 @@ async def test_unknown_slots_alone_return_none():
 
 
 @pytest.mark.asyncio
-async def test_out_of_range_weights_are_clamped_not_rejected():
+async def test_out_of_range_weights_are_rejected_not_clamped():
+    """⚠ 第 68 批（S-2）**更正**了本用例的旧期望。
+
+    旧写法是「越界**钳到** [0,1]、不拒绝」⇒ 9.0 被当成 1.0（= 满分）
+    ⇒ 分配器照着这个权重裁上下文 ⇒ **一个坏值直接影响正文上下文**。
+
+    ⇒ 现在：越界值**被丢弃** ⇒ 合法权重一个都不剩 ⇒ 规划器走它**本来就有**的
+    「声称已评估但无可用槽位 ⇒ 按未评估处理」分支 ⇒ 返回 ``None``
+    ⇒ 分配器走旧路径（**不施加任何权重**）⇒ 坏值不许生效（fail-closed）。
+    """
     llm = _FakeLLM(json.dumps({
         "weights": {"vector_recall": 9.0},
         "evaluated": True,
     }, ensure_ascii=False))
-    assert await _plan(llm) == {"vector_recall": 1.0}
+    assert await _plan(llm) is None, (
+        "越界权重被当成了 1.0（满分）⇒ 一个坏值直接影响正文上下文"
+    )
 
 
 def test_schema_defaults_are_none_not_midpoint():

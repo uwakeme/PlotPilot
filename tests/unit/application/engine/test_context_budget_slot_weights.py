@@ -121,14 +121,26 @@ def test_weight_can_never_raise_the_hard_cap():
     )
 
 
-def test_weight_is_clamped_into_zero_one():
-    """越界权重钳到 [0,1]，不得变成负数或异常放大。"""
-    for raw, expect_le_zero in [(-3.0, True), (0.0, True)]:
+def test_an_out_of_range_weight_is_rejected_not_clamped():
+    """⚠ 第 68 批（S-2）**更正**了本用例的旧期望。
+
+    旧写法是「越界权重**钳到** [0,1]」⇒ 负数被钳成 0
+    ⇒ 权重 0 ⇒ 该槽位被**整块清空** ⇒ AI 只要返回**一个负数**，
+    那一节（``completed_beats`` / ``revealed_clues`` / ``recent_chapters`` …）
+    就从上下文里消失了，而且**模型侧无痕**（只剩一条 compression_log）。
+
+    ⇒ 现在：**越界权重不生效**（fail-closed）⇒ 该槽位按「没有权重」处理
+    ⇒ 保留**完整上限** ⇒ 坏值不能抹掉内容。
+    ⚠ ``0.0`` 本身是**合法**权重（AI 明确说「这一节不需要」）⇒ 仍然生效，
+      但会留一句**模型可见**的占位说明（见 ``test_t0_budget_headroom.py``）。
+    """
+    for raw in (-3.0, 5.0):
         slots = {"s": _slot("s", 300, priority=50, max_tokens=500)}
         _run(slots, 100000, weights={"s": raw})
-        assert slots["s"].tokens >= 0
-        if expect_le_zero:
-            assert slots["s"].tokens == 0, f"权重 {raw} 应把槽位压到 0"
+        assert slots["s"].tokens == 300, (
+            f"越界权重 {raw} 把槽位压到了 {slots['s'].tokens} "
+            f"⇒ 非法值被当成 0（或被钳制）⇒ 内容会被清空"
+        )
 
 
 def test_slot_without_max_tokens_is_not_capped_by_weight():

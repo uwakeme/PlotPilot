@@ -96,7 +96,16 @@ def sanitize_weights(raw: object) -> Dict[str, float]:
     """只保留目录内存在、且数值合法的键。
 
     AI 报未知槽位名 → 丢弃（而不是静默生效）。
-    AI 报非数值 / 越界 → 钳到 [0,1]。
+
+    ⚠ 第 67 批（S-2）：非数值 / 越界 / 布尔 → **丢弃这个键**（**不钳制**）。
+      ⚠ 以前是把负数**钳到 0** ⇒ 权重 0 ⇒ 该槽位被**整块清空**
+        ⇒ AI 只要返回**一个负数**，那一节（``completed_beats`` /
+        ``revealed_clues`` / ``anti_ai_protocol`` / ``storyline_context`` /
+        ``recent_chapters`` …）就没了，而且模型侧**无痕**。
+      ⇒ 现在：非法权重**不生效** ⇒ 该槽位按「没有权重」处理（保留完整上限）
+        ⇒ **坏值不能让内容消失**（fail-closed）。
+      ⚠ 布尔也**不算权重**：JSON 的 ``true`` 会让 ``float(True) == 1.0``
+        ⇒ 以前等于「AI 说这一节最重要」。
     """
     if not isinstance(raw, dict):
         return {}
@@ -104,9 +113,15 @@ def sanitize_weights(raw: object) -> Dict[str, float]:
     for key, value in raw.items():
         if key not in SLOT_CATALOG:
             continue
+        if isinstance(value, bool):
+            # JSON 的 true/false 不是权重（float(True) 会变成 1.0 = 满分）
+            continue
         try:
             weight = float(value)
         except (TypeError, ValueError):
             continue
-        out[key] = max(0.0, min(1.0, weight))
+        if not (0.0 <= weight <= 1.0):
+            # 越界 ⇒ 拒绝这个键（不钳制 ⇒ 坏值不能把槽位清空）
+            continue
+        out[key] = weight
     return out
