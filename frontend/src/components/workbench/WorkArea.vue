@@ -46,7 +46,12 @@
               <n-space align="center" :size="8" wrap>
                 <template v-if="signalStrip">
                   <n-tag size="small" round type="info">张力 {{ signalStrip.tension === null ? '未评估' : signalStrip.tension }}/10</n-tag>
-                  <n-tag v-if="!signalStrip.sync" size="small" round type="warning">叙事未同步</n-tag>
+                  <!-- ⚠ 第 66 批（B-6）：三态必须可分辨 ——
+                       null = **未评估**（章后管线超时/异常），false = 真的没同步。
+                       以前 `v-if="!signalStrip.sync"` 把 null 渲染成「叙事未同步」
+                       ⇒ 把「没测出来」说成「测出失败」。 -->
+                  <n-tag v-if="signalStrip.sync === false" size="small" round type="warning">叙事未同步</n-tag>
+                  <n-tag v-else-if="signalStrip.sync === null" size="small" round type="info">叙事未评估</n-tag>
                 </template>
                 <n-text v-else depth="3" style="font-size: 12px">本章信号在侧栏与生成完成后更新</n-text>
                 <template v-if="guardrailSnapshot">
@@ -1587,7 +1592,10 @@ const signalStrip = computed(() => {
     // 张力三态：null = 未评估，0 = 评估过且张力就是 0。
     // 不要 `?? 0` —— 那会把「没打过分」显示成「张力 0」。
     tension: r.tension,
-    sync: !!r.narrative_sync_ok,
+    // ⚠ 第 66 批（B-6）：同步也是三态：true=已同步 / false=没同步 / null=未评估。
+    //   不要 `!!` —— 那会把「没测出来」折叠成「测出失败」（黄标「叙事未同步」）。
+    //   `?? null` 把 undefined 也归一化成「未评估」。
+    sync: r.narrative_sync_ok ?? null,
   }
 })
 

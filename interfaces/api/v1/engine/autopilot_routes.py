@@ -409,7 +409,8 @@ def _build_fallback_status(novel) -> Dict[str, Any]:
             ),
             "similarity_score": getattr(novel, "last_audit_similarity", None),
             # 三态：True=已同步 / False=同步失败 / None=未评估（章后管线超时/异常降级，第 18 批 · H）
-            "narrative_sync_ok": getattr(novel, "last_audit_narrative_ok", True),
+            # ⚠ 第 66 批（B-3）：缺键 ⇒ **未评估**（null），不是「已同步」（true）。
+            "narrative_sync_ok": getattr(novel, "last_audit_narrative_ok", None),
             "at": getattr(novel, "last_audit_at", None),
             "vector_stored": bool(getattr(novel, "last_audit_vector_stored", False)),
             "foreshadow_stored": bool(getattr(novel, "last_audit_foreshadow_stored", False)),
@@ -604,7 +605,8 @@ def _build_autopilot_status_sync(novel_id: str) -> Optional[Dict[str, Any]]:
                 novel.get("last_audit_similarity") if isinstance(novel, dict) else getattr(novel, "last_audit_similarity", None),
             ),
             "similarity_score": novel.get("last_audit_similarity") if isinstance(novel, dict) else getattr(novel, "last_audit_similarity", None),
-            "narrative_sync_ok": (novel.get("last_audit_narrative_ok") if isinstance(novel, dict) else getattr(novel, "last_audit_narrative_ok", True)),
+            # ⚠ 第 66 批（B-3）：缺键 ⇒ **未评估**（null），不是「已同步」（true）。
+            "narrative_sync_ok": (novel.get("last_audit_narrative_ok") if isinstance(novel, dict) else getattr(novel, "last_audit_narrative_ok", None)),
             "at": novel.get("last_audit_at") if isinstance(novel, dict) else getattr(novel, "last_audit_at", None),
             "vector_stored": bool((novel.get("last_audit_vector_stored") if isinstance(novel, dict) else getattr(novel, "last_audit_vector_stored", False))),
             "foreshadow_stored": bool((novel.get("last_audit_foreshadow_stored") if isinstance(novel, dict) else getattr(novel, "last_audit_foreshadow_stored", False))),
@@ -749,7 +751,8 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
                 shared.get("last_audit_drift_alert"), shared.get("last_audit_similarity")
             ),
             "similarity_score": shared.get("last_audit_similarity"),
-            "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
+            # ⚠ 第 66 批（B-3）：缺键 ⇒ **未评估**（null），不是「已同步」（true）。
+            "narrative_sync_ok": shared.get("last_audit_narrative_ok"),
             "at": shared.get("last_audit_at"),
             "vector_stored": bool(shared.get("last_audit_vector_stored", False)),
             "foreshadow_stored": bool(shared.get("last_audit_foreshadow_stored", False)),
@@ -953,7 +956,8 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
                 shared.get("last_audit_drift_alert"), shared.get("last_audit_similarity")
             ),
             "similarity_score": shared.get("last_audit_similarity"),
-            "narrative_sync_ok": shared.get("last_audit_narrative_ok", True),
+            # ⚠ 第 66 批（B-3）：缺键 ⇒ **未评估**（null），不是「已同步」（true）。
+            "narrative_sync_ok": shared.get("last_audit_narrative_ok"),
             "at": shared.get("last_audit_at"),
             "vector_stored": bool(shared.get("last_audit_vector_stored", False)),
             "foreshadow_stored": bool(shared.get("last_audit_foreshadow_stored", False)),

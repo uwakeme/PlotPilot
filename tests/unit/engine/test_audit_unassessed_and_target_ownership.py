@@ -59,10 +59,20 @@ def test_narrative_gate_distinguishes_ok_failed_and_unassessed():
     )
 
 
-def test_narrative_gate_treats_a_missing_key_as_ok():
-    """缺键 = 评估过且没问题（保持旧口径的默认值语义）。"""
+def test_narrative_gate_treats_a_missing_key_as_unassessed():
+    """缺键 = **未评估**（fail-closed），不是「评估过且没问题」。
+
+    ⚠ 第 66 批（B-3）**更正**了本用例的旧期望：
+      旧写法是「缺键 = 评估过且没问题（保持旧口径的默认值语义）」，
+      钉住的正是那个 bug —— 章后管线的**异常回退路径**（legacy）返回的结果里
+      根本没有 ``narrative_sync_ok`` 这个键 ⇒ 旧口径把它说成「已同步」
+      ⇒ 「没跑出来」被谎报成「跑出来成功」，而且章后硬闸在这条路径上**不拦**。
+      ⇒ 现在：缺键 ⇒ 未评估 ⇒ 硬闸照拦（fail-closed），但不谎报成功。
+    """
     hard, evaluated, state = _resolve_narrative_gate({})
-    assert (hard, evaluated, state) == (False, True, "ok")
+    assert (hard, evaluated, state) == (True, False, "unassessed"), (
+        "缺键必须判「未评估」⇒ 硬闸照拦，但不谎报「已同步」"
+    )
 
 
 def test_the_aftermath_timeout_default_is_not_a_failure():

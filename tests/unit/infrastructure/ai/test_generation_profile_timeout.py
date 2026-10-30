@@ -181,8 +181,14 @@ def test_without_a_profile_timeout_the_provider_defaults_are_unchanged():
 
     anthropic_provider = AnthropicProvider(_settings())
     create_kwargs = anthropic_provider._build_create_kwargs(_prompt(), config)
-    assert create_kwargs["timeout"] == _SDK_CLIENT_TIMEOUT_SECONDS
+    # ⚠ 第 66 批（B-2）：没配单次超时时**不传** ``timeout`` ⇒ 由 SDK 用客户端级默认。
+    #   ⚠ 之前这里传的是 300.0（浮点）⇒ httpx/SDK 的「每请求浮点」语义会
+    #     **整体替换**客户端的**分层**超时（connect 30→300 / read 120→300）
+    #     ⇒ 第 50 批引入的回归。
+    assert "timeout" not in create_kwargs, "没配单次超时时不该硬塞一个客户端级超时"
     assert _SDK_CLIENT_TIMEOUT_SECONDS == 300.0, "SDK 客户端默认超时被改了"
+    # 客户端级默认**仍然**是 300 ⇒ 行为与第 50 批之前逐字一致。
+    assert anthropic_provider.client.timeout == _SDK_CLIENT_TIMEOUT_SECONDS
 
 
 # ─────────────────────── 4) 通用反装饰品守卫 ───────────────────────

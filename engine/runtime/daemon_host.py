@@ -167,8 +167,9 @@ def _build_novel_save_fields(
             else (1 if getattr(novel, 'last_audit_drift_alert', False) else 0)
         ),
         # 三态（第 19 批）：None（未评估）⇒ 原样写 NULL，别压成 0
+        # ⚠ 第 66 批（B-3）：缺属性 ⇒ **未评估**（NULL），不是「已同步」（1）。
         "last_audit_narrative_ok": narrative_ok_to_db(
-            getattr(novel, 'last_audit_narrative_ok', True)
+            getattr(novel, 'last_audit_narrative_ok', None)
         ),
         "last_audit_at": getattr(novel, 'last_audit_at', None),
         "last_audit_vector_stored": 1 if getattr(novel, 'last_audit_vector_stored', False) else 0,
@@ -674,7 +675,8 @@ class DaemonHostMixin:
             patch_fields["last_audit_chapter_number"] = novel.last_audit_chapter_number
             patch_fields["last_audit_similarity"] = getattr(novel, "last_audit_similarity", None)
             patch_fields["last_audit_drift_alert"] = getattr(novel, "last_audit_drift_alert", False)
-            patch_fields["last_audit_narrative_ok"] = getattr(novel, "last_audit_narrative_ok", True)
+            # ⚠ 第 66 批（B-3）：缺属性 ⇒ 未评估（NULL），不是「已同步」（1）。
+            patch_fields["last_audit_narrative_ok"] = getattr(novel, "last_audit_narrative_ok", None)
             patch_fields["last_audit_vector_stored"] = getattr(novel, "last_audit_vector_stored", False)
             patch_fields["last_audit_foreshadow_stored"] = getattr(novel, "last_audit_foreshadow_stored", False)
             patch_fields["last_audit_triples_extracted"] = getattr(novel, "last_audit_triples_extracted", False)
@@ -1848,14 +1850,24 @@ class DaemonHostMixin:
             )
         if self.voice_drift_service and content:
             try:
-                return self.voice_drift_service.score_chapter(
+                voice_result = self.voice_drift_service.score_chapter(
                     novel_id=novel.novel_id.value,
                     chapter_number=chapter_num,
                     content=content,
                 )
+                # ⚠ 第 66 批（B-3）：**显式**声明「叙事同步未评估」。
+                #   ⚠ 这条路径 = 章后管线**没跑**（异常回退 / 管线压根没装配）
+                #     ⇒ 叙事同步根本没被评估过 ⇒ 以前**缺这个键**，
+                #     而下游的旧默认是「缺键 ⇒ 已同步」⇒ 谎报 + 硬闸不拦。
+                return {**voice_result, "narrative_sync_ok": None}
             except Exception as e:
                 logger.warning("文风检测失败（跳过）：%s", e)
-        return {"drift_alert": False, "similarity_score": None}
+        # ⚠ 第 66 批（B-3）：同上 —— 「未评估」必须**显式**写出来，不许靠下游兜底。
+        return {
+            "drift_alert": False,
+            "similarity_score": None,
+            "narrative_sync_ok": None,
+        }
 
 
     def _sum_completed_chapter_words(self, novel_id: str) -> int:

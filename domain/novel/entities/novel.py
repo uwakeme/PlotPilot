@@ -67,7 +67,10 @@ class Novel(BaseEntity):
         last_audit_drift_alert: Optional[bool] = False,
         # 三态（第 19 批）：True=已同步 / False=明确失败 / **None=未评估**
         # （章后管线超时/异常降级 ⇒ 没跑出来，不等于「跑出来失败」）
-        last_audit_narrative_ok: Optional[bool] = True,
+        # ⚠ 第 66 批（B-3）：默认值必须是 **None（未评估）**，不是 True（已同步）——
+        #   一本**从未审过**的书默认 True ⇒ 落库就是 1 ⇒ DB 层谎报「叙事已同步」
+        #   （生产库实测：25 本书里 22 行「从未审计却 narrative_ok=1」）。
+        last_audit_narrative_ok: Optional[bool] = None,
         last_audit_at: Optional[str] = None,
         # 章后管线状态
         last_audit_vector_stored: bool = False,

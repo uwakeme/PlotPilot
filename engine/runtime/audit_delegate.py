@@ -100,7 +100,12 @@ def _resolve_narrative_gate(drift_result: Mapping[str, Any]) -> tuple[bool, bool
       两者都触发硬伤闸门（fail-closed，与 ``hard_tension`` 同向），
       但**未评估不许被说成「叙事失败」** —— 那等于把「没测出来」记成「测出严重」。
     """
-    state = drift_result.get("narrative_sync_ok", True)
+    # ⚠ 第 66 批（B-3）：缺键 ⇒ **未评估**（None），不是「已同步」（True）。
+    #   ⚠ 旧默认是 True ⇒ 章后管线的**异常回退路径**（legacy）返回的结果里
+    #     根本没有这个键 ⇒ 判成「已同步」⇒ 「没跑出来」被谎报成「跑出来成功」，
+    #     而且章后硬闸在这条路径上**不拦**（hard_narrative=False）。
+    #   ⇒ 现在 fail-closed：缺键即未评估 ⇒ 硬闸照拦，但不谎报成功。
+    state = drift_result.get("narrative_sync_ok")
     if state is None:
         return True, False, "unassessed"
     if state is False:
@@ -116,7 +121,9 @@ def _narrative_shared_value(drift_result: Mapping[str, Any]) -> bool | None:
     _, evaluated, _ = _resolve_narrative_gate(drift_result)
     if not evaluated:
         return None
-    return bool(drift_result.get("narrative_sync_ok", True))
+    # ⚠ 第 66 批（B-3）：``evaluated`` 为真 ⇒ 这个键**一定存在且不是 None**
+    #   （判定层已经卡过）⇒ 直接取，不要再自带 ``True`` 默认值。
+    return bool(drift_result.get("narrative_sync_ok"))
 
 
 def _drift_alert_shared_value(
@@ -929,7 +936,8 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
             getattr(prefs, "pause_after_each_chapter_audit", False),
             bool(getattr(prefs, "audit_pause_on_hard_fail", False)) and hard_fail,
             anti_reason,
-            drift_result.get("narrative_sync_ok", True),
+            # ⚠ 第 66 批（B-3）：日志同样不许把「未评估」显示成 True。
+            drift_result.get("narrative_sync_ok"),
             narrative_state,
             hard_voice,
             drift_result.get("tension_evaluated", False),

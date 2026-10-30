@@ -239,6 +239,15 @@ class DynamicLLMService(LLMService):
             # ⚠ 漏掉它 ⇒ `_merge_config` 重建配置时把它剥掉
             #   ⇒ 能力在**生产入口**上静默失效（provider 层再对也没用）。
             extra_body=config.extra_body,
+            # ⚠ 第 66 批（B-1）：**同一个坑又踩了一次** ——
+            #   第 32 批修的是 `extra_body`，第 50 批新加的 `timeout_seconds`
+            #   **没跟着透传** ⇒ 画像里写 `timeout_seconds` 在**生产入口**
+            #   （`generate` / `stream_generate` 都调 `_merge_config`）被当场剥掉
+            #   ⇒ provider 层再对也没用 ⇒ 第 50 批声称兑现的那笔 P1 等于没做。
+            #   ⇒ 纪律：「重建配置」= **逐字段透传**；
+            #     以后 `GenerationConfig` 新增字段忘了写在这里 ⇒ 静默失效
+            #     （守卫：`test_the_merge_never_drops_a_config_field`）。
+            timeout_seconds=config.timeout_seconds,
         )
 
     @staticmethod

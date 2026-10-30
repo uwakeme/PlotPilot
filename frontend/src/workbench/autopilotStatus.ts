@@ -60,6 +60,13 @@ export function buildAutopilotDeskSnapshot(status: AutopilotStatusLike | null | 
   ].join('|')
 }
 
+/** 三态 → 指纹标记：'1'=真 / '0'=假 / '2'=未评估（null/undefined）。 */
+function triState(value: unknown): string {
+  if (value === true) return '1'
+  if (value === false) return '0'
+  return '2'
+}
+
 /** Fingerprint only reader-visible state, avoiding heartbeat/context-token churn. */
 export function buildAutopilotReactiveFingerprint(status: AutopilotStatusLike): string {
   const audit = status.last_chapter_audit as AutopilotStatusLike | undefined
@@ -67,10 +74,13 @@ export function buildAutopilotReactiveFingerprint(status: AutopilotStatusLike): 
     ? [
         audit.chapter_number ?? audit.chapterNumber ?? '',
         audit.tension ?? '',
-        audit.narrative_sync_ok === true ? '1' : '0',
+        // ⚠ 第 66 批（B-6）：指纹必须**保留三态**（'1'=真 / '0'=假 / '2'=未评估）。
+        //   以前 null 被折叠成 '0' ⇒ null↔false 的切换**不改变指纹**
+        //   ⇒ `WorkArea.vue` 只在指纹变化时刷新 ⇒ 徽标长期陈旧。
+        triState(audit.narrative_sync_ok),
         audit.similarity_score ?? '',
         audit.at ?? '',
-        audit.drift_alert === true ? '1' : '0',
+        triState(audit.drift_alert),
       ].join(':')
     : ''
 

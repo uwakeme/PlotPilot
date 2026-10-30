@@ -192,15 +192,20 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Failed to generate text: {str(e)}") from e
 
-    def _resolve_timeout(self, config: GenerationConfig) -> float:
-        """本次调用的超时上限（秒）。
+    def _resolve_timeout(self, config: GenerationConfig) -> float | None:
+        """本次调用的超时上限（秒）；``None`` ⇒ **不覆盖**任何客户端默认。
 
-        ⚠ 第 50 批：**单次调用**（画像里的 ``timeout_seconds``）优先，
-        否则用 SDK 客户端级的默认（300s，与改造前**逐字一致**）。
+        ⚠ 第 66 批（B-2）：原来这里在「没配单次超时」时返回 **300.0 浮点**，
+          而 httpx 的「每请求浮点」语义是**整体替换**客户端的**分层**超时
+          （connect 30→300 / read 120→300）⇒ 端点不可达时不再快速失败，
+          流式 chunk 停滞要 5 分钟才判死 —— 这正是第 50 批**引入**的回归
+          （第 50 批之前这条路径**根本不传** ``timeout``）。
+          ⇒ 现在返回 ``None`` ⇒ 各条路径改用「保持客户端默认」的写法：
+            SDK 路径**不传** ``timeout``；httpx 路径传 ``USE_CLIENT_DEFAULT``
+          ⇒ 与第 50 批**之前**的行为逐字一致。
         """
-        if getattr(config, "timeout_seconds", None) is not None:
-            return float(config.timeout_seconds)
-        return float(_SDK_CLIENT_TIMEOUT_SECONDS)
+        value = getattr(config, "timeout_seconds", None)
+        return float(value) if value is not None else None
 
     def _build_create_kwargs(
         self,
@@ -230,13 +235,19 @@ class AnthropicProvider(BaseProvider):
             "max_tokens": config.max_tokens,
             "system": prompt.system,
             "messages": [{"role": "user", "content": prompt.user}],
-            # ⚠ 第 50 批：单次调用的超时上限（SDK 顶层参数，**不是**请求体字段）。
-            "timeout": self._resolve_timeout(config),
             "extra_body": {
                 "temperature": config.temperature,
                 **merge_extra_body(self.settings, config),
             },
         }
+        # ⚠ 第 66 批（B-2）：单次调用的超时上限（SDK 顶层参数，**不是**请求体字段）。
+        #   ⚠ **只在真的配了单次超时时才传**：
+        #     不传 ⇒ SDK 用客户端级的 300（= 第 50 批之前的行为，逐字一致）；
+        #     传 300.0 ⇒ 数值一样，但语义从「客户端默认」变成「每请求覆盖」
+        #     ⇒ 以后把客户端默认改成分层超时时，这里会把它压平（回归的种子）。
+        resolved_timeout = self._resolve_timeout(config)
+        if resolved_timeout is not None:
+            create_kwargs["timeout"] = resolved_timeout
         # Anthropic Messages API does not accept OpenAI-style response_format.
         # Keep structured output provider-agnostic by moving the constraint into
         # the prompt; structured_json_pipeline will parse and validate it.
@@ -299,6 +310,8 @@ class AnthropicProvider(BaseProvider):
             **(self.settings.extra_headers or {}),
         }
         _, payload = self._build_message_request(prompt, config, stream=True)
+        # ⚠ 第 66 批（B-2）：见下面 ``timeout=`` 处的说明。
+        resolved_timeout = self._resolve_timeout(config)
 
         logger.debug("[Stream] Calling %s", url)
         async with self._stream_http_client.stream(
@@ -307,8 +320,16 @@ class AnthropicProvider(BaseProvider):
             headers=headers,
             params=self.settings.extra_query or None,
             json=payload,
-            # ⚠ 第 50 批：单次调用的超时上限（httpx 每请求覆盖）。
-            timeout=self._resolve_timeout(config),
+            # ⚠ 第 66 批（B-2）：单次调用的超时上限（httpx 每请求覆盖）。
+            #   ⚠ **没配单次超时时必须传 `USE_CLIENT_DEFAULT`**：
+            #     传浮点 ⇒ 整体替换客户端的**分层**超时
+            #              （connect 30→300 / read 120→300 ⇒ 慢失败）；
+            #     传 `None` ⇒ **彻底没有超时**（更糟）。
+            timeout=(
+                resolved_timeout
+                if resolved_timeout is not None
+                else httpx.USE_CLIENT_DEFAULT
+            ),
         ) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
@@ -346,7 +367,10 @@ class AnthropicProvider(BaseProvider):
         """
         model_id, payload = self._build_message_request(prompt, config, stream=False)
         sdk_payload = self._build_sdk_stream_payload(payload)
-        sdk_payload["timeout"] = self._resolve_timeout(config)
+        # ⚠ 第 66 批（B-2）：同 `_build_create_kwargs` —— 只在真的配了单次超时时才传。
+        resolved_timeout = self._resolve_timeout(config)
+        if resolved_timeout is not None:
+            sdk_payload["timeout"] = resolved_timeout
         return model_id, sdk_payload
 
     async def _stream_via_sdk(
