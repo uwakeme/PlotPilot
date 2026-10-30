@@ -217,6 +217,57 @@ def _checked_ids_in_selection_table() -> set[str]:
     return ids
 
 
+def _legacy_gap_rows() -> list[tuple[str, str]]:
+    """§九点五「仍然没做的」清单里的行 → (条目号, 状态格)。
+
+    ⚠ 这张表是**两列小表**（首格是说明文字，不是纯 id）⇒ 用「首格以 id 开头」定位。
+    """
+    text = REG.read_text(encoding="utf-8")
+    start = text.find("**仍然没做的**")
+    if start < 0:
+        return []
+    end = text.find("\n## ", start)
+    block = text[start : end if end > 0 else len(text)]
+    rows: list[tuple[str, str]] = []
+    for line in block.splitlines():
+        if not line.startswith("| ") or line.startswith("|---"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        m = re.match(r"^([A-Z]-\d\d)", cells[0])
+        if not m:
+            continue
+        rows.append((m.group(1), cells[-1]))
+    return rows
+
+
+def test_the_legacy_gap_list_agrees_with_the_main_table():
+    """⚠ 遗留清单里写着「未做」的条目 ⇒ 主表状态**不得**是 ✓。
+
+    为什么（第 65 批实测）：这张清单**没有**跟着批次更新 ⇒ A-06（第 56/57 批做）、
+    J-03（第 58 批做）两行还写着「未做」⇒ **台账自己内部打架**
+    ⇒ 后来人按这张表选活会**重做已经做完的事**（第 55 批的老毛病又长回来）。
+
+    ⇒ 互锁：清单说「未做」而主表说「✓」⇒ 必有一处过期 ⇒ 报红。
+
+    ⚠ 「刻意保留 / 已做 / 部分」不算「未做」⇒ 故意延后的项允许留在表里。
+    """
+    statuses = {cid: status for cid, status, _ in _main_rows()}
+    stale = []
+    for cid, gap_status in _legacy_gap_rows():
+        if "未做" not in gap_status:
+            continue
+        if any(word in gap_status for word in ("保留", "已做", "部分")):
+            continue
+        if statuses.get(cid) == "✓":
+            stale.append("%s（清单说未做，主表说 ✓）" % cid)
+    assert not stale, (
+        "遗留清单与主表状态打架（清单里的『未做』已过期 ⇒ 会导致重做已完成的事）："
+        f"{stale}"
+    )
+
+
 def test_checked_items_in_the_selection_table_match_the_main_table_status():
     """⚠ **两张表必须互锁**（第 55 批新增）。
 
