@@ -146,7 +146,7 @@ def test_legacy_fallbacks_use_the_constant():
 
 
 def test_the_global_budget_literal_lives_in_exactly_one_place():
-    """``35000`` 这个字面量**全仓只剩定义处一处**。
+    """**当前预算值**这个字面量**全仓只剩定义处一处**。
 
     ⚠ 第 3 批二次复审 S10：此前 35000 散落在 **6** 处
     （allocator ×2 / models / builder / memory_orchestrator / scene_director_dto），
@@ -155,7 +155,12 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
     （application 与 engine.core 都能引用的唯一一层），那 6 处默认参数
     **全部引用它** ⇒ 字面量只剩一处。
 
-    判据扫**三种形状**：普通常量 / 位置参数默认值 / 关键字专用参数默认值。
+    ⚠ 第 67 批（S-3）：这条守卫原先**扫的是写死的 ``35000``**，
+      而第 41 批把常量抬到了 60000 ⇒ 生产代码里**再也搜不到 35000**
+      ⇒ 这条守卫**已经空过**（绿，但什么都没验）：
+      将来谁把 ``max_tokens=60000`` 写成默认参数，它照样绿。
+    ⇒ 现在**从常量取值再扫** ⇒ 常量一改，这条守卫自动跟上去。
+      （判据仍扫**三种形状**：普通常量 / 位置参数默认值 / 关键字专用参数默认值。）
     """
     offenders = []
     for dirname in SCAN_DIRS:
@@ -175,7 +180,10 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
                             isinstance(target, ast.Name)
                             and target.id == "DEFAULT_CONTEXT_MAX_TOKENS"
                         ):
-                            if isinstance(node.value, ast.Constant) and node.value.value == 35000:
+                            if (
+                                isinstance(node.value, ast.Constant)
+                                and node.value.value == DEFAULT_CONTEXT_MAX_TOKENS
+                            ):
                                 offenders.append(f"{rel}:{node.lineno} (常量赋值)")
                 # 形状 2/3：参数默认值
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -193,10 +201,14 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
                         if default is not None
                     ]
                     for _arg, default in pairs:
-                        if isinstance(default, ast.Constant) and default.value == 35000:
+                        if (
+                            isinstance(default, ast.Constant)
+                            and default.value == DEFAULT_CONTEXT_MAX_TOKENS
+                        ):
                             offenders.append(f"{rel}:{node.lineno} (参数默认值)")
     assert not offenders, (
-        "35000 这个字面量又出现在别处（应当只有 context_budget_limits.py 一处）："
+        f"{DEFAULT_CONTEXT_MAX_TOKENS} 这个字面量又出现在别处"
+        "（应当只有 context_budget_limits.py 一处）："
         f"{offenders}"
     )
 

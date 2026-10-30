@@ -980,7 +980,15 @@ class MemoryEngine:
             # 6. 更新状态并持久化
             state.last_updated_chapter = chapter_number
             self._remember_state(novel_id, state)
-            self._persist_state(novel_id, state)
+            # ⚠ 第 67 批（B-4）：落库失败必须**进 errors** ——
+            #   上游 `_run_memory_update` 只看 `result["errors"]`
+            #   ⇒ 这里不报 ⇒ 上游判「已更新」⇒ 面板一条「未更新」都不写
+            #   ⇒ 记忆一条没落库，系统却报「一切正常」。
+            persist_error = self._persist_state(novel_id, state)
+            if persist_error:
+                result["errors"].append(persist_error)
+                logger.error(persist_error)
+                return result
 
             logger.info(
                 f"MemoryEngine 更新完成 @ ch{chapter_number}: "
@@ -1109,11 +1117,20 @@ class MemoryEngine:
         )
         self.db_connection.commit()
 
-    def _persist_state(self, novel_id: str, state: MemoryState) -> None:
-        """持久化状态到数据库"""
+    def _persist_state(self, novel_id: str, state: MemoryState) -> str | None:
+        """持久化状态到数据库。
+
+        ⚠ 第 67 批（B-4）：**返回错误信息**（成功时 ``None``）——
+          以前这里 catch 掉**全部**异常只 log、**不上报** ⇒ 落库失败被当成成功。
+          ⇒ 现在失败**必须**让调用方看见（调用方把它放进 ``result["errors"]``）。
+
+        返回值
+        ------
+        ``None``：已落库（并已回读确认）；``str``：失败原因（人话，可直接上报）。
+        """
         if not self.db_connection:
             logger.debug("MemoryEngine 无 DB 连接，跳过持久化（仅内存模式）")
-            return
+            return None
 
         try:
             self._upsert_state_row(novel_id, state)
@@ -1128,8 +1145,67 @@ class MemoryEngine:
                     self._upsert_state_row(novel_id, state)
                 except Exception as retry_err:
                     logger.error(f"MemoryEngine 持久化重试失败: {retry_err}")
+                    return f"MemoryEngine 状态持久化失败（建表重试后仍失败）: {retry_err}"
             else:
                 logger.error(f"MemoryEngine 持久化失败: {e}")
+                return f"MemoryEngine 状态持久化失败: {e}"
+
+        # ⚠ 第 67 批（B-4）：队列模式下「execute 没抛异常」**什么都没证明** ——
+        #   生产走写队列 ⇒ `execute()` 只**入队**就返回 ⇒ 真正的 INSERT 在
+        #   writer 线程执行 ⇒ writer 线程里的失败**结构上到不了**这里。
+        # ⇒ 必须**回读确认**（见 `_verify_persisted`）。
+        return self._verify_persisted(novel_id, state)
+
+    def _verify_persisted(self, novel_id: str, state: MemoryState) -> str | None:
+        """确认状态**真的**落库了（返回错误信息；确认通过时 ``None``）。
+
+        ⚠ 为什么必须确认（第 67 批 · B-4）：生产走**写队列** ⇒
+          ``execute()`` 对 mutating SQL 只**入队**就返回 ⇒ 真正的 INSERT 在
+          writer 线程执行 ⇒ writer 线程里的失败**结构上到不了**调用方
+          ⇒ 「execute 没抛异常」**不等于**「落库成功」。
+
+        做法：先等写队列排空（队列未启用时是 no-op），再**回读**该行核对章节号。
+        """
+        flush = getattr(self.db_connection, "flush_pending_writes", None)
+        if callable(flush):
+            try:
+                if not flush(timeout=2.0):
+                    return "MemoryEngine 状态持久化未确认（写队列未在超时内排空）"
+            except Exception as exc:
+                return f"MemoryEngine 状态持久化确认失败（刷新写队列出错）: {exc}"
+
+        try:
+            cursor = self.db_connection.execute(
+                "SELECT last_updated_chapter FROM memory_engine_state WHERE novel_id = ?",
+                (novel_id,),
+            )
+            row = cursor.fetchone()
+        except Exception as exc:
+            return f"MemoryEngine 状态持久化未确认（回读失败）: {exc}"
+
+        if row is None:
+            return "MemoryEngine 状态持久化未确认（回读不到该行）"
+
+        stored = self._read_chapter_number(row)
+        expected = int(state.last_updated_chapter)
+        if stored != expected:
+            return (
+                "MemoryEngine 状态持久化未确认"
+                f"（回读章节号={stored} ≠ 预期={expected}）"
+            )
+        return None
+
+    @staticmethod
+    def _read_chapter_number(row: Any) -> int | None:
+        """从回读行里取章节号（兼容 tuple 行与 ``sqlite3.Row`` 行）。"""
+        try:
+            return int(row[0])
+        except (TypeError, ValueError, IndexError, KeyError):
+            pass
+        try:
+            return int(row["last_updated_chapter"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
 
     def _ensure_table_exists(self) -> None:
         """自动创建 memory_engine_state 表"""

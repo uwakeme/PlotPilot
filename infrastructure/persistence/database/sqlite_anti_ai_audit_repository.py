@@ -13,6 +13,8 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from application.audit.services.anti_ai_thresholds import SCORE_SCALE_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,10 @@ class SqliteAntiAiAuditRepository:
                     hit_density = ?, critical_density = ?,
                     category_distribution = ?, top_patterns = ?,
                     recommendations = ?, improvement_suggestions = ?,
-                    hits_detail = ?, created_at = datetime('now')
+                    hits_detail = ?, created_at = datetime('now'),
+                    -- ⚠ 第 67 批（B-5）：**每次写都打上当前口径版本**
+                    --   ⇒ 这一行永远知道自己用的是哪套刻度 ⇒ 读侧能判断可比性。
+                    score_scale_version = ?
                 WHERE novel_id = ? AND chapter_number = ?
                 """,
                 (
@@ -67,6 +72,7 @@ class SqliteAntiAiAuditRepository:
                     cat_dist_json, top_pat_json,
                     recs_json, sug_json,
                     hits_json,
+                    SCORE_SCALE_VERSION,
                     novel_id, chapter_number,
                 ),
             )
@@ -79,13 +85,14 @@ class SqliteAntiAiAuditRepository:
             (audit_id, novel_id, chapter_number, total_hits, critical_hits, warning_hits,
              info_hits, severity_score, overall_assessment, hit_density, critical_density,
              category_distribution, top_patterns, recommendations,
-             improvement_suggestions, hits_detail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             improvement_suggestions, hits_detail, score_scale_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 audit_id, novel_id, chapter_number, total_hits, critical_hits, warning_hits,
                 info_hits, severity_score, overall_assessment, hit_density, critical_density,
                 cat_dist_json, top_pat_json, recs_json, sug_json, hits_json,
+                SCORE_SCALE_VERSION,
             ),
         )
         return audit_id
@@ -99,7 +106,8 @@ class SqliteAntiAiAuditRepository:
             SELECT audit_id, novel_id, chapter_number, total_hits, critical_hits,
                    warning_hits, info_hits, severity_score, overall_assessment,
                    hit_density, critical_density, category_distribution, top_patterns,
-                   recommendations, improvement_suggestions, hits_detail, created_at
+                   recommendations, improvement_suggestions, hits_detail, created_at,
+                   score_scale_version
             FROM anti_ai_audits
             WHERE novel_id = ? AND chapter_number = ?
             """,
@@ -127,7 +135,8 @@ class SqliteAntiAiAuditRepository:
             SELECT audit_id, novel_id, chapter_number, total_hits, critical_hits,
                    warning_hits, info_hits, severity_score, overall_assessment,
                    hit_density, critical_density, category_distribution, top_patterns,
-                   recommendations, improvement_suggestions, hits_detail, created_at
+                   recommendations, improvement_suggestions, hits_detail, created_at,
+                   score_scale_version
             FROM anti_ai_audits
             WHERE novel_id = ?
             ORDER BY chapter_number ASC
@@ -155,7 +164,10 @@ class SqliteAntiAiAuditRepository:
         rows = self.db.fetch_all(
             """
             SELECT chapter_number, severity_score, hit_density, overall_assessment,
-                   critical_hits, total_hits
+                   critical_hits, total_hits,
+                   -- ⚠ 第 67 批（B-5）：**带上口径版本** ⇒ 消费方能判断
+                   --   「这一行跟别的行可比吗」（版本 0 = 判不出来 = 不可比）。
+                   score_scale_version
             FROM anti_ai_audits
             WHERE novel_id = ?
             ORDER BY chapter_number ASC

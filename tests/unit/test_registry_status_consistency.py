@@ -251,14 +251,18 @@ def test_the_legacy_gap_list_agrees_with_the_main_table():
 
     ⇒ 互锁：清单说「未做」而主表说「✓」⇒ 必有一处过期 ⇒ 报红。
 
-    ⚠ 「刻意保留 / 已做 / 部分」不算「未做」⇒ 故意延后的项允许留在表里。
+    ⚠ 第 67 批（B-7）：豁免口**收紧** —— 只有「**已做 / 部分**」算豁免。
+      ⚠ 原来把「保留」也算豁免 ⇒ 「保守保留，未做」这种**自相矛盾**的格子
+        会被放过 ⇒ A-04（第 65 批漏修的那一行）就是这么漏过去的。
+      ⇒ 现在：写了「未做」又没写「已做/部分」⇒ 就是「未做」⇒ 与主表的 ✓ 打架。
+      ⇒ 「刻意保留」的行（G-05 / I-05）**根本没写「未做」** ⇒ 不受影响。
     """
     statuses = {cid: status for cid, status, _ in _main_rows()}
     stale = []
     for cid, gap_status in _legacy_gap_rows():
         if "未做" not in gap_status:
             continue
-        if any(word in gap_status for word in ("保留", "已做", "部分")):
+        if any(word in gap_status for word in ("已做", "部分")):
             continue
         if statuses.get(cid) == "✓":
             stale.append("%s（清单说未做，主表说 ✓）" % cid)
@@ -266,6 +270,19 @@ def test_the_legacy_gap_list_agrees_with_the_main_table():
         "遗留清单与主表状态打架（清单里的『未做』已过期 ⇒ 会导致重做已完成的事）："
         f"{stale}"
     )
+
+
+def test_every_gap_row_id_exists_in_the_main_table():
+    """⚠ 遗留清单里带 id 的行，其 id 必须**存在于主表**（不许孤儿 id）。
+
+    ⚠ 为什么补这条（第 67 批 · B-7）：清单与主表是**两张独立的表** ⇒
+      清单里出现一个主表里没有的 id 时，谁也拦不住它
+      ⇒ 而这张清单的用途恰恰是「按它选活」⇒ 孤儿 id = 选了一个不存在的活。
+    """
+    known = {cid for cid, _, _ in _main_rows()}
+    orphans = sorted({cid for cid, _ in _legacy_gap_rows()} - known)
+
+    assert not orphans, f"遗留清单里有主表不存在的 id（孤儿）：{orphans}"
 
 
 def test_checked_items_in_the_selection_table_match_the_main_table_status():
