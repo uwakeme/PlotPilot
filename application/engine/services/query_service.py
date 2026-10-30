@@ -13,7 +13,7 @@
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
 from application.engine.services.shared_state_repository import (
@@ -256,6 +256,9 @@ class NovelStatusResponse:
     audit_progress: Optional[Dict[str, Any]]
     daemon_alive: bool
     daemon_heartbeat_at: Optional[float]
+    #: 守护进程**监督者**的状态（第 64 批）：守护进程被外部杀掉又自动拉起时，
+    #: 这里带着「重启过几次 / 上次错误」⇒ 作者在界面上看得见（此前只有日志知道）。
+    daemon_supervisor: Dict[str, Any] = field(default_factory=dict)
     _from_shared_memory: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -286,6 +289,7 @@ class NovelStatusResponse:
             "audit_progress": self.audit_progress,
             "daemon_alive": self.daemon_alive,
             "daemon_heartbeat_at": self.daemon_heartbeat_at,
+            "daemon_supervisor": self.daemon_supervisor,
             "_from_shared_memory": self._from_shared_memory,
         }
 
@@ -394,6 +398,7 @@ class QueryService:
             audit_progress=None,
             daemon_alive=self._shared.is_daemon_alive(),
             daemon_heartbeat_at=self._shared.get_daemon_heartbeat(),
+            daemon_supervisor=self._shared.get_daemon_supervisor_state(),
             _from_shared_memory=True,
         )
 
@@ -442,6 +447,7 @@ class QueryService:
             audit_progress=raw_data.get("audit_progress"),
             daemon_alive=self._shared.is_daemon_alive(),
             daemon_heartbeat_at=self._shared.get_daemon_heartbeat(),
+            daemon_supervisor=self._shared.get_daemon_supervisor_state(),
             _from_shared_memory=True,
         )
 

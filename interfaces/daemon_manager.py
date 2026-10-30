@@ -225,12 +225,16 @@ class DaemonSupervisor:
         *,
         lock_probe: Callable[[], bool] = is_lock_held,
         clock: Callable[[], float] = time.time,
+        state_publisher: Callable[[Dict[str, Any]], None] | None = None,
     ) -> None:
         self._manager = manager
         self._settings = settings
         self._logger = logger_ or logger
         self._lock_probe = lock_probe
         self._clock = clock
+        #: 状态发布口（第 64 批）：把「重启过几次 / 上次错误」写进共享内存
+        #: ⇒ ``/autopilot/status`` 能带出去 ⇒ 前端看得见。
+        self._state_publisher = state_publisher
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._restart_attempts = 0
@@ -290,7 +294,22 @@ class DaemonSupervisor:
                 self._logger.error("守护进程监督者自身异常: %s", exc, exc_info=True)
 
     def _check_once(self) -> str:
-        """检查一次守护进程存活状态，返回动作名。"""
+        """检查一次守护进程存活状态，返回动作名（并把状态发布出去）。"""
+        action = self._decide()
+        self._publish_state()
+        return action
+
+    def _publish_state(self) -> None:
+        """把当前状态发布出去（发布失败不许拖垮监督者）。"""
+        if self._state_publisher is None:
+            return
+        try:
+            self._state_publisher(self.state())
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("发布监督者状态失败（忽略）: %s", exc)
+
+    def _decide(self) -> str:
+        """判断这一轮该做什么（返回动作名）。"""
         if self._manager.status().running:
             if self._alive_since is None:
                 self._alive_since = self._clock()
@@ -902,6 +921,7 @@ class AutopilotDaemonManager:
             get_daemon_supervisor_settings
         ),
         supervisor_factory: Callable[["AutopilotDaemonManager"], "DaemonSupervisor"] | None = None,
+        supervisor_state_publisher: Callable[[Dict[str, Any]], None] | None = None,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._log_level = log_level
@@ -917,6 +937,8 @@ class AutopilotDaemonManager:
         self._supervisor_settings_provider = supervisor_settings_provider
         #: 监督者的构造口（测试注入假实现 ⇒ 守卫不许起真线程、不许碰真锁）。
         self._supervisor_factory = supervisor_factory
+        #: 监督者状态的发布口（第 64 批 ⇒ 写共享内存 ⇒ /status 带出 ⇒ 前端可见）。
+        self._supervisor_state_publisher = supervisor_state_publisher
         self._supervisor: DaemonSupervisor | None = None
         self.process = None
         self.stop_event = None
@@ -935,7 +957,10 @@ class AutopilotDaemonManager:
                 self._supervisor = self._supervisor_factory(self)
             else:
                 self._supervisor = DaemonSupervisor(
-                    self, self._supervisor_settings_provider(), self._logger
+                    self,
+                    self._supervisor_settings_provider(),
+                    self._logger,
+                    state_publisher=self._supervisor_state_publisher,
                 )
         return self._supervisor
 

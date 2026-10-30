@@ -134,6 +134,23 @@ def _stop_managed_resources() -> None:
     shutdown_resource_manager_if_initialized()
 
 
+def _publish_daemon_supervisor_state(state: Dict[str, Any]) -> None:
+    """把守护进程监督者的状态写进共享内存（第 64 批）。
+
+    ⇒ ``/autopilot/status`` 的 ``daemon_supervisor`` 字段能带出去
+    ⇒ 前端（已在轮询那个接口）**零新增请求**就能看见
+    「守护进程已自动重启 N 次 / 自动拉起失败」。
+    """
+    try:
+        from application.engine.services.shared_state_repository import (
+            get_shared_state_repository,
+        )
+
+        get_shared_state_repository().update_daemon_supervisor_state(state)
+    except Exception as exc:  # noqa: BLE001 —— 发布失败不许影响后端启动
+        logger.debug("发布守护进程监督者状态失败: %s", exc)
+
+
 def _get_daemon_manager() -> AutopilotDaemonManager:
     global _daemon_manager
     if _daemon_manager is None:
@@ -141,6 +158,7 @@ def _get_daemon_manager() -> AutopilotDaemonManager:
             logger=logger,
             log_level=log_level,
             log_file=log_file,
+            supervisor_state_publisher=_publish_daemon_supervisor_state,
             shared_state_provider=_get_shared_state,
         )
     return _daemon_manager

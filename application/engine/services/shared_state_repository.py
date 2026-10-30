@@ -142,6 +142,11 @@ class SharedStateRepository:
     # 共享状态键前缀
     PREFIX_NOVEL = "novel:"
     KEY_DAEMON_HEARTBEAT = "_daemon_heartbeat"
+    #: 守护进程**监督者**的状态（第 64 批）—— 由 API 进程写、``/status`` 读。
+    #: ⚠ 走共享内存而不是新开 HTTP 端点：``application`` 层不许反向依赖
+    #: ``interfaces``（分层铁律）⇒ 监督者状态只能通过既有的跨进程通道出来；
+    #: 而且前端**已经在轮询** ``/autopilot/status`` ⇒ 前端零新增请求。
+    KEY_DAEMON_SUPERVISOR = "_daemon_supervisor"
     KEY_ALL_NOVELS = "_all_novels"
 
     def __init__(self, shared_dict: Optional[Any] = None):
@@ -364,6 +369,23 @@ class SharedStateRepository:
             return False
 
         return (time.time() - heartbeat) < max_age_seconds
+
+    def update_daemon_supervisor_state(self, state: Dict[str, Any]) -> None:
+        """记录守护进程监督者的状态（**API 进程**写；供 ``/status`` 读出）。
+
+        ⚠ 没有它 ⇒ 守护进程被外部静默杀掉又自动拉起这件事**只有日志知道**
+        ⇒ 作者在界面上完全看不到（书不写了，但一切看起来正常）。
+        """
+        if not self._ensure_state():
+            return
+        self._state[self.KEY_DAEMON_SUPERVISOR] = dict(state or {})
+
+    def get_daemon_supervisor_state(self) -> Dict[str, Any]:
+        """读监督者状态（没有 ⇒ 空字典，**不是** None ⇒ 消费方不必判空）。"""
+        if not self._ensure_state():
+            return {}
+        raw = self._state.get(self.KEY_DAEMON_SUPERVISOR)
+        return dict(raw) if isinstance(raw, dict) else {}
 
     # ==================== 小说列表 ====================
 

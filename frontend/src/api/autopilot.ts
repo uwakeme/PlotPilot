@@ -32,6 +32,20 @@ export interface AutopilotChapterAudit {
  * 部分（未列字段）走 `[key: string]: unknown` 兜底；消费方对兜底字段
  * 仍需 Number()/String() 防御式解析，已列字段可直接使用。
  */
+/**
+ * 守护进程**监督者**的状态（第 64 批）。
+ *
+ * 守护进程被外部静默杀掉时，监督者会把它拉起来 ⇒ 「重启过几次 / 上次错误」
+ * 就落在这里 ⇒ 面板上看得见（此前只有后端日志知道 ⇒ 书不写了但界面一切正常）。
+ */
+export interface DaemonSupervisorState {
+  enabled?: boolean
+  running?: boolean
+  restart_attempts?: number
+  last_restart_at?: number | null
+  last_error?: string
+}
+
 export interface AutopilotStatus {
   novel_id?: string
   // 阶段与子步骤
@@ -72,6 +86,8 @@ export interface AutopilotStatus {
   aftermath_live_status?: string
   aftermath_live_chapter_number?: number
   story_pipeline_substep?: string
+  // 守护进程监督者（第 64 批）：守护进程被外部杀掉又自动拉起时的可见性
+  daemon_supervisor?: DaemonSupervisorState
   // 兜底：后端新增字段
   [key: string]: unknown
 }

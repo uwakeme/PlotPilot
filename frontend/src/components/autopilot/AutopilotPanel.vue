@@ -5,6 +5,12 @@
         <div class="ap-hero__status">
           <span class="ap-dot" :class="dotClass" aria-hidden="true" />
           <span class="ap-hero__eyebrow">守护进程</span>
+          <span
+            v-if="supervisorNotice"
+            class="ap-supervisor-pill"
+            :class="supervisorPillClass"
+            >{{ supervisorNotice }}</span
+          >
           <span class="ap-stage-tag" :class="stageTagClass">
             <template v-if="stageTransitioning">
               <span class="skeleton-inline skeleton-pulse" />
@@ -871,6 +877,28 @@ const stagePresentation = computed(() =>
 )
 
 const stageLabel = computed(() => stagePresentation.value.text)
+
+/**
+ * 守护进程监督者的可见性（第 64 批）。
+ *
+ * ⚠ 为什么必须有：守护进程被外部静默杀掉时，**书会停止推进**，
+ * 而此前界面完全无感（API 还活着、状态一切正常）⇒ 用户只能靠「书怎么不动了」
+ * 这种间接迹象才发现。
+ * ⇒ 这里把「重启过几次 / 自动拉起失败」直接说出来。
+ */
+const supervisorNotice = computed(() => {
+  const supervisor = status.value?.daemon_supervisor
+  if (!supervisor) return ''
+  const attempts = Number(supervisor.restart_attempts ?? 0)
+  const lastError = String(supervisor.last_error ?? '')
+  if (lastError) return '自动拉起失败'
+  if (attempts > 0) return `已自动重启 ${attempts} 次`
+  return ''
+})
+
+const supervisorPillClass = computed(() =>
+  status.value?.daemon_supervisor?.last_error ? 'is-error' : 'is-warn',
+)
 
 // 🔥 阶段变更过渡态：检测 current_stage 变化时显示骨架 loading
 const prevStage = ref(null)
@@ -1936,6 +1964,22 @@ onUnmounted(() => {
 .tag-sem-daemon_wait { background: var(--color-info-dim); color: var(--color-info); }
 
 .stage-text { vertical-align: middle; }
+
+.ap-supervisor-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.ap-supervisor-pill.is-warn {
+  background: var(--color-warning-dim, rgba(245, 158, 11, 0.12));
+  color: var(--color-warning, #d97706);
+}
+.ap-supervisor-pill.is-error {
+  background: var(--color-error-dim, rgba(220, 38, 38, 0.12));
+  color: var(--color-error, #dc2626);
+}
 
 .ap-stage-live {
   display: inline-block;
