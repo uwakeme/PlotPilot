@@ -265,13 +265,19 @@ def test_the_migration_thresholds_match_the_single_source():
         "info_hits": SEVERITY_WEIGHTS["info"],
     }, f"迁移 SQL 的严重性权重与单一事实源不一致：{sql_weights}"
 
-    # 阈值：SQL 里用到的**集合**必须与单一事实源一致（不许多、不许少、不许改）。
-    # ⚠ 只认「后面跟着评级标签」的那些比较 —— 封顶判断（`>= 100.0 THEN 1`）不是阈值。
-    sql_thresholds = set(
-        re.findall(r">=\s*([0-9]+(?:\.[0-9]+)?)\s*THEN\s*'(?:严重|中等|轻微)'", sql)
-    )
+    # 阈值：SQL 里用到的**值↔标签配对集合**必须与单一事实源一致。
+    # ⚠ 第 70 批（R-8）补的：原先只比**值的集合** ⇒ 把 SQL 里 4.0/2.0 的
+    #   「严重/中等」**标签对调**（值集合不变）⇒ 互锁照样绿 ⇒ 现在比配对。
+    sql_thresholds = {
+        (float(value), label)
+        for value, label in re.findall(
+            r">=\s*([0-9]+(?:\.[0-9]+)?)\s*THEN\s*'(严重|中等|轻微)'", sql
+        )
+    }
     expected_thresholds = {
-        f"{threshold}" for threshold, label in ASSESSMENT_THRESHOLDS if label != DEFAULT_ASSESSMENT
+        (float(threshold), label)
+        for threshold, label in ASSESSMENT_THRESHOLDS
+        if label != DEFAULT_ASSESSMENT
     }
     assert sql_thresholds == expected_thresholds, (
         f"迁移 SQL 用到的评级阈值是 {sorted(sql_thresholds)}，"

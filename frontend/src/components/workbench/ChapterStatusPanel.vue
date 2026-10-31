@@ -121,13 +121,19 @@
             </div>
             <div class="review-row">
               <n-text depth="3">漂移告警</n-text>
+              <!-- ⚠ 第 69 批（R-1）：三态必须可分辨 ——
+                   null = **未评估**（相似度没算出来 ⇒ 判不了）。
+                   以前 `drift_alert ? 'error' : 'success'` 把 null 渲染成「正常」
+                   ⇒ 「没测出来」被说成「测出来没问题」。
+                   ⚠ 今天靠 `v-if="similarity_score != null"` 先挡着（当前不可达），
+                     但契约一变（drift_alert 可空）这里立刻变成假信号。 -->
               <n-tag
                 v-if="autopilotChapterReview.similarity_score != null"
-                :type="autopilotChapterReview.drift_alert ? 'error' : 'success'"
+                :type="autopilotChapterReview.drift_alert === false ? 'success' : autopilotChapterReview.drift_alert === true ? 'error' : 'info'"
                 size="small"
                 round
               >
-                {{ autopilotChapterReview.drift_alert ? '告警' : '正常' }}
+                {{ autopilotChapterReview.drift_alert === false ? '正常' : autopilotChapterReview.drift_alert === true ? '告警' : '未评估' }}
               </n-tag>
               <n-tag v-else type="default" size="small" round>待采样</n-tag>
             </div>

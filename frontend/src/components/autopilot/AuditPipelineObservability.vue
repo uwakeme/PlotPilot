@@ -132,7 +132,12 @@ const activeDetail = computed(() => {
   const label = props.status?.writing_substep_label || step.label
   const audit = props.status?.last_chapter_audit
   if (ix === 2 && audit?.similarity_score != null) {
-    return { label, text: `文风相似度 ${Number(audit.similarity_score).toFixed(3)}${audit.drift_alert ? ' · 漂移告警' : ''}` }
+    // ⚠ 第 69 批（R-1）：三态可分辨 ——
+    // null = **未评估** ⇒ 以前 `drift_alert ? ' · 漂移告警' : ''` 会把 null 渲染成
+    // 「没有告警」⇒ 把「没测出来」说成「测出来没问题」。
+    const driftNote =
+      audit.drift_alert === true ? ' · 漂移告警' : audit.drift_alert === false ? '' : ' · 漂移未评估'
+    return { label, text: `文风相似度 ${Number(audit.similarity_score).toFixed(3)}${driftNote}` }
   }
   if (ix === 3 && audit) {
     if (props.status?.audit_aftermath_reused) {

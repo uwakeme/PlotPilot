@@ -411,6 +411,14 @@ class ChapterAuditNode(BaseNode):
                 error=error,
             )
 
+        # ⚠ 第 70 批（R-3）：阈值**只从单一事实源取** ——
+        #   此前这里写死 `> 50`，比后端「严重」线（4.0）高 12.5 倍
+        #   ⇒ 生产库最高分 15.3 ⇒ **该节点永远显示 SUCCESS**（报警器从未响过）。
+        from application.audit.services.anti_ai_thresholds import (
+            SEVERE_ASSESSMENT_THRESHOLD,
+        )
+
+        severe = severity_score >= SEVERE_ASSESSMENT_THRESHOLD
         return NodeResult(
             outputs={
                 "total_hits": total_hits,
@@ -418,9 +426,11 @@ class ChapterAuditNode(BaseNode):
                 "hits": hits,
                 "overall_assessment": overall_assessment,
                 "state": state,
+                # ⚠ 输出**布尔**而不是另一个阈值 ⇒ 前端不必（也不该）自己判严重。
+                "severe": severe,
             },
-            status=NodeStatus.WARNING if severity_score > 50 else NodeStatus.SUCCESS,
-            metrics={"severity_score": severity_score},
+            status=NodeStatus.WARNING if severe else NodeStatus.SUCCESS,
+            metrics={"severity_score": severity_score, "severe": severe},
             duration_ms=int((time.time() - start) * 1000),
         )
 

@@ -1169,8 +1169,15 @@ class MemoryEngine:
         flush = getattr(self.db_connection, "flush_pending_writes", None)
         if callable(flush):
             try:
-                if not flush(timeout=2.0):
-                    return "MemoryEngine 状态持久化未确认（写队列未在超时内排空）"
+                timeout = self._runtime_settings.persist_verify_flush_timeout_seconds
+                if not flush(timeout=timeout):
+                    # ⚠ 第 71 批（R-6）：这一类是**不确定**，不是「确定没落库」——
+                    #   队列没在超时内排空时，记忆**可能已经落库**了
+                    #   ⇒ 文案必须说清「未能确认」，否则排查时分不开「没排空」与「真没落库」。
+                    return (
+                        "MemoryEngine 状态持久化**未能确认**"
+                        f"（写队列未在 {timeout}s 内排空；可能已落库，也可能没有）"
+                    )
             except Exception as exc:
                 return f"MemoryEngine 状态持久化确认失败（刷新写队列出错）: {exc}"
 

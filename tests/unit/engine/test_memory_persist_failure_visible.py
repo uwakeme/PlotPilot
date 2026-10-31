@@ -241,3 +241,76 @@ def test_the_memory_engine_without_a_database_is_not_a_failure():
     )
 
     assert engine._persist_state("n-1", _state(engine)) is None
+
+
+# ─────────────────────── 2) 回读确认：超时可配 + 两类失败文案可分辨 ───────────────────────
+
+
+def test_the_flush_timeout_is_configurable():
+    """⚠ 回读确认等写队列排空的超时必须**可配**（R-6）。
+
+    ⚠ 原来写死 2.0s ⇒ 队列繁忙时排不空 ⇒ 报「未确认」⇒ 但那时记忆**可能已经落库**
+    ⇒ 这是**假失败**（方向比「假成功」安全，但会在高负载下产生虚假的「未更新」条目）。
+    ⇒ 现在从运行时设置读（`config/performance.yaml` 的 `memory_engine` 段）。
+    """
+    from application.engine.services.memory_engine_settings import (
+        get_memory_engine_runtime_settings,
+    )
+
+    settings = get_memory_engine_runtime_settings()
+
+    assert settings.persist_verify_flush_timeout_seconds >= 5.0, (
+        f"回读确认的超时只有 {settings.persist_verify_flush_timeout_seconds}s"
+        f"⇒ 队列稍繁忙就产生假失败"
+    )
+
+
+def test_the_two_failure_kinds_have_different_messages():
+    """⚠ 「队列没排空」与「真没落库」必须**说得清**（R-6：排查时要能分开）。
+
+    ⚠ 「没排空」是**不确定**（可能已落库）⇒ 文案必须说「未能确认」，
+      不能与「回读不到该行」混成同一句。
+    """
+    from application.engine.services.memory_engine import MemoryEngine
+
+    class _NotDrainedDB:
+        def execute(self, sql, params=()):
+            return _StubCursor(None)
+
+        def commit(self):
+            return None
+
+        def flush_pending_writes(self, timeout: float = 2.0):
+            return False  # 队列没排空
+
+    engine = MemoryEngine(
+        llm_service=None,
+        bible_repository=_BibleRepo(),
+        db_connection=_NotDrainedDB(),
+    )
+
+    not_drained = engine._persist_state("n-1", _state(engine))
+    assert not_drained, "队列没排空却报成功 ⇒ 又是假成功"
+    assert "未能确认" in not_drained, (
+        f"「队列没排空」必须说清是**未能确认**（可能已落库）：{not_drained!r}"
+    )
+    assert "可能已落库" in not_drained, not_drained
+
+    # 对照：真的没落库（回读不到该行）⇒ 文案不同
+    class _LostDB:
+        def execute(self, sql, params=()):
+            return _StubCursor(None)
+
+        def commit(self):
+            return None
+
+    engine2 = MemoryEngine(
+        llm_service=None,
+        bible_repository=_BibleRepo(),
+        db_connection=_LostDB(),
+    )
+    lost = engine2._persist_state("n-1", _state(engine2))
+    assert lost and lost != not_drained, (
+        f"两类失败共用同一句文案 ⇒ 排查时分不开：{lost!r} vs {not_drained!r}"
+    )
+    assert "未能确认" not in lost, lost

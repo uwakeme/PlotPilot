@@ -125,6 +125,29 @@ def test_the_t0_total_comment_is_not_stale():
     )
 
 
+def test_the_t0_headroom_is_big_enough():
+    """⚠ 余量必须**够大**：T0 合计离 40% 保护线至少留 1000 tokens。
+
+    ⚠ 第 70 批（R-7）补的：原先只判 ``total < protection``
+      ⇒ 审查方实测：把 ``MAX_FACT_LOCK_TOKENS`` 抬 +2000（合计 23920，
+      **余量只剩 80**）并同步改好注释 ⇒ 12 条守卫**全绿**
+      ⇒ 「余量已经很薄」这件事没有任何守卫管着。
+    ⇒ 现在显式断言余量 ⇒ 余量掉到 1000 以下就红（提示：先想清楚再抬）。
+    """
+    from engine.core.services.context_budget_limits import DEFAULT_CONTEXT_MAX_TOKENS
+
+    caps = _t0_slot_caps()
+    total = sum(caps.values())
+    protection = int(DEFAULT_CONTEXT_MAX_TOKENS * _t0_max_ratio())
+    margin = protection - total
+
+    assert margin >= 1000, (
+        f"T0 余量只剩 {margin} tokens（合计 {total} / 保护线 {protection}）"
+        f"⇒ 再抬任一 T0 槽位就会命中保护线 ⇒ 先想清楚为什么要抬"
+        f"（槽位上限：{caps}）"
+    )
+
+
 # ─────────────────────── 2) 舍弃顺序由价值决定 ───────────────────────
 
 

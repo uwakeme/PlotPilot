@@ -82,6 +82,9 @@ analyst:
 memory_engine:
   state_cache_ttl_seconds: 300.0
   state_cache_max_size: 256
+  # 落库后回读确认时，等待写队列排空的超时（秒）。
+  # 太短 ⇒ 队列繁忙时排不空 ⇒ 报「未确认」（可能是假失败）⇒ 第 71 批（R-6）。
+  persist_verify_flush_timeout_seconds: 5.0
 
 # ─── Workbench 接口配置 ───
 workbench:

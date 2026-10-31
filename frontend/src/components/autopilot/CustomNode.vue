@@ -167,7 +167,10 @@ const displayMetrics = computed(() => {
         key: 'severity_score',
         label: 'AI味',
         value: metrics.severity_score.toFixed(1),
-        color: metrics.severity_score > 5 ? 'var(--color-danger)' : 'var(--color-success)',
+        // ⚠ 第 70 批（R-3）：阈值**只在后端**判（从 ASSESSMENT_THRESHOLDS 派生）
+        //   ⇒ 前端不再自己写一个 `> 5`（此前与后端 4.0 不一致
+        //   ⇒ 4.5 分：后端判「严重」、前端判绿）。
+        color: metrics.severe ? 'var(--color-danger)' : 'var(--color-success)',
       })
     }
   } else if (type === 'exec_writer') {

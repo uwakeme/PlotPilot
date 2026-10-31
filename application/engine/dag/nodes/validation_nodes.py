@@ -379,15 +379,23 @@ class AntiAINode(BaseNode):
                 int((time.time() - start) * 1000),
             )
 
+        # ⚠ 第 70 批（R-3）：阈值**只从单一事实源取**（同 anti_ai_nodes.py）
+        #   ⇒ 此前写死 `> 50` ⇒ 该节点**永远不会**报警。
+        from application.audit.services.anti_ai_thresholds import (
+            SEVERE_ASSESSMENT_THRESHOLD,
+        )
+
+        severe = severity_score >= SEVERE_ASSESSMENT_THRESHOLD
         return NodeResult(
             outputs={
                 "severity_score": severity_score,
                 "hits": hits,
                 "recommendations": recommendations,
                 "state": state,
+                "severe": severe,
             },
-            status=NodeStatus.WARNING if severity_score > 50 else NodeStatus.SUCCESS,
-            metrics={"severity_score": severity_score},
+            status=NodeStatus.WARNING if severe else NodeStatus.SUCCESS,
+            metrics={"severity_score": severity_score, "severe": severe},
             duration_ms=int((time.time() - start) * 1000),
         )
 

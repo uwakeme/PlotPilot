@@ -51,6 +51,66 @@ FOLD_PATTERNS = (
     re.compile(r"\b(narrative_sync_ok|drift_alert)\s*\?\?\s*(false|true)\b"),
 )
 
+#: 已知**三态安全**的 helper（它们内部自己判别 true / false / 其它）。
+NULL_SAFE_HELPERS = ("triState(", "stepState(", "boolStep(")
+
+
+def _has_ternary(line: str) -> bool:
+    """这一行有没有**真三元**（``??`` 与 ``?.`` 不算）。"""
+    stripped = line.replace("??", "").replace("?.", "")
+    return "?" in stripped
+
+
+def _explicitly_discriminates(line: str, field: str) -> bool:
+    """这一行有没有对字段做**显式判别**（``=== true`` / ``=== false`` / ``=== null`` …）。"""
+    return re.search(rf"{re.escape(field)}\s*(===|!==|==|!=)", line) is not None
+
+
+def _code_lines(text: str) -> list[tuple[int, str]]:
+    """逐行去掉注释 ⇒ 返回 ``(行号, 代码部分)``。
+
+    ⚠ 为什么必须去注释：注释里写「以前 ``drift_alert ? 'error' : 'success'``」
+      是在**说明**问题，不是折叠 ⇒ 不去注释会把说明文字当成违规。
+
+    ⚠ 处理三种注释：HTML（``<!-- -->``）、块注释（``/* */``）、行注释（``//``）。
+    """
+    out: list[tuple[int, str]] = []
+    in_html = False
+    in_block = False
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw
+        if in_html:
+            if "-->" in line:
+                line = line.split("-->", 1)[1]
+                in_html = False
+            else:
+                continue
+        if in_block:
+            if "*/" in line:
+                line = line.split("*/", 1)[1]
+                in_block = False
+            else:
+                continue
+        if "<!--" in line:
+            head, sep, tail = line.partition("<!--")
+            if "-->" in tail:
+                line = head + tail.split("-->", 1)[1]
+            else:
+                line = head
+                in_html = True
+        if "/*" in line:
+            head, sep, tail = line.partition("/*")
+            if "*/" in tail:
+                line = head + tail.split("*/", 1)[1]
+            else:
+                line = head
+                in_block = True
+        idx = line.find("//")
+        if idx != -1:
+            line = line[:idx]
+        out.append((number, line))
+    return out
+
 
 # ─────────────────────── 1) 已知消费方（静态，锚到确切语句） ───────────────────────
 
@@ -178,24 +238,44 @@ def _frontend_sources() -> list[Path]:
 
 
 def test_no_frontend_consumer_folds_the_tristate_fields():
-    """⚠ 通则守卫：前端**任何**文件都不许用折叠器读这两个三态字段。
+    """⚠ 通则守卫：前端**任何**文件都不许把三态字段折叠成两态。
 
     ⚠ 为什么是通则：契约升级（bool → bool | null）影响的是**所有读它的地方**，
       而代码审查通常只看 diff ⇒ 新加一个消费方很容易再折叠一次。
+
+    ⚠ 第 69 批（R-1）：判定从「模式表」升级为**规则级** ——
+      「读三态字段的表达式里含**三元**，又**没有显式判别**」⇒ 违规。
+      ⚠ 为什么不能只看那一行：三元常写成**跨行链**
+        （``a === null ? '未评估' : (a ? '已同步' : '未同步')``）
+        ⇒ 判别在上一行 ⇒ 判据要扫**相邻几行**。
     """
     offenders: list[str] = []
     for path in _frontend_sources():
         text = path.read_text(encoding="utf-8")
-        for number, line in enumerate(text.splitlines(), start=1):
+        code_lines = _code_lines(text)
+        for index, (number, line) in enumerate(code_lines):
             if not any(field in line for field in TRISTATE_FIELDS):
                 continue
             # 类型声明（``field?: boolean | null``）不是「读值」⇒ 放行。
             if "boolean | null" in line or "boolean|null" in line:
                 continue
+            # 已知三态安全的 helper ⇒ 放行（它们内部自己判别）。
+            if any(helper in line for helper in NULL_SAFE_HELPERS):
+                continue
             for pattern in FOLD_PATTERNS:
                 if pattern.search(line):
                     offenders.append(f"{path.name}:{number}: {line.strip()}")
                     break
+            else:
+                # ⚠ 规则级：三元 + 没有显式判别 ⇒ 就是在折叠 null
+                #   （真值三元 `x ? true : false` 不在那 3 条模式里 ⇒ 第一版守卫漏了）。
+                window = " ".join(
+                    item for _, item in code_lines[max(0, index - 2) : index + 3]
+                )
+                if _has_ternary(line) and not any(
+                    _explicitly_discriminates(window, field) for field in TRISTATE_FIELDS
+                ):
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
 
     assert not offenders, (
         "前端又出现了折叠三态的写法（null ⇒ false/true）：\n  " + "\n  ".join(offenders)

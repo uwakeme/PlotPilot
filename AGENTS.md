@@ -78,6 +78,18 @@ PlotPilot（墨枢）— 开源剧情引擎内核，用结构化叙事状态管�
   状态在 `GET /health` 的 `daemon_supervisor` 字段里。
   守卫：`tests/unit/interfaces/test_daemon_supervisor.py`、
   `tests/unit/interfaces/test_orphan_cleanup_isolation.py`。
+- **章后叙事同步「未评估」⇒ 硬闸拦停**（第 66 批，2026-10-31 补记）：
+  ⚠ 这是**用户可见的行为变更**，方向是 fail-closed（宁停勿谎），但以前没人写下来。
+  - 触发条件：章后管线**抛异常**（`run_after_chapter_saved` 报错）**或**
+    **装配失败**（`scripts/start_daemon.py` 里 `aftermath_pipeline = None`）
+    ⇒ 走 legacy 回退路径 ⇒ 那条路径**没有**跑过叙事同步
+    ⇒ `narrative_sync_ok` 判「**未评估**」（缺键 ⇒ None ⇒ fail-closed）
+    ⇒ `hard_narrative = True` ⇒ **硬闸拦停**，书停下来等人工。
+  - 改前：同一情形下判「已同步」⇒ 静默继续写 ⇒ **面板显示假信号**。
+  - 正常路径**不受影响**：章后管线正常跑时始终带 `narrative_sync_ok`
+    （先写 False、成功后改 True）⇒ 不会误伤正常写作。
+  - ⇒ 看到「书停在待审阅」时，先查**章后管线**（装配失败 / 抛异常），不是先怀疑内容。
+  - 守卫：`tests/unit/engine/test_narrative_gate_fail_closed.py`。
 - **宏观结构合并的冲突分两档**（H-05，2026-10-29 补）：
   `fatal` = 节点下**已有正文** ⇒ 阻断重构（不变量，原样保留）；
   `warning` = 节点下**只有未动笔的章节** ⇒ 不阻断，但旧节点**保留**

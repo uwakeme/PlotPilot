@@ -117,7 +117,10 @@ class SqliteNovelRepository(NovelRepository):
         _ladr_raw = getattr(novel, "last_audit_drift_alert", False)
         ladr = None if _ladr_raw is None else (1 if _ladr_raw else 0)
         # 三态（第 19 批）：None（未评估）要**原样存 NULL**，不能压成 0
-        lano = narrative_ok_to_db(getattr(novel, "last_audit_narrative_ok", True))
+        # ⚠ 第 70 批（R-10）：缺属性 ⇒ **未评估**（NULL），不是「已同步」（1）。
+        #   ⚠ 这是与 B-3 消灭的「缺键 ⇒ True」**同款口子**（实体默认值已改 None，
+        #     所以今天不可达 ⇒ 但口子还在）。
+        lano = narrative_ok_to_db(getattr(novel, "last_audit_narrative_ok", None))
         laat = getattr(novel, "last_audit_at", None)
         # 新增字段
         lavs = 1 if getattr(novel, "last_audit_vector_stored", False) else 0

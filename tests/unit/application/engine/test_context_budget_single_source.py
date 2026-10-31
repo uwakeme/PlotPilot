@@ -163,15 +163,20 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
       （判据仍扫**三种形状**：普通常量 / 位置参数默认值 / 关键字专用参数默认值。）
     """
     offenders = []
+    skipped: list[str] = []
     for dirname in SCAN_DIRS:
         for path in (REPO_ROOT / dirname).rglob("*.py"):
             if path.name == "context_budget_limits.py":
                 continue  # 定义处本身
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
             rel = path.relative_to(REPO_ROOT).as_posix()
+            try:
+                # ⚠ 第 69 批（R-2）：用 `utf-8-sig` ⇒ **带 BOM 的文件也能解析**。
+                #   原来用 `utf-8` ⇒ BOM 直接抛异常 ⇒ 下面静默 `continue`
+                #   ⇒ 那个文件**根本没被检查**（同一份违规代码，多 3 字节 BOM 就从红变绿）。
+                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(f"{rel}: {exc}")
+                continue
             for node in ast.walk(tree):
                 # 形状 1：普通常量赋值
                 if isinstance(node, ast.Assign):
@@ -210,6 +215,12 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
         f"{DEFAULT_CONTEXT_MAX_TOKENS} 这个字面量又出现在别处"
         "（应当只有 context_budget_limits.py 一处）："
         f"{offenders}"
+    )
+    # ⚠ 第 69 批（R-2）：**跳过 = 没被检查** ⇒ 跳过 N 个文件就是 N 个文件没被扫
+    #   ⇒ 当成事故（而不是噪音）⇒ 这里断言跳过数为 0。
+    assert not skipped, (
+        f"有 {len(skipped)} 个文件**没被检查**（解析失败 ⇒ 跳过）"
+        f"⇒ 这条扫描型守卫有盲区：{skipped[:5]}"
     )
 
 

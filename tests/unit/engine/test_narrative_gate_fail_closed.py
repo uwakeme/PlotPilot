@@ -216,6 +216,9 @@ def test_the_api_does_not_default_the_narrative_flag_to_synced():
         "interfaces/api/v1/engine/autopilot_routes.py",
         "engine/runtime/audit_delegate.py",
         "engine/runtime/daemon_host.py",
+        # ⚠ 第 70 批（R-10）补进扫描范围：仓储层也有一处同款「缺键 ⇒ True」
+        #   （`sqlite_novel_repository.py:120`）⇒ 实体默认值改了，但口子还在。
+        "infrastructure/persistence/database/sqlite_novel_repository.py",
     ],
 )
 def test_no_backend_consumer_defaults_the_narrative_flag_to_true(rel: str):

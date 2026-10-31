@@ -81,11 +81,12 @@ MAX_SEVERITY_SCORE: float = 100.0
 #: ⚠ 落库时必须写当前版本 ⇒ 读侧才有办法判断「这一行能不能跟别的行比」。
 SCORE_SCALE_VERSION: int = 2
 
-#: 当前刻度的**标签**（API / 界面标注用，避免只给一个数字让人猜）。
-SCORE_SCALE_LABEL: str = "每千字加权命中数"
-
-#: 旧刻度（版本 1）的标签 —— 只用于**说明历史数据**，不再用于计算。
-LEGACY_SCORE_SCALE_LABEL: str = "每万字加权命中数"
+#: 「严重」线（第 69 批 · R-3 补的**具名**常量）。
+#:
+#: ⚠ 为什么要有：DAG 节点与前端此前各自写了一份阈值（`> 50` / `> 5`），
+#:   而后端评级用的是这里的表 ⇒ 三处不一致（DAG 那个线高 12.5 倍 ⇒ 节点**永不报警**）。
+#: ⇒ 现在：谁要判「严重」都从这里取 ⇒ **一份**。
+SEVERE_ASSESSMENT_THRESHOLD: float = ASSESSMENT_THRESHOLDS[0][0]
 
 
 def raw_severity_score(severities) -> float:

@@ -235,11 +235,31 @@ def _legacy_gap_rows() -> list[tuple[str, str]]:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) < 3:
             continue
-        m = re.match(r"^([A-Z]-\d\d)", cells[0])
+        # ⚠ 第 71 批（R-9）：`~~G-04 …~~` 这类行以前**匹配不到**首格正则
+        #   ⇒ 既不参与冲突检查、也不参与孤儿检查 ⇒ 形态一旦回退就没人拦。
+        # ⇒ 现在先剥掉删除线标记再定位 id。
+        first = cells[0].strip().strip("~").strip()
+        m = re.match(r"^([A-Z]-\d\d)", first)
         if not m:
             continue
         rows.append((m.group(1), cells[-1]))
     return rows
+
+
+def _claims_not_done(status_cell: str) -> bool:
+    """这一格是不是在**说「未做」**。
+
+    ⚠ 第 71 批（R-9）：原来只判「整格含『未做』」+「整格含『已做』就整格豁免」
+      ⇒ 「**已做，但 X 未做**」这种**混合写法**被整格豁免（看不出来）。
+    ⇒ 现在**按句读**：把状态格按标点切开 ⇒ 含『未做』的那个**子句**里
+      若没有『已做/部分/完成』⇒ 就是在说「未做」⇒ 与主表的 ✓ 打架。
+    """
+    for clause in re.split(r"[，,；;。]", status_cell):
+        if any(marker in clause for marker in ("未做", "没做")) and not any(
+            word in clause for word in ("已做", "部分", "完成")
+        ):
+            return True
+    return False
 
 
 def test_the_legacy_gap_list_agrees_with_the_main_table():
@@ -256,13 +276,13 @@ def test_the_legacy_gap_list_agrees_with_the_main_table():
         会被放过 ⇒ A-04（第 65 批漏修的那一行）就是这么漏过去的。
       ⇒ 现在：写了「未做」又没写「已做/部分」⇒ 就是「未做」⇒ 与主表的 ✓ 打架。
       ⇒ 「刻意保留」的行（G-05 / I-05）**根本没写「未做」** ⇒ 不受影响。
+    ⚠ 第 71 批（R-9）：豁免判定改**按句读**（`_claims_not_done`）⇒
+      「已做，但 X 未做」这种**混合写法**不再被整格豁免。
     """
     statuses = {cid: status for cid, status, _ in _main_rows()}
     stale = []
     for cid, gap_status in _legacy_gap_rows():
-        if "未做" not in gap_status:
-            continue
-        if any(word in gap_status for word in ("已做", "部分")):
+        if not _claims_not_done(gap_status):
             continue
         if statuses.get(cid) == "✓":
             stale.append("%s（清单说未做，主表说 ✓）" % cid)
@@ -270,6 +290,18 @@ def test_the_legacy_gap_list_agrees_with_the_main_table():
         "遗留清单与主表状态打架（清单里的『未做』已过期 ⇒ 会导致重做已完成的事）："
         f"{stale}"
     )
+
+
+def test_a_mixed_status_cell_is_not_exempted():
+    """⚠ 「已做，但 X 未做」这种**混合写法**不许被整格豁免（R-9）。
+
+    ⚠ 原判据是「整格含『已做』就豁免」⇒ 这种格子会被放过
+    ⇒ 清单明明在说「还有没做的」，却因为同一格里还有「已做」而被跳过。
+    """
+    assert _claims_not_done("已做，但世界观五维仍没做") is True
+    assert _claims_not_done("已做（第 22 批补记）：四层刻意保留") is False
+    assert _claims_not_done("刻意保留，未做") is True
+    assert _claims_not_done("**已做（第 56/57 批）**") is False
 
 
 def test_every_gap_row_id_exists_in_the_main_table():

@@ -48,14 +48,15 @@ def _settings(**overrides):
 
 
 def test_the_merge_never_drops_a_config_field():
-    """⚠ 通则守卫：**重建配置 = 逐字段透传**。
+    """**显式设过值**的字段，合并后必须原样还在（值相等）。
 
-    为什么写成「通则」而不是「钉 ``timeout_seconds`` 一个字段」：
-    ``GenerationConfig`` 以后再加字段时，这个守卫会自动要求把它也透传过去
-    ⇒ 不会再出现「换个字段名原样重犯第 32 批的坑」。
-
-    ⚠ 样本形状：所有字段都取**非默认值** ⇒ ``_merge_config`` 的
-    「等于默认值才落到画像默认」那条分支不会触发 ⇒ 合并前后必须**逐字段相等**。
+    ⚠ 第 69 批（R-0）**收窄**了本用例的承诺（原文写「以后新增字段忘了写进来
+      ⇒ 守卫立刻红」，**不成立**）：
+      本用例遍历 ``vars(config)`` 比值 ⇒ 对**带默认值**的字段，两侧拿到的都是默认值
+      ⇒ ``1 == 1`` ⇒ **断言恒真** ⇒ 抓不住「新增字段从未被串进 `_merge_config`」
+      —— 而 **B-1 那个 bug 正是这一类**（``timeout_seconds`` 在第 50 批被**新增**进
+      ``GenerationConfig``、默认 ``None``，却没串进 ``_merge_config``）。
+    ⇒ 「新增字段漏传」由下面那条**集合比对**守卫负责；本条只管**值**。
     """
     from infrastructure.ai.provider_factory import DynamicLLMService
 
@@ -82,6 +83,46 @@ def test_the_merge_never_drops_a_config_field():
         assert getattr(merged, name) == value, (
             f"合并后的配置把字段 {name} 丢了：{value!r} → {getattr(merged, name)!r}"
         )
+
+
+def test_the_merge_passes_every_generation_config_field():
+    """⚠ 通则守卫（**真的能抓住新增字段**）：`_merge_config` 传给
+    ``GenerationConfig(...)`` 的 kwargs 集合 == ``GenerationConfig.__init__`` 的**全部**参数。
+
+    ⚠ 第 69 批（R-0）新增：上一版守卫**抓不住**「新增字段从未被串进 `_merge_config`」
+      （比值恒真）⇒ 而 B-1 那个 bug 正是这一类 ⇒ 这里改成**集合比对**
+      （不依赖值）⇒ 以后 ``GenerationConfig`` 加字段忘了写进 `_merge_config`` ⇒ **立刻红**。
+
+    ⚠ 判据用 **AST**（不是文本 contains）⇒ 注释里出现 ``GenerationConfig(`` 不会误判。
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from domain.ai.services.llm_service import GenerationConfig
+    from infrastructure.ai.provider_factory import DynamicLLMService
+
+    source = textwrap.dedent(inspect.getsource(DynamicLLMService._merge_config))
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "GenerationConfig"
+    ]
+    assert len(calls) == 1, (
+        f"_merge_config 里应有且只有 1 个 GenerationConfig(...) 调用，实际 {len(calls)} 个"
+    )
+
+    passed = {kw.arg for kw in calls[0].keywords}
+    expected = set(inspect.signature(GenerationConfig.__init__).parameters) - {"self"}
+    missing = expected - passed
+
+    assert not missing, (
+        f"_merge_config 没有透传这些字段：{sorted(missing)}"
+        f"⇒ 新增字段忘了写进来 ⇒ 生产入口会**静默剥掉**它（B-1 同款）"
+    )
+
 
 
 def test_the_merged_config_keeps_the_single_call_timeout():
