@@ -38,6 +38,11 @@ def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
     analyst = getattr(get_config(), "analyst", None)
     section = getattr(analyst, "voice_analysis", None)
     defaults = VoiceAnalysisRuntimeSettings()
+    # ⚠ 第 74 批（Q-1）：走**统一读取层**（env 级可用）。
+    #   ⚠ 这一项的 novel 级**够不到**：文风服务是**进程级单例**（DI 工厂构造一次）
+    #     ⇒ 「这本书」的覆盖在那里没有上下文 ⇒ 只有 env 级与默认级生效。
+    from application.engine.services.ai_switch_layer import resolve_switch
+
     return VoiceAnalysisRuntimeSettings(
         style_cache_ttl_seconds=non_negative_float(
             section_value(
@@ -67,8 +72,9 @@ def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
             ),
             defaults.baseline_cache_max_size,
         ),
-        use_llm_mode=bool(
-            section_value(section, "use_llm_mode", defaults.use_llm_mode)
+        use_llm_mode=resolve_switch(
+            "voice_llm_mode",
+            default=bool(section_value(section, "use_llm_mode", defaults.use_llm_mode)),
         ),
         drift_alert_threshold=non_negative_float(
             section_value(

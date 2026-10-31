@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, Optional
 
 
@@ -63,6 +63,12 @@ class GenerationPreferences:
     finale_chapter_budget: int = FINALE_BUDGET_DEFAULT
     # 写终局进行中标记：置位后再次达标视为终局写完 → 真正完结并复位
     finale_mode: bool = False
+    # ── 统一开关读取层（设计规格 §3.2）的 **novel 级**覆盖 ──
+    # ⚠ **一个通用字段**承载所有开关（规格：「不给每个条目单独造配置项」）
+    #   键 = 开关 key（如 "chapter_mode.enabled"），值 = bool。
+    #   优先级：novel.generation_prefs.<key> > env > 硬编码默认
+    #   （读取层：`application/engine/services/ai_switch_layer.py`）
+    ai_switches: Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -125,6 +131,15 @@ class GenerationPreferences:
             finale_budget = FINALE_BUDGET_DEFAULT
         finale_budget = clamp_finale_budget(finale_budget)
         finale_mode = bool(raw.get("finale_mode", False))
+        # 统一开关的 novel 级覆盖（Q-1）：只收**布尔**值（其它类型一律丢掉）。
+        # ⚠ 键**原样保留**（领域层不认识「开关注册表」——它在 application 层）
+        #   ⇒ 未登记的键自然永远不会被读到（无害）；由应用层守卫查「有没有写错键」。
+        raw_switches = raw.get("ai_switches")
+        ai_switches: Dict[str, bool] = {}
+        if isinstance(raw_switches, dict):
+            for switch_key, switch_value in raw_switches.items():
+                if isinstance(switch_value, bool):
+                    ai_switches[str(switch_key)] = switch_value
         return cls(
             locked_genre=str(raw.get("locked_genre", "") or ""),
             locked_world_preset=str(raw.get("locked_world_preset", "") or ""),
@@ -144,6 +159,7 @@ class GenerationPreferences:
             target_reached_policy=policy,
             finale_chapter_budget=finale_budget,
             finale_mode=finale_mode,
+            ai_switches=ai_switches,
         )
 
     @classmethod

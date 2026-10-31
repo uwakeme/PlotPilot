@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from application.core.config.config_loader import get_config
 from application.core.config.runtime_settings_utils import (
@@ -29,21 +30,33 @@ class ContextWeightRuntimeSettings:
     failure_backoff_seconds: float = 300.0
 
 
-def get_context_weight_runtime_settings() -> ContextWeightRuntimeSettings:
+def get_context_weight_runtime_settings(
+    novel_switches: Mapping[str, Any] | None = None,
+) -> ContextWeightRuntimeSettings:
+    """读上下文权重的开关。
+
+    ⚠ 第 74 批（Q-1）：走**统一读取层**（novel 级 > env 级 > 默认级）
+      ⇒ 默认级仍是 ``config/performance.yaml`` 那份 ⇒ **零行为变化**。
+    """
     section = getattr(get_config(), "context_weights", None)
     defaults = ContextWeightRuntimeSettings()
     # X-02：总闸优先于逐条开关（总闸关闭 ⇒ 一律不发起规划调用）。
     from application.engine.services.ai_participation_settings import (
         ai_participation_enabled,
     )
+    from application.engine.services.ai_switch_layer import resolve_switch
 
     return ContextWeightRuntimeSettings(
-        enabled=bool(
-            section_value(section, "enabled", defaults.enabled)
+        enabled=resolve_switch(
+            "context_weights.enabled",
+            default=bool(section_value(section, "enabled", defaults.enabled)),
+            novel_switches=novel_switches,
         )
         and ai_participation_enabled("context_weights"),
-        shadow=bool(
-            section_value(section, "shadow", defaults.shadow)
+        shadow=resolve_switch(
+            "context_weights.shadow",
+            default=bool(section_value(section, "shadow", defaults.shadow)),
+            novel_switches=novel_switches,
         ),
         cache_ttl_seconds=non_negative_float(
             section_value(

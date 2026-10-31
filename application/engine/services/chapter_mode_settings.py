@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from application.core.config.config_loader import get_config
 from application.core.config.runtime_settings_utils import section_value
@@ -23,18 +24,35 @@ class ChapterModeRuntimeSettings:
     apply: bool = False
 
 
-def get_chapter_mode_runtime_settings() -> ChapterModeRuntimeSettings:
+def get_chapter_mode_runtime_settings(
+    novel_switches: Mapping[str, Any] | None = None,
+) -> ChapterModeRuntimeSettings:
+    """读本章的余韵章开关。
+
+    ⚠ 第 74 批（Q-1）：走**统一读取层**（novel 级 > env 级 > 默认级）
+      ⇒ 规格 §3.2 的三级优先级第一次**真的**存在了。
+      ⇒ 默认级仍是 ``config/performance.yaml`` 那份 ⇒ **零行为变化**。
+    """
     section = getattr(get_config(), "chapter_mode", None)
     defaults = ChapterModeRuntimeSettings()
     # X-02：总闸优先于逐条开关（总闸关闭 ⇒ 一律不发起调用）。
     from application.engine.services.ai_participation_settings import (
         ai_participation_enabled,
     )
+    from application.engine.services.ai_switch_layer import resolve_switch
 
     return ChapterModeRuntimeSettings(
-        enabled=bool(section_value(section, "enabled", defaults.enabled))
+        enabled=resolve_switch(
+            "chapter_mode.enabled",
+            default=bool(section_value(section, "enabled", defaults.enabled)),
+            novel_switches=novel_switches,
+        )
         and ai_participation_enabled("chapter_mode"),
-        apply=bool(section_value(section, "apply", defaults.apply)),
+        apply=resolve_switch(
+            "chapter_mode.apply",
+            default=bool(section_value(section, "apply", defaults.apply)),
+            novel_switches=novel_switches,
+        ),
     )
 
 

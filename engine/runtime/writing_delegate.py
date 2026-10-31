@@ -184,7 +184,23 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
     if pipeline is None:
         pipeline = get_pipeline_registry().create_pipeline(genre)
         pipelines[genre] = pipeline
-    result = await pipeline.run_chapter(ctx)
+
+    # ⚠ 第 74 批（Q-1）：把「这本书的开关覆盖」放进 **contextvar**（章级）。
+    #   ⇒ 统一读取层（`ai_switch_layer`）在**任意深度**都能读到它
+    #   ⇒ 深层调用点（管线步骤 / 规划器）**不用改任何签名**。
+    #   ⇒ 章结束 finally 还原 ⇒ **不会漏到下一章**。
+    from application.engine.services.ai_switch_layer import (
+        reset_novel_switches,
+        set_novel_switches,
+    )
+
+    _prefs = getattr(novel, "generation_prefs", None)
+    _switches = getattr(_prefs, "ai_switches", None)
+    _switch_token = set_novel_switches(_switches)
+    try:
+        result = await pipeline.run_chapter(ctx)
+    finally:
+        reset_novel_switches(_switch_token)
 
     if not result.success and result.error == "awaiting_ai_review":
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
