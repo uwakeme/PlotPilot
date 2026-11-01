@@ -230,6 +230,27 @@ uv 版与 python 版一一对应：任何在虚拟环境里直接执行的命令
 | `python scripts/run_migrations.py` | `uv run python scripts/run_migrations.py` |
 | `pytest tests/unit -v` | `uv run pytest tests/unit -v` |
 
+### 开发后端启动器（Windows）
+
+机器重启 / 关机之后后端不会自己回来（它只是随进程一起没了）。
+`tools\start_dev_backend.ps1` 把「手工那套」脚本化成一条命令：清端口占用 → 拉起 → 验 `/health`。
+
+```powershell
+# 启动（默认 8137 端口；幂等：先清掉同端口的旧实例）
+powershell -ExecutionPolicy Bypass -File tools\start_dev_backend.ps1
+
+# 换个端口
+powershell -ExecutionPolicy Bypass -File tools\start_dev_backend.ps1 -Port 8139
+
+# 注册成「登录时自动启动」（用户级任务，不需要管理员权限）
+powershell -ExecutionPolicy Bypass -File tools\install_dev_autostart.ps1
+# 撤销
+powershell -ExecutionPolicy Bypass -File tools\install_dev_autostart.ps1 -Uninstall
+```
+
+⚠ 同时只留**一个**实例：应用启动时的「残留进程清扫」按命令行认领
+（`interfaces.main`）⇒ 启动第二个实例会把第一个一起清掉（既有设计）。
+
 ```bash
 # 前端（另开终端）
 cd frontend && npm install && npm run dev
