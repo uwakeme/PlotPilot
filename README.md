@@ -251,6 +251,20 @@ powershell -ExecutionPolicy Bypass -File tools\install_dev_autostart.ps1 -Uninst
 ⚠ 同时只留**一个**实例：应用启动时的「残留进程清扫」按命令行认领
 （`interfaces.main`）⇒ 启动第二个实例会把第一个一起清掉（既有设计）。
 
+### 进程被谁杀了？（Windows 取证）
+
+守护子进程被**静默杀掉**（API 活着、无日志、无 traceback）时，只有
+Windows 的「进程终止」审计能定位凶手（Security 日志 4689）。
+
+```powershell
+# 管理员 PowerShell：开启（事后可同一条命令关掉）
+auditpol /set /subcategory:"进程终止" /success:enable /failure:enable
+auditpol /get  /subcategory:"进程终止"
+
+# 读出来看「谁杀了哪个进程」（同样需要管理员）
+powershell -ExecutionPolicy Bypass -File tools\find_killed_processes.ps1 -SinceHours 48
+```
+
 ```bash
 # 前端（另开终端）
 cd frontend && npm install && npm run dev
