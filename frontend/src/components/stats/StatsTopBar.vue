@@ -57,6 +57,14 @@
 
     <!-- 右侧：操作按钮 -->
     <div class="top-bar-actions">
+      <!--
+        守护进程监督者徽标（第 77 批）：
+        让「自动驾驶静默停摆」在**顶栏**也看得见（面板只有打开自动驾驶视图时才在）。
+        ⚠ 读的是既有的 autopilotStatusStore（`/autopilot/status` 的单一轮询链）
+          ⇒ 顶栏只是又一个订阅者 ⇒ **不新增轮询通道**。
+      -->
+      <DaemonSupervisorBadge :novel-id="slug" />
+
       <!-- 导出按钮 -->
       <n-dropdown 
         trigger="click" 
@@ -87,6 +95,7 @@ import { NTooltip, NSpin, NDropdown, NButton, useMessage } from 'naive-ui'
 import { useStatsStore } from '@/stores/statsStore'
 import { novelApi } from '@/api/novel'
 import GlobalLLMEntryButton from '@/components/global/GlobalLLMEntryButton.vue'
+import DaemonSupervisorBadge from '@/components/global/DaemonSupervisorBadge.vue'
 import PromptPlazaEntryButton from '@/components/global/PromptPlazaEntryButton.vue'
 
 const props = defineProps<{

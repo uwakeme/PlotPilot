@@ -23,8 +23,13 @@
   ⇒ 不是「悄悄漏掉」；
 * 提示词里的类目标题必须与本文件**逐字一致**（守卫双向盯着）。
 
-⚠ 正则模式（那 51 条）**仍在代码里** —— 正则是「怎么判」，分类学是「判出来算什么」；
-把正则搬进数据文件会动 51 条行为，不在本条范围内。
+⚠ **两份 SSOT 的分工**（第 77 批（A）把规则也搬成了数据文件）：
+
+* ``config/anti_ai_patterns.yaml`` = 「**怎么判**」（51 条正则、严重性、替换建议）；
+* 本文件 / ``config/anti_ai_taxonomy.yaml`` = 「**判出来算什么**」（A–K 分类学）。
+
+⇒ 规则清单的搬运是**无损**的（守卫钉住条数与校验和
+  ⇒ ``tests/unit/application/audit/test_anti_ai_patterns_datafile.py``）。
 """
 from __future__ import annotations
 

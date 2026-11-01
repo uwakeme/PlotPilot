@@ -44,6 +44,11 @@ export interface DaemonSupervisorState {
   restart_attempts?: number
   last_restart_at?: number | null
   last_error?: string
+  /**
+   * 状态发布时间戳（Unix 秒，第 76 批加的）。
+   * ⚠ 没有它就分不清「这是此刻的」还是「这是 3 分钟前的」。
+   */
+  published_at?: number
 }
 
 export interface AutopilotStatus {
