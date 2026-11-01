@@ -171,11 +171,16 @@ def test_every_registered_feature_is_actually_wired():
     否则「登记了却没人读」⇒ 总闸关不掉它 ⇒ 回退路径是假的。
     """
     wired: set[str] = set()
+    # ⚠ 第 77 批（S-3' 同款）：**跳过 = 没被检查** ⇒ 计数并断言为 0。
+    #   原来用 `utf-8` 读源码 ⇒ 带 BOM 的文件直接抛异常 ⇒ 静默 `continue`
+    #   ⇒ 那些文件**从来没被这条守卫看过**。
+    skipped: list[str] = []
     for dirname in SCAN_DIRS:
         for path in (REPO_ROOT / dirname).rglob("*.py"):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
+                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {exc}")
                 continue
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -191,6 +196,10 @@ def test_every_registered_feature_is_actually_wired():
                 ):
                     wired.add(node.args[0].value)
 
+    assert not skipped, (
+        f"有 {len(skipped)} 个文件**没被检查**（解析失败 ⇒ 跳过）"
+        f"⇒ 这条扫描型守卫有盲区：{skipped[:5]}"
+    )
     assert wired == set(AI_PARTICIPATION_FEATURES), (
         "登记在册的 AI 参与能力与实际接线的不一致："
         f"登记={sorted(AI_PARTICIPATION_FEATURES)} 接线={sorted(wired)}"

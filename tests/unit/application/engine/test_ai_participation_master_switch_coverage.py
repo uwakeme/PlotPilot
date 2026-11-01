@@ -181,16 +181,77 @@ def _short_circuiting_gate_ids(tree: ast.AST) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
-        negated = _negated_gate_ids(node.test)
-        if not _all_gate_ids(node.test):
+        negated, positive = _effective_gate_kinds(node.test)
+        if not (negated or positive):
             continue
         # 形状 A：取反的闸门 + body 里有 return
         if any(isinstance(child, ast.Return) for child in ast.walk(node)):
             out |= negated
         # 形状 B：准入的闸门 + body 里有模型调用
         if _has_model_call(node):
-            out |= (_all_gate_ids(node.test) - negated)
+            out |= positive
     return out
+
+
+def _effective_gate_kinds(test_node: ast.AST) -> tuple[set[str], set[str]]:
+    """返回 (negated 的 feature id, positive 的 feature id) —— **只算真生效的**。
+
+    ⚠ 第 77 批：原实现用 ast.walk 找「``not ai_participation_enabled(...)``」
+      ⇒ ``if False and not ai_participation_enabled("x"):`` 也算数
+      ⇒ 而那个闸门**永远不生效**（左边是 False）⇒ 守卫照样绿。
+
+    ⇒ 现在按**布尔位置**判定：
+      * ``not GATE`` / ``X or not GATE``  ⇒ negated（关闸 ⇒ 走 if 体 ⇒ 短路）
+      * ``GATE`` / ``X and GATE``         ⇒ positive（开闸 ⇒ 才走 if 体）
+      * 其它（如 ``False and GATE``）      ⇒ **不生效** ⇒ 不计入
+    """
+    negated: set[str] = set()
+    positive: set[str] = set()
+    for child in ast.walk(test_node):
+        if not isinstance(child, ast.Call):
+            continue
+        name = getattr(child.func, "id", None) or getattr(child.func, "attr", None)
+        if name != "ai_participation_enabled":
+            continue
+        if not (
+            child.args
+            and isinstance(child.args[0], ast.Constant)
+            and isinstance(child.args[0].value, str)
+        ):
+            continue
+        feature = child.args[0].value
+        kind = _gate_call_kind(test_node, child)
+        if kind == "negated":
+            negated.add(feature)
+        elif kind == "positive":
+            positive.add(feature)
+    return negated, positive
+
+
+def _gate_call_kind(test_node: ast.AST, gate_call: ast.Call) -> str:
+    """这个闸门调用在布尔表达式里的位置 ⇒ negated / positive / ineffective。"""
+    if test_node is gate_call:
+        return "positive"
+    if _is_negated_call(test_node, gate_call):
+        return "negated"
+    if isinstance(test_node, ast.BoolOp):
+        if isinstance(test_node.op, ast.Or):
+            if any(_is_negated_call(v, gate_call) for v in test_node.values):
+                return "negated"
+            if any(v is gate_call for v in test_node.values):
+                return "positive"
+        elif isinstance(test_node.op, ast.And):
+            if any(v is gate_call for v in test_node.values):
+                return "positive"
+    return "ineffective"
+
+
+def _is_negated_call(node: ast.AST, gate_call: ast.Call) -> bool:
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and node.operand is gate_call
+    )
 
 
 def _capability_class_names() -> set[str]:
