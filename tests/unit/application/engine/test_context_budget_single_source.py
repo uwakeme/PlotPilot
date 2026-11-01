@@ -30,7 +30,7 @@ def _call_max_tokens_arg(path: Path, callee: str) -> list[ast.AST]:
     只看**上下文构建**类调用 —— `GenerationConfig(max_tokens=...)` 那是
     **模型输出**上限，与上下文预算是两回事，不能混在一起查。
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(_read_source(path))
     found: list[ast.AST] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -51,7 +51,7 @@ def _default_arg_ast(path: Path, func_name: str, arg_name: str) -> ast.AST | Non
     ⚠ 必须断言「默认值是那个常量」而不是「默认值等于 60000」——
     后者对「写回字面量 60000」的变异**照样通过**（假绿）。
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(_read_source(path))
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -67,6 +67,30 @@ def _default_arg_ast(path: Path, func_name: str, arg_name: str) -> ast.AST | Non
                 mapping[arg.arg] = default
         return mapping.get(arg_name)
     return None
+
+
+def _read_source(path: Path) -> str:
+    """读源码（**utf-8-sig**）⇒ 带 BOM 的文件也能解析。
+
+    ⚠ 第 76 批（S-3'）：原来这一层用 ``utf-8`` ⇒ 带 BOM 的文件直接抛异常
+    ⇒ 扫描时静默 ``continue`` ⇒ 那个文件**从来没被检查过**
+    ⇒ 同一份违规代码，多 3 字节 BOM 就从红变绿。
+    """
+    return path.read_text(encoding="utf-8-sig")
+
+
+def test_the_source_reader_can_read_a_bom_file(tmp_path):
+    """⚠ **守卫自己也要有牙齿**：用带 BOM 的文件验它**读得动**。
+
+    ⚠ 否则「用 utf-8-sig 读」这件事只是注释里的说法 ⇒ 改回 utf-8 也没人知道。
+    """
+    bom = tmp_path / "bom_probe.py"
+    bom.write_bytes(b"\xef\xbb\xbf" + b"x = 1\n")
+
+    text = _read_source(bom)
+
+    assert text == "x = 1\n", repr(text)
+    assert ast.parse(text) is not None
 
 
 def test_context_budget_constant_is_the_single_source():
@@ -173,7 +197,7 @@ def test_the_global_budget_literal_lives_in_exactly_one_place():
                 # ⚠ 第 69 批（R-2）：用 `utf-8-sig` ⇒ **带 BOM 的文件也能解析**。
                 #   原来用 `utf-8` ⇒ BOM 直接抛异常 ⇒ 下面静默 `continue`
                 #   ⇒ 那个文件**根本没被检查**（同一份违规代码，多 3 字节 BOM 就从红变绿）。
-                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+                tree = ast.parse(_read_source(path))
             except Exception as exc:  # noqa: BLE001
                 skipped.append(f"{rel}: {exc}")
                 continue
@@ -236,11 +260,16 @@ def test_no_degraded_budget_literal_remains():
     ⇒ 现在**三种形状都扫**：call keyword / 位置参数默认值 / 关键字专用参数默认值。
     """
     offenders = []
+    # ⚠ 第 76 批（S-3'）：**跳过 = 没被检查** ⇒ 解析失败的文件必须报出来，
+    #   而不是静默 `continue`（原来用 `utf-8` 读 ⇒ 带 BOM 的文件直接抛
+    #   ⇒ 那些文件从来没被这条守卫看过）。
+    skipped: list[str] = []
     for dirname in SCAN_DIRS:
         for path in (REPO_ROOT / dirname).rglob("*.py"):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
+                tree = ast.parse(_read_source(path))
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {exc}")
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
@@ -281,6 +310,10 @@ def test_no_degraded_budget_literal_remains():
                                 f"(参数默认值 {arg.arg})"
                             )
     assert not offenders, f"仍有降级预算字面量 20000：{offenders}"
+    assert not skipped, (
+        f"有 {len(skipped)} 个文件**没被检查**（解析失败 ⇒ 跳过）"
+        f"⇒ 这条扫描型守卫有盲区：{skipped[:5]}"
+    )
 
 
 def test_known_smaller_budget_stays_in_its_own_function():
@@ -290,11 +323,14 @@ def test_known_smaller_budget_stays_in_its_own_function():
     扩散到别处就又成了「两套数字长期并存」。
     """
     offenders = []
+    # ⚠ 第 76 批（S-3'）：同上 ⇒ 跳过必须报出来（跳过 = 没被检查）。
+    skipped: list[str] = []
     for dirname in SCAN_DIRS:
         for path in (REPO_ROOT / dirname).rglob("*.py"):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
+                tree = ast.parse(_read_source(path))
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {exc}")
                 continue
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -310,3 +346,7 @@ def test_known_smaller_budget_stays_in_its_own_function():
                         if not rel.endswith("auto_novel_generation_workflow.py"):
                             offenders.append(f"{rel}:{node.lineno}")
     assert not offenders, f"28000 这个预算扩散到了别处：{offenders}"
+    assert not skipped, (
+        f"有 {len(skipped)} 个文件**没被检查**（解析失败 ⇒ 跳过）"
+        f"⇒ 这条扫描型守卫有盲区：{skipped[:5]}"
+    )

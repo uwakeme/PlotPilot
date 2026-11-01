@@ -39,9 +39,26 @@ SKIP_ORPHAN_CLEANUP_ENV = "PLOTPILOT_SKIP_ORPHAN_CLEANUP"
 
 
 def _orphan_cleanup_skipped() -> bool:
-    """清扫是否被开关跳过。"""
+    """清扫是否被开关跳过。
+
+    ⚠ 第 76 批：这个开关是**测试专用**的 ⇒ **生产环境误设也不能真的跳过清扫**
+      （跳过 ⇒ 上一个实例留下的守护进程不被杀 ⇒ 两个守护进程并行跑同一本书）。
+    ⇒ 只有「开关开着」**且**「确实在 pytest 里跑」时才跳过；
+      生产进程里设了它 ⇒ 记一条警告并**照常清扫**。
+    """
     value = os.environ.get(SKIP_ORPHAN_CLEANUP_ENV, "")
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    if str(value).strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
+    # ⚠ 「这是测试进程」的判定：**两个标记任一**即可
+    #   （``PLOTPILOT_TEST_PROCESS`` 由 conftest 设置 ⇒ **子进程继承得到**；
+    #    ``PYTEST_CURRENT_TEST`` 是 pytest 逐用例设置的 ⇒ 进程内判定用）。
+    if os.environ.get("PLOTPILOT_TEST_PROCESS") or os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    logger.warning(
+        "%s 在**非测试进程**里被打开 ⇒ 忽略它（否则两个守护进程会并行跑同一本书）",
+        SKIP_ORPHAN_CLEANUP_ENV,
+    )
+    return False
 
 
 @dataclass(frozen=True)
@@ -274,12 +291,16 @@ class DaemonSupervisor:
     # ── 状态（给 /health 用）────────────────────────────────────────────
 
     def state(self) -> Dict[str, Any]:
+        # ⚠ 第 76 批：带**发布时间戳** ⇒ 消费方能判断新鲜度
+        #   （状态每个轮询周期都会重发；但没有时间戳就分不清
+        #   「这是 3 分钟前的」还是「这是此刻的」）。
         return {
             "enabled": self._settings.enabled,
             "running": self._thread is not None and self._thread.is_alive(),
             "restart_attempts": self._restart_attempts,
             "last_restart_at": self._last_restart_at,
             "last_error": self._last_error,
+            "published_at": self._clock(),
         }
 
     # ── 主循环 ──────────────────────────────────────────────────────────
@@ -340,6 +361,17 @@ class DaemonSupervisor:
                 self._settings.max_restarts,
             )
             return "exhausted"
+
+        # ⚠ 第 76 批（TOCTOU）：上面那次锁判定与 ``start()`` 之间隔着十几行 ⇒
+        #   期间**别的实例**可能抢到锁 ⇒ 而 ``start()`` 的第一步就是
+        #   **杀掉锁持有者** ⇒ 我们会把**别人**的守护进程杀了。
+        # ⇒ 拉起前**再查一次**锁（窗口压到几行），且这次**不**消耗重启次数
+        #   （没真拉起就不该计入）。
+        if self._lock_probe():
+            self._logger.info(
+                "拉起前复查：单实例锁已被占用（别的实例刚抢到）⇒ 不拉起"
+            )
+            return "locked_elsewhere"
 
         self._restart_attempts += 1
         self._logger.error("检测到守护进程已死（第 %d 次拉起）", self._restart_attempts)

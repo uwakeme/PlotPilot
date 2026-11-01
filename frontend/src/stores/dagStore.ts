@@ -209,13 +209,33 @@ export const useDAGStore = defineStore('dag', () => {
 
   // ─── SSE 事件处理 ───
 
-  function normalizeNumericMetrics(metrics?: Record<string, unknown>): Record<string, number> {
+  // ⚠ 第 76 批（U-2'）：**布尔不当数字**。
+  //   此前 `Number(value)` 会把 `true` 变成 `1` ⇒ 语义丢了（读者以为那是数值）。
+  //   ⇒ 布尔原样保留；既不是布尔也不是有限数字的**丢掉**（不编）。
+  function normalizeMetrics(
+    metrics?: Record<string, unknown>,
+  ): Record<string, number | boolean> {
     if (!metrics) return {}
-    return Object.fromEntries(
-      Object.entries(metrics)
-        .map(([key, value]) => [key, Number(value)] as const)
-        .filter(([, value]) => Number.isFinite(value)),
-    )
+    const out: Record<string, number | boolean> = {}
+    for (const [key, value] of Object.entries(metrics)) {
+      if (typeof value === 'boolean') {
+        out[key] = value
+        continue
+      }
+      const n = Number(value)
+      if (Number.isFinite(n)) out[key] = n
+    }
+    return out
+  }
+
+  // ⚠ 第 76 批（U-2'）：``progress`` 是**数值**字段 ⇒ 只认数字
+  //   （metrics 里可能有布尔，布尔不是进度）。
+  function numericProgress(
+    metrics: Record<string, number | boolean>,
+    fallback: number,
+  ): number {
+    const value = metrics.progress
+    return typeof value === 'number' ? value : fallback
   }
 
   function handleSSEEvent(event: NodeEvent) {
@@ -225,7 +245,7 @@ export const useDAGStore = defineStore('dag', () => {
           const existing = nodeStates.value.get(event.node_id)
           const nextMetrics = {
             ...(existing?.metrics ?? {}),
-            ...normalizeNumericMetrics(event.metrics),
+            ...normalizeMetrics(event.metrics),
           }
           nodeStates.value.set(event.node_id, {
             node_id: event.node_id,
@@ -233,7 +253,7 @@ export const useDAGStore = defineStore('dag', () => {
             duration_ms: existing?.duration_ms ?? 0,
             outputs: existing?.outputs ?? {},
             metrics: nextMetrics,
-            progress: nextMetrics.progress ?? existing?.progress ?? 0,
+            progress: numericProgress(nextMetrics, existing?.progress ?? 0),
             error: event.error ?? null,
           })
         }
@@ -244,7 +264,7 @@ export const useDAGStore = defineStore('dag', () => {
           const existing = nodeStates.value.get(event.node_id)
           const nextMetrics = {
             ...(existing?.metrics ?? {}),
-            ...normalizeNumericMetrics(event.metrics),
+            ...normalizeMetrics(event.metrics),
           }
           if (existing) {
             nodeStates.value.set(event.node_id, {
@@ -252,7 +272,7 @@ export const useDAGStore = defineStore('dag', () => {
               outputs: event.outputs ?? {},
               duration_ms: event.duration_ms ?? 0,
               metrics: nextMetrics,
-              progress: nextMetrics.progress ?? existing.progress,
+              progress: numericProgress(nextMetrics, existing.progress),
             })
           } else {
             nodeStates.value.set(event.node_id, {
@@ -261,7 +281,7 @@ export const useDAGStore = defineStore('dag', () => {
               outputs: event.outputs ?? {},
               duration_ms: event.duration_ms ?? 0,
               metrics: nextMetrics,
-              progress: nextMetrics.progress ?? 1.0,
+              progress: numericProgress(nextMetrics, 1.0),
             })
           }
         }

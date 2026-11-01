@@ -190,17 +190,17 @@ async def run_story_pipeline_writing(daemon: Any, novel: Any) -> None:
     #   ⇒ 深层调用点（管线步骤 / 规划器）**不用改任何签名**。
     #   ⇒ 章结束 finally 还原 ⇒ **不会漏到下一章**。
     from application.engine.services.ai_switch_layer import (
-        reset_novel_switches,
-        set_novel_switches,
+        novel_switch_scope,
+        warn_unreachable_novel_switches,
     )
 
     _prefs = getattr(novel, "generation_prefs", None)
     _switches = getattr(_prefs, "ai_switches", None)
-    _switch_token = set_novel_switches(_switches)
-    try:
+    # ⚠ 第 76 批（N-3）：设了「novel 级够不到」的开关 ⇒ **出声**
+    #   （之前是静默无效 ⇒ 用户以为配了，其实在跑 env/默认级）。
+    warn_unreachable_novel_switches(_switches, novel_id=novel_id)
+    with novel_switch_scope(_switches):
         result = await pipeline.run_chapter(ctx)
-    finally:
-        reset_novel_switches(_switch_token)
 
     if not result.success and result.error == "awaiting_ai_review":
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW

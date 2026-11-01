@@ -265,6 +265,44 @@ def test_the_flush_timeout_is_configurable():
     )
 
 
+def test_the_configured_timeout_is_the_one_actually_passed_to_the_queue():
+    """⚠ 第 76 批（S-1'）：设置项**真的传到了调用点**（不只「设置项 >= 5s」）。
+
+    ⚠ 原守卫只断言「设置项的值 >= 5s」⇒ **没钉住调用点** ⇒
+      生产代码哪天改回 ``flush()``（默认 2.0s）它照样绿 ⇒ 空守卫。
+    ⇒ 这里用**行为**钉：让桩 DB 记录它收到的 timeout。
+    """
+    from application.engine.services.memory_engine import MemoryEngine
+    from application.engine.services.memory_engine_settings import (
+        get_memory_engine_runtime_settings,
+    )
+
+    recorded: list[float] = []
+
+    class _RecordingDB(_StubDB):
+        """桩连接：**回读得到那一行**（否则「未落库」是桩自己的锅），
+        并记录它收到的 timeout。"""
+
+        def flush_pending_writes(self, timeout: float = 2.0):
+            recorded.append(timeout)
+            return True
+
+    engine = MemoryEngine(
+        llm_service=None,
+        bible_repository=_BibleRepo(),
+        db_connection=_RecordingDB(row=(3,)),
+    )
+    assert engine._persist_state("n-1", _state(engine, chapter=3)) is None
+
+    expected = get_memory_engine_runtime_settings().persist_verify_flush_timeout_seconds
+    assert recorded, "回读确认根本没调用 flush_pending_writes（守卫失效）"
+    assert recorded[0] == expected, (
+        f"调用点传下去的 timeout 是 {recorded[0]}，不是设置项 {expected}"
+        " ⇒ 设置项形同虚设"
+    )
+    assert recorded[0] >= 5.0, f"调用点传的 timeout 只有 {recorded[0]}s"
+
+
 def test_the_two_failure_kinds_have_different_messages():
     """⚠ 「队列没排空」与「真没落库」必须**说得清**（R-6：排查时要能分开）。
 

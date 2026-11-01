@@ -99,3 +99,63 @@ def test_the_switch_is_not_welding_the_feature_shut(monkeypatch):
     cleanup_orphan_python_processes()
 
     assert seen, "开关关掉时清扫必须真的去枚举进程"
+
+
+def test_the_skip_switch_is_ignored_outside_a_test_process(monkeypatch):
+    """⚠ 第 76 批：这个开关是**测试专用**的 ⇒ 生产误设也不能真的跳过清扫。
+
+    ⚠ 跳过清扫 ⇒ 上一个实例留下的守护进程不被杀
+      ⇒ **两个守护进程并行跑同一本书**（两个进程同时写同一本书的章节）。
+
+    ⇒ 修法：只有「确实在 pytest 里跑」时才认这个开关；
+      非测试进程里设了 ⇒ 记警告并**照常清扫**。
+    """
+    from interfaces.daemon_manager import (
+        SKIP_ORPHAN_CLEANUP_ENV,
+        _orphan_cleanup_skipped,
+    )
+
+    monkeypatch.setenv(SKIP_ORPHAN_CLEANUP_ENV, "1")
+    # ⚠ 模拟「不在测试进程里」⇒ 两个标记都得清掉
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("PLOTPILOT_TEST_PROCESS", raising=False)
+
+    assert _orphan_cleanup_skipped() is False, (
+        "生产进程里也认这个开关 ⇒ 误设一次就不再清理上一个实例的守护进程"
+    )
+
+
+def test_the_skip_switch_is_ignored_in_a_spawned_child_process(monkeypatch):
+    """⚠ ⚠ **子进程**也算「不是测试进程」吗？—— 不算，它**继承**测试标记。
+
+    ⚠ 这一条钉的是「别把 2026-10-30 那个事故请回来」：
+    pytest 拉起的守护子进程**继承** ``PLOTPILOT_TEST_PROCESS``
+    ⇒ 子进程里也**不许**去扫真进程。
+    """
+    from interfaces.daemon_manager import (
+        SKIP_ORPHAN_CLEANUP_ENV,
+        _orphan_cleanup_skipped,
+    )
+
+    monkeypatch.setenv(SKIP_ORPHAN_CLEANUP_ENV, "1")
+    # 子进程继承得到的就是这个（pytest 会给每个用例设 PYTEST_CURRENT_TEST，
+    # 但**子进程**里没有 ⇒ 只靠 PLOTPILOT_TEST_PROCESS 判定）
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("PLOTPILOT_TEST_PROCESS", "1")
+
+    assert _orphan_cleanup_skipped() is True, (
+        "测试拉起的子进程里不再跳过清扫 ⇒ 子进程会去杀真进程"
+    )
+
+
+def test_the_skip_switch_still_works_inside_a_test_process(monkeypatch):
+    """⚠ 反向守卫：证明上面的限制**没有**把开关焊死（测试里仍然能跳过）。"""
+    from interfaces.daemon_manager import (
+        SKIP_ORPHAN_CLEANUP_ENV,
+        _orphan_cleanup_skipped,
+    )
+
+    monkeypatch.setenv(SKIP_ORPHAN_CLEANUP_ENV, "1")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/unit/interfaces/x.py::test_y")
+
+    assert _orphan_cleanup_skipped() is True

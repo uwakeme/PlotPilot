@@ -26,6 +26,11 @@ def pytest_configure(config):
     #   把**正在运行的**后端（API + 守护进程）一起 taskkill ⇒
     #   ⇒ 跑一次门禁，开发者正在跑的后端就没了（2026-10-30 实测，无任何日志）。
     os.environ.setdefault("PLOTPILOT_SKIP_ORPHAN_CLEANUP", "1")
+    # ⚠ 第 76 批：清扫开关是**测试专用**的（生产误设 ⇒ 不再清理上一个实例的
+    #   守护进程 ⇒ 两个守护进程并行跑同一本书）⇒ 生产进程里不认它。
+    #   ⇒ 用一个**可被子进程继承**的标记来判定「这是测试进程」
+    #   （``PYTEST_CURRENT_TEST`` 不会被子进程继承 ⇒ 守护子进程会被误判）。
+    os.environ.setdefault("PLOTPILOT_TEST_PROCESS", "1")
 
     # 测试日志**不许**写进生产的 ``logs/plotpilot.log``。
     #

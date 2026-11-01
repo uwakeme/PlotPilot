@@ -380,3 +380,59 @@ def test_health_payload_exposes_the_supervisor_state():
         "restart_attempts",
         "last_error",
     }
+
+
+# ─────────────────────── 第 76 批：TOCTOU / 状态时间戳 ───────────────────────
+
+
+def test_the_lock_is_rechecked_right_before_the_daemon_is_started():
+    """⚠ 第 76 批：锁判定与 ``start()`` 之间隔着十几行 ⇒ **TOCTOU 窗口**。
+
+    ⚠ 场景：第一次判定时锁还空着，判定之后**别的实例**抢到了锁
+      ⇒ 而 ``start()`` 的第一步就是**杀掉锁持有者**
+      ⇒ 我们会把**别人**的守护进程杀了（两个实例互相杀守护进程）。
+
+    ⇒ 修法：拉起前**再查一次**锁；查到了就**不拉起**，
+      且**不**消耗重启次数（没真拉起就不该计入）。
+    """
+    probes = {"count": 0}
+
+    def _lock_probe() -> bool:
+        probes["count"] += 1
+        # 第一次（决策时）说没锁；第二次（拉起前复查）说**有锁**
+        return probes["count"] >= 2
+
+    manager = _FakeManager(running=False)
+    supervisor = DaemonSupervisor(
+        manager,
+        DaemonSupervisorSettings(),
+        _FakeLogger(),
+        lock_probe=_lock_probe,
+        clock=_Clock(),
+    )
+
+    action = supervisor._check_once()
+
+    assert action == "locked_elsewhere", action
+    assert manager.start_calls == 0, "锁被别人占着还去拉起 ⇒ 会杀掉别人的守护进程"
+    assert probes["count"] >= 2, "拉起前没有复查锁（TOCTOU 窗口还在）"
+    assert supervisor.state()["restart_attempts"] == 0, (
+        "没真拉起却计了重启次数 ⇒ 上限会被虚耗"
+    )
+
+
+def test_the_supervisor_state_carries_a_publish_timestamp():
+    """⚠ 状态每轮都会重发 ⇒ 不陈旧；但**没有时间戳** ⇒ 消费方分不清新鲜度。"""
+    clock = _Clock(1234.5)
+    supervisor = DaemonSupervisor(
+        _FakeManager(running=True),
+        DaemonSupervisorSettings(),
+        _FakeLogger(),
+        lock_probe=lambda: False,
+        clock=clock,
+    )
+
+    state = supervisor.state()
+
+    assert "published_at" in state, "监督者状态没有发布时间戳 ⇒ 消费方分不清新旧"
+    assert state["published_at"] == 1234.5, state

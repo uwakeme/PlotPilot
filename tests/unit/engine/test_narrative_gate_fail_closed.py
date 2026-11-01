@@ -23,7 +23,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import ast
+from pathlib import Path
+
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 from engine.runtime.audit_delegate import (
     _narrative_shared_value,
@@ -210,37 +215,65 @@ def test_the_api_does_not_default_the_narrative_flag_to_synced():
     )
 
 
-@pytest.mark.parametrize(
-    "rel",
-    [
-        "interfaces/api/v1/engine/autopilot_routes.py",
-        "engine/runtime/audit_delegate.py",
-        "engine/runtime/daemon_host.py",
-        # ⚠ 第 70 批（R-10）补进扫描范围：仓储层也有一处同款「缺键 ⇒ True」
-        #   （`sqlite_novel_repository.py:120`）⇒ 实体默认值改了，但口子还在。
-        "infrastructure/persistence/database/sqlite_novel_repository.py",
-    ],
-)
-def test_no_backend_consumer_defaults_the_narrative_flag_to_true(rel: str):
-    """⚠ 通则守卫：后端**任何**地方都不许再写「缺键 ⇒ True」。
+#: ⚠ 第 76 批（S-2'）：键名集合（两个键都要扫 ——
+#:   ``last_audit_narrative_ok`` 是小说实体那个，``narrative_sync_ok`` 是章后管线结果那个）。
+NARRATIVE_FLAG_KEYS = ("last_audit_narrative_ok", "narrative_sync_ok")
 
-    ⚠ 扫描的是**确切字面量**（``...narrative_sync_ok", True`` 这种），
-    不是「文件里出现过 True」⇒ 变异掉其中一处会立刻红。
+#: ⚠ 通则扫描范围：**整个后端**（不再手写文件清单）。
+NARRATIVE_SCAN_DIRS = ("application", "engine", "interfaces", "infrastructure")
 
-    ⚠ 第 66 批变异验证发现的洞：原先只扫 ``last_audit_narrative_ok``（小说实体那个键），
-    而**章后管线结果**那个键叫 ``narrative_sync_ok`` ⇒ 变异打在后者的默认 True 上时
-    这条守卫**不会红** ⇒ 现在两个键都扫。
+
+def _defaults_to_true(tree) -> list:
+    """AST 找出「缺键 ⇒ True」的写法（``getattr(x, key, True)`` / ``d.get(key, True)``）。"""
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "id", None) or getattr(func, "attr", None)
+        if name == "getattr" and len(node.args) >= 3:
+            key, default = node.args[1], node.args[2]
+        elif name == "get" and len(node.args) >= 2:
+            key, default = node.args[0], node.args[1]
+        else:
+            continue
+        if isinstance(key, ast.Constant) and key.value in NARRATIVE_FLAG_KEYS:
+            if isinstance(default, ast.Constant) and default.value is True:
+                hits.append((node.lineno, key.value))
+    return hits
+
+
+def test_no_backend_consumer_defaults_the_narrative_flag_to_true():
+    """⚠ **真通则守卫**：后端**任何**文件都不许再写「缺键 ⇒ True」。
+
+    ⚠ 第 76 批（S-2'）：原先这条号称「通则」，实际是
+      **固定 4 个文件清单 + 行级文本匹配** ⇒
+      ① 新文件里的同款写法它**看不见**；
+      ② 行级匹配会把「这行提到了键、但 True 是别的东西」也当成违规（假红），
+         同时漏掉「键和 True 不在同一行」的写法（假绿）。
+    ⇒ 现在按 **AST** 扫**整个后端**：认的是「这个键的默认值是 True」这件事本身。
     """
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parents[3] / rel).read_text(encoding="utf-8")
-
-    offenders = [
-        line.strip()
-        for line in src.splitlines()
-        if any(key in line for key in ("last_audit_narrative_ok", "narrative_sync_ok"))
-        and "True" in line
-    ]
+    offenders = []
+    skipped: list[str] = []
+    scanned = 0
+    for dirname in NARRATIVE_SCAN_DIRS:
+        for path in (REPO_ROOT / dirname).rglob("*.py"):
+            scanned += 1
+            try:
+                # ⚠ `utf-8-sig` ⇒ 带 BOM 的文件也能解析（否则静默跳过 = 没被检查）
+                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {exc}")
+                continue
+            for lineno, key in _defaults_to_true(tree):
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}:{lineno} ({key})"
+                )
+    assert scanned > 200, f"扫描范围不对（只扫到 {scanned} 个文件 ⇒ 守卫形同虚设）"
+    assert not skipped, (
+        f"有 {len(skipped)} 个文件**没被检查**（解析失败 ⇒ 跳过）"
+        f"⇒ 这条扫描型守卫有盲区：{skipped[:5]}"
+    )
     assert not offenders, (
-        f"{rel} 里仍有「缺键 ⇒ True」的写法（三态被折叠）：{offenders}"
+        f"后端仍有「缺键 ⇒ True」的写法（三态被折叠）：{offenders}"
     )

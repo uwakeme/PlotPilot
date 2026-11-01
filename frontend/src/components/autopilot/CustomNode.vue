@@ -143,42 +143,24 @@ const displayMetrics = computed(() => {
   const items: { key: string; label: string; value: string; color: string }[] = []
 
   const type = data.value.type
-  if (type === 'val_style') {
-    if (metrics.drift_score !== undefined) {
-      items.push({
-        key: 'drift_score',
-        label: '偏离度',
-        value: metrics.drift_score.toFixed(2),
-        color: metrics.drift_score > 0.5 ? 'var(--color-warning)' : 'var(--color-success)',
-      })
-    }
-  } else if (type === 'val_tension') {
-    if (metrics.composite !== undefined) {
-      items.push({
-        key: 'composite',
-        label: '综合张力',
-        value: metrics.composite.toFixed(0),
-        color: metrics.composite < 30 ? 'var(--color-warning)' : 'var(--color-success)',
-      })
-    }
-  } else if (type === 'val_anti_ai') {
-    if (metrics.severity_score !== undefined) {
-      items.push({
-        key: 'severity_score',
-        label: 'AI味',
-        value: metrics.severity_score.toFixed(1),
-        // ⚠ 第 70 批（R-3）：阈值**只在后端**判（从 ASSESSMENT_THRESHOLDS 派生）
-        //   ⇒ 前端不再自己写一个 `> 5`（此前与后端 4.0 不一致
-        //   ⇒ 4.5 分：后端判「严重」、前端判绿）。
-        color: metrics.severe ? 'var(--color-danger)' : 'var(--color-success)',
-      })
-    }
-  } else if (type === 'exec_writer') {
-    if (metrics.word_count !== undefined) {
+  // ⚠ 第 76 批（U-1'）：这里**曾经**有 val_style / val_tension / val_anti_ai
+  //   三个指标分支（含 0.5 / 30 两个前端阈值）⇒ 已删。
+  //   理由：它们的数据源是 **DAG 运行时的 NodeResult.metrics**，而
+  //     ① `POST /dag/{novel_id}/run` 是 **501（未实现）** ⇒ 运行时根本不跑；
+  //     ② 唯一的推送出口 `publish_sse_event` **没有任何调用者**；
+  //     ③ 画布 SSE 推的是「共享状态投影」⇒ 只有 status/enabled，**没有 metrics**。
+  //   ⇒ 三个分支**永远不会被填充**（界面看着有阈值，其实永远不显示）⇒ 死代码。
+  //   ⇒ 真实的文风/张力/反 AI 指标在**仪表盘**里（走 /workbench/monitor/* 与
+  //     /anti-ai/* 独立接口）⇒ 不在这里重复造一份。
+  if (type === 'exec_writer') {
+    // ⚠ 第 76 批（U-2'）：metrics 里可能有**布尔**（反 AI 的 severe）
+    //   ⇒ 取数值前先判类型（不许把布尔硬转成数字）。
+    const wordCount = metrics.word_count
+    if (typeof wordCount === 'number') {
       items.push({
         key: 'word_count',
         label: '字数',
-        value: String(Math.round(metrics.word_count)),
+        value: String(Math.round(wordCount)),
         color: 'var(--color-info)',
       })
     }

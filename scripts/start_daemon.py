@@ -64,6 +64,16 @@ logger = logging.getLogger(__name__)
 
 
 def build_daemon():
+    # ⚠ 第 76 批（S-5'）：体检环境变量里的 PLOTPILOT_AI_*
+    #   ⇒ 配了「未登记 / 已废弃」的开关**出声**（之前完全静默 ⇒ 配了不生效）。
+    #   ⇒ 放在这里 ⇒ 独立守护进程与 API 内嵌守护进程**都**体检到。
+    try:
+        from application.engine.services.ai_switch_layer import audit_env_switches
+
+        audit_env_switches()
+    except Exception:
+        pass
+
     db_path = get_db_path()
     db = get_database(db_path)
 

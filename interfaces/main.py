@@ -204,6 +204,14 @@ def create_app(app_settings: BackendSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI):
+        # ⚠ 第 76 批（S-5'）：体检环境变量里的 PLOTPILOT_AI_*
+        #   ⇒ 配了「未登记 / 已废弃」的开关**出声**（之前完全静默 ⇒ 配了不生效）。
+        try:
+            from application.engine.services.ai_switch_layer import audit_env_switches
+
+            audit_env_switches()
+        except Exception:
+            pass
         _get_lifecycle().startup(len(lifespan_app.routes))
         try:
             yield

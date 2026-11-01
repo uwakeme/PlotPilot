@@ -114,7 +114,9 @@ export interface NodeRunState {
   completed_at?: string | null
   duration_ms: number
   outputs: Record<string, unknown>
-  metrics: Record<string, number>
+  // ⚠ 第 76 批（U-2'）：后端会塞**布尔**（反 AI 的 ``severe``）⇒
+  //   类型不许骗人（此前声明 number，实际混着布尔）。
+  metrics: Record<string, number | boolean>
   error?: string | null
   progress: number
 }

@@ -44,7 +44,28 @@ def _macro_conflict_pending(novel: Novel) -> bool:
 
 
 async def process_novel(host: Any, novel: Novel) -> None:
-    """处理单个小说（全流程状态机路由）"""
+    """处理单个小说（全流程状态机路由）。
+
+    ⚠ 第 76 批（N-3）：**整本小说的处理**都在「这本书的开关覆盖」作用域里
+      ⇒ 之前只有写作 delegate 内部设了 contextvar ⇒ 章后路径（文风预检 /
+      自动修文 / 章后管线）读不到 novel 级 ⇒ 本书的覆盖在那儿**静默无效**。
+      ⇒ 现在在这一层设 ⇒ 整条链路的 novel 级一致。
+    """
+    from application.engine.services.ai_switch_layer import (
+        novel_switch_scope,
+        warn_unreachable_novel_switches,
+    )
+
+    prefs = getattr(novel, "generation_prefs", None)
+    switches = getattr(prefs, "ai_switches", None)
+    # ⚠ 设了「novel 级够不到」的开关 ⇒ **出声**（不静默无效）
+    warn_unreachable_novel_switches(switches, novel_id=novel.novel_id.value)
+    with novel_switch_scope(switches):
+        await _process_novel(host, novel)
+
+
+async def _process_novel(host: Any, novel: Novel) -> None:
+    """处理单个小说的**真正实现**（外层 ``process_novel`` 负责开关作用域）。"""
     try:
         try:
             from application.engine.services.autopilot_recovery_policy import AutopilotRecoveryPolicy
