@@ -68,16 +68,50 @@ def _svc(**kw):
     return VoiceDriftService(_ScoreRepo(), _FingerprintRepo(sample_count=50), **kw)
 
 
-# ── 默认仍为统计模式 ────────────────────────────────────────────────────
+# ── 默认级 ──────────────────────────────────────────────────────────────
 
-def test_settings_default_to_statistics_mode():
-    """默认必须关 —— 这是 token 成本决策，不能被顺手改成 True。"""
+
+def test_the_dataclass_baseline_is_still_statistics_mode():
+    """⚠ **dataclass 基线**仍是统计模式（配置段缺失时的回落）。
+
+    ⚠ 第 84 批（N-05）：**配置里的默认**翻成 LLM 模式了
+    （登记表 F-04 的「该谁定」列 = 「默认切 LLM 模式」）
+    ⇒ 这条守的是**基线**，不是生产默认值。
+    """
     s = VoiceAnalysisRuntimeSettings()
     assert s.use_llm_mode is False
-    assert get_voice_analysis_runtime_settings().use_llm_mode is False
+
+
+def test_the_configured_default_is_llm_mode():
+    """⚠ 生产默认级 = **LLM 模式**。
+
+    ⚠ 为什么必须切：统计模式的基准只来自「作者改稿对照」样本 ⇒ 写作链路**不产生**样本
+    ⇒ 生产库 ``voice_vault`` / ``voice_fingerprint`` **都是 0 行**
+    ⇒ 统计模式下**一章都没真评过** ⇒ 漂移检测从来只是「未评估」（N-05）。
+    LLM 模式用**本书前 5 章自建基准** ⇒ 第 6 章起真的能评估。
+
+    ⚠ 期望值**写死**（不是把配置读回来比较 ⇒ 自指恒真）；
+    配置里那一行由 ``tests/unit/test_ai_participation_grayscale_state.py`` 钉住。
+    """
+    assert get_voice_analysis_runtime_settings().use_llm_mode is True
+
+
+def test_a_book_can_still_turn_the_llm_mode_off(monkeypatch):
+    """⚠ 默认切成 LLM 模式**不等于**强制：本书仍可关掉（成本回退路径）。"""
+    from application.engine.services.ai_switch_layer import (
+        reset_novel_switches,
+        set_novel_switches,
+    )
+
+    token = set_novel_switches({"voice_llm_mode": False})
+    try:
+        assert get_voice_analysis_runtime_settings().use_llm_mode is False
+    finally:
+        reset_novel_switches(token)
 
 
 def test_default_constructed_service_is_statistics_mode():
+    """⚠ 用 **dataclass 基线**造出来的服务仍是统计模式（基线没被改）。"""
     assert _svc().use_llm_mode is False
 
 

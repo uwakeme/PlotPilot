@@ -34,7 +34,23 @@ GRAYSCALE_STATE = {
     "chapter_mode": {"enabled": False, "apply": False},
     # E-01b 章前剧本结构：改了会变**细纲形状** ⇒ 风险最大，保持关
     "chapter_plan_structure": {"enabled": False},
+    # ⚠ 第 84 批（F-04 / N-05）：文风漂移**默认切 LLM 模式**
+    #   （登记表 F-04 的「该谁定」列写的就是这一句）
+    #   ⇒ 统计模式在写作链路上**没有基准**（voice_vault 0 行）⇒ 一章都没真评过
+    #   ⇒ LLM 模式用本书前 5 章自建基准 ⇒ 第 6 章起真的能评估。
+    #   ⚠ 段是**嵌套**的（``analyst.voice_analysis``）⇒ 用点号路径。
+    "analyst.voice_analysis": {"use_llm_mode": True},
 }
+
+
+def _dig(config: dict, dotted: str):
+    """按点号路径取段（``analyst.voice_analysis`` → 嵌套两层）。"""
+    node = config
+    for part in dotted.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
 
 
 def _config() -> dict:
@@ -46,7 +62,7 @@ def test_the_grayscale_state_is_pinned():
     config = _config()
     drift: list[str] = []
     for section, expected in GRAYSCALE_STATE.items():
-        actual_section = config.get(section)
+        actual_section = _dig(config, section)
         if not isinstance(actual_section, dict):
             drift.append("%s: 配置里没有这一段" % section)
             continue

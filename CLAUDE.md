@@ -163,7 +163,7 @@ The per-capability config sections:
 | D-05 chapter words | `chapter_target:` | AI proposes per-chapter word count within ±`max_deviation_ratio` (0.30); outside the band is rejected. | **ON** (grayscale) |
 | E-06 rhythm quota | `rhythm_quota:` | AI assigns the chapter's pacing quota (replaces the hardcoded golden-three-chapters table). | **ON** (grayscale) |
 | E-01b chapter plan shape | `chapter_plan_structure:` | AI may choose its own paragraph structure instead of the fixed seven-section script. | OFF |
-| F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. | OFF |
+| F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. | **ON** (grayscale: default switched to LLM mode — the statistics mode has **no baseline** in the writing pipeline ⇒ nothing was ever actually evaluated; each book can still switch it off) |
 
 ⚠ **Which channels are ON is a registry, not a memory** — `tests/unit/test_ai_participation_grayscale_state.py` pins the current state, because a grayscale switch that is silently flipped is the easiest thing to miss. Change the config **and** that table together.
 ⚠ When a channel is ON the behavior is **no longer** byte-identical to pre-switch; degradation is always "cannot decide ⇒ do not inject" (never a fallback value passed off as a decision). The dataclass baselines stay OFF — they are the fallback when a config section is missing.

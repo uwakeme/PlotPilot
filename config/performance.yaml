@@ -72,9 +72,17 @@ analyst:
     style_cache_max_size: 512
     baseline_cache_ttl_seconds: 600.0
     baseline_cache_max_size: 256
-    # F-04：文风漂移是否走 LLM 模式。默认 False = 统计模式（0 额外 token）。
-    # 开启后每章多一次 LLM 调用（约 500 token）。
-    use_llm_mode: false
+    # F-04：文风漂移是否走 LLM 模式。
+    # ⚠ 第 84 批（N-05）：默认从 **False 改成 True**（登记表 F-04 的「该谁定」列写的就是
+    #   「默认切 LLM 模式」）。为什么必须切：
+    #   统计模式的基准只能来自「作者改稿对照」样本（voice_vault）⇒ 写作链路**不产生**样本
+    #   ⇒ 生产库实测 voice_vault / voice_fingerprint **都是 0 行**
+    #   ⇒ 统计模式下**一章都没真评过** ⇒ 漂移检测从来只是「未评估」。
+    #   LLM 模式会用**本书前 5 章自建基准** ⇒ 第 6 章起真的能评估。
+    # 代价：每章多一次 LLM 调用（约 500 token）—— 登记表 F-04 记的代价就是「小」。
+    # 回退：本书把 generation_prefs.ai_switches.voice_llm_mode 设成 false
+    #      （或部署级 PLOTPILOT_AI_VOICE_LLM_MODE=0）⇒ 回到统计模式（此时诚实地说「未评估」）。
+    use_llm_mode: true
     # 相似度告警阈值（模块常量 DRIFT_ALERT_THRESHOLD 的可覆盖副本）。
     drift_alert_threshold: 0.75
 
