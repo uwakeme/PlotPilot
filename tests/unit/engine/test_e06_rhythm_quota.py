@@ -193,28 +193,77 @@ def test_a_non_dict_is_unassessed():
 # ======================================================================
 
 
-def test_the_delivery_is_off_by_default():
-    """默认**不送进**正文提示词（那套配额从来没到过模型）。"""
+def test_the_delivery_follows_the_configured_switch():
+    """⚠ 读出来的开关值 == 配置里写的值（不另立真相源）。
+
+    ⚠ 第 81 批：E-06 已灰度打开 ⇒「默认关闭」不再成立；
+      灰度状态由 ``tests/unit/test_ai_participation_grayscale_state.py`` 钉住。
+    """
     import yaml
 
     data = yaml.safe_load(_read("config/performance.yaml"))
     section = data.get("rhythm_quota") or {}
 
-    assert section.get("enabled") is False
-    assert rhythm_quota_delivery_enabled() is False
+    assert rhythm_quota_delivery_enabled() is bool(section.get("enabled")), (
+        "读出来的开关值与配置文件不一致 ⇒ 配置与生产脱节"
+    )
 
 
-def test_the_delivery_text_is_empty_when_the_switch_is_off():
+def test_the_delivery_is_off_when_the_config_says_off(monkeypatch):
+    """⚠ 开关**真的读配置**（不是写死 True）。
+
+    ⚠ 第 81 批灰度打开后，「关掉 ⇒ 不送进正文」这条不变量不能只靠配置自觉。
+    """
+    import application.engine.services.rhythm_quota as rq
+
+    class _Config:
+        rhythm_quota = {"enabled": False, "max_chars": 600}
+
+    monkeypatch.setattr(rq, "get_config", lambda: _Config())
+
+    assert rq.rhythm_quota_delivery_enabled() is False
+
+
+def test_the_delivery_text_is_empty_when_the_switch_is_off(monkeypatch):
     """开关关闭 ⇒ 交付文本为空（提示词里整段不渲染）。"""
+    import application.engine.services.rhythm_quota as rq
     from application.workflows.auto_novel_generation_workflow import (
         AutoNovelGenerationWorkflow,
     )
+
+    class _Config:
+        rhythm_quota = {"enabled": False, "max_chars": 600}
+
+    monkeypatch.setattr(rq, "get_config", lambda: _Config())
 
     quota = RhythmQuota(
         target_tension=68, rhythm="升温", instruction="综合张力目标：≥68", source=SOURCE_AI
     )
 
     assert AutoNovelGenerationWorkflow._rhythm_quota_delivery_text(quota) == ""
+
+
+def test_the_delivery_text_is_rendered_when_the_switch_is_on(monkeypatch):
+    """⚠ 开关打开 ⇒ 配额文本**真的进正文提示词**（否则这一层是死的）。
+
+    ⚠ 第 81 批：E-06 灰度打开后，「这条路今天真的走了吗」必须验到**文本本身**，
+      不能只验开关读得出来。
+    """
+    import application.engine.services.rhythm_quota as rq
+    from application.workflows.auto_novel_generation_workflow import (
+        AutoNovelGenerationWorkflow,
+    )
+
+    class _Config:
+        rhythm_quota = {"enabled": True, "max_chars": 600}
+
+    monkeypatch.setattr(rq, "get_config", lambda: _Config())
+
+    quota = RhythmQuota(
+        target_tension=68, rhythm="升温", instruction="综合张力目标：≥68", source=SOURCE_AI
+    )
+
+    assert AutoNovelGenerationWorkflow._rhythm_quota_delivery_text(quota) == "综合张力目标：≥68"
 
 
 # ======================================================================

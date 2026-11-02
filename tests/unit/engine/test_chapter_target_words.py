@@ -18,7 +18,10 @@
 AI 没给（缺字段 / null / 非数值）⇒ 沿用用户设定，**且必须说明这是「AI 没说话」**
 而不是「AI 认为就该用设定」。
 """
+import pathlib
+
 import pytest
+import yaml
 
 from application.engine.services.chapter_target_resolver import (
     DEFAULT_MAX_DEVIATION_RATIO,
@@ -32,6 +35,14 @@ from application.blueprint.services.chapter_preplanning_service import (
     ChapterPreplanningService,
     ChapterPreplanResult,
 )
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _performance_config() -> dict:
+    return yaml.safe_load(
+        (REPO_ROOT / "config" / "performance.yaml").read_text(encoding="utf-8-sig")
+    ) or {}
 
 
 # ── 三条不变量 ──────────────────────────────────────────────────────────
@@ -149,12 +160,22 @@ def test_invalid_user_target_and_no_proposal_falls_to_floor():
 
 # ── 开关 ────────────────────────────────────────────────────────────────
 
-def test_settings_default_disabled():
-    """默认关闭 ⇒ ctx.target_word_count 完全不动。"""
+def test_the_dataclass_baseline_stays_disabled():
+    """⚠ **dataclass 基线**必须仍是关闭 —— 它是「配置段缺失时」的回落。
+
+    ⚠ 第 81 批：D-05 已灰度打开（``config/performance.yaml`` 的
+      ``chapter_target.enabled: true``）⇒「配置里写的是什么」不再等于「默认关闭」。
+      ⇒ 灰度状态由 ``tests/unit/test_ai_participation_grayscale_state.py`` 钉住，
+      这里守的是**基线**与**「读出来 == 配置写的」**。
+    """
     s = ChapterTargetRuntimeSettings()
-    assert s.enabled is False
+    assert s.enabled is False, "dataclass 基线必须仍是关闭（配置段缺失时的回落）"
     assert s.max_deviation_ratio == 0.30
-    assert get_chapter_target_runtime_settings().enabled is False
+
+    configured = _performance_config()["chapter_target"]["enabled"]
+    assert get_chapter_target_runtime_settings().enabled is configured, (
+        "读出来的开关值与配置文件不一致 ⇒ 配置与生产脱节"
+    )
 
 
 def test_chapter_target_switch_is_independent_of_others():

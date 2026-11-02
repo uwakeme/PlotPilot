@@ -123,8 +123,12 @@ prose_sampling:
 # ⚠ enabled 默认**关闭** ⇒ 配额文本**不送进**生产正文提示词
 #   ⇒ 行为与改造前逐位一致（突然激活一个从未生效的硬约束
 #   会一次性改变全书节奏观 ⇒ 必须开关 + 灰度）。
+# ⚠ 第 81 批：按独立验收的建议**打开灰度**（2026-11-02）。
+#   ⚠ 代价：每章多一次 AI 调用（节奏配额）＋ 提示词多一块（≤600 字符）。
+#   ⚠ 降级：判不出 ⇒ 不注入（正文提示词回到原样）。
+#   ⚠ 回滚：enabled 改回 false ⇒ 不再请求配额。
 rhythm_quota:
-  enabled: false
+  enabled: true
   # 送进正文提示词的配额文本上限（字符）
   max_chars: 600
 
@@ -333,9 +337,13 @@ target_budget_proposal:
 # D-02：上下文槽位权重。由 AI 判断本章最需要哪几类记忆并给出权重(0-1)，
 # 代码在 tier 预算内换算成 token。**只开 enabled 不会生效** ——
 # shadow 默认 true，权重只记录不施加。两条都要改才对。
+# ⚠ 第 81 批：按独立验收的建议**打开灰度**（2026-11-02）。
+#   ⚠ 代价：每章多一次 AI 调用（槽位权重）＋**上下文组装方式会变**。
+#   ⚠ 降级：AI 判不出 / 调用失败 ⇒ 返回 None ⇒ 走旧路径（绝不用默认权重兜底）。
+#   ⚠ 回滚：把 enabled 改回 false、shadow 改回 true ⇒ 立即恢复原行为。
 context_weights:
-  enabled: false
-  shadow: true
+  enabled: true
+  shadow: false
   cache_ttl_seconds: 900.0        # 同章短期内不重复调用
   failure_backoff_seconds: 300.0  # 调用失败后多久内不再重试
 
@@ -347,8 +355,12 @@ chapter_mode:
 
 # D-05：每章字数目标。AI 可在 ±max_deviation_ratio 内提议，
 # 超出即拒绝 —— 用户明确选过章长，AI 不能改全书节奏。
+# ⚠ 第 81 批：按独立验收的建议**打开灰度**（2026-11-02）。
+#   ⚠ 代价：每章多一次 AI 调用（提议本章字数）⇒ 章长会浮动（±30% 内）。
+#   ⚠ 不变量：用户明确选过的章长，AI **不能改全书节奏**（超出即拒绝）。
+#   ⚠ 回滚：enabled 改回 false ⇒ AI 不再提议。
 chapter_target:
-  enabled: false
+  enabled: true
   max_deviation_ratio: 0.30
 
 # X1：生产正文提示词要带哪几块「硬事实」。

@@ -39,9 +39,27 @@ def test_runtime_settings_default_to_disabled_and_shadow():
     assert s.failure_backoff_seconds > 0
 
 
-def test_settings_reader_never_enables_by_accident():
-    """配置文件里没写 context_weights 段时，读出来仍是关闭。"""
-    assert get_context_weight_runtime_settings().enabled is False
+def test_settings_reader_never_enables_by_accident(monkeypatch):
+    """配置里没写 ``enabled`` 键 ⇒ 读出来必须是 dataclass 基线（关闭）。
+
+    ⚠ 第 81 批：D-02 已灰度打开 ⇒「读出来 == 配置写的」是**别的**测试的职责
+      （``tests/unit/test_ai_participation_grayscale_state.py``）。
+      这里守的是**反面**：读取器**不会凭空打开**开关。
+    """
+    import application.engine.services.context_weight_settings as cws
+
+    # 部署环境可能配过 env 级 ⇒ 别让它干扰
+    monkeypatch.delenv("PLOTPILOT_AI_CONTEXT_WEIGHTS_ENABLED", raising=False)
+    monkeypatch.delenv("PLOTPILOT_AI_CONTEXT_WEIGHTS_SHADOW", raising=False)
+
+    class _Config:
+        context_weights = {"shadow": True}   # 故意**不写** enabled
+
+    monkeypatch.setattr(cws, "get_config", lambda: _Config())
+
+    settings = get_context_weight_runtime_settings()
+    assert settings.enabled is False, "配置没写 enabled ⇒ 读取器不得凭空打开开关"
+    assert settings.shadow is True
 
 
 # ── 不跨章泄漏 ──────────────────────────────────────────────────────────

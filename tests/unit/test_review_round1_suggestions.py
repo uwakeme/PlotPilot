@@ -275,35 +275,59 @@ def test_all_four_switch_sections_exist_in_performance_yaml():
     assert "drift_alert_threshold" in va
 
 
-def test_switch_defaults_are_off_and_match_the_dataclass_defaults():
-    """配置文件里的默认值必须与 dataclass 默认值一致 ——
-    不一致的话「默认关闭」这句话对其中一边就不成立。"""
+def test_the_switch_baselines_stay_off_and_the_config_drives_the_runtime(monkeypatch):
+    """⚠ **dataclass 基线**必须仍是全关（它是「配置段缺失时」的回落）；
+    而「配置里写的」必须与「读出来的」一致（不另立真相源）。
+
+    ⚠ 第 81 批：D-02 / D-05 / E-06 已灰度打开 ⇒ 旧不变量「配置默认值 == dataclass 默认值」
+      对**开关本身**不再成立（对**非开关数值**仍然成立）。
+    ⇒ 拆成三条守：① 基线全关 ② 非开关数值没漂 ③ 开关值读出来 == 配置写的。
+    """
     import yaml
 
     from application.engine.services.chapter_mode_settings import (
         ChapterModeRuntimeSettings,
+        get_chapter_mode_runtime_settings,
     )
     from application.engine.services.chapter_target_settings import (
         ChapterTargetRuntimeSettings,
+        get_chapter_target_runtime_settings,
     )
     from application.engine.services.context_weight_settings import (
         ContextWeightRuntimeSettings,
+        get_context_weight_runtime_settings,
     )
 
+    # env 级可能配过 ⇒ 别让它干扰「配置 vs 读出来」这条断言
+    for name in (
+        "PLOTPILOT_AI_CONTEXT_WEIGHTS_ENABLED",
+        "PLOTPILOT_AI_CONTEXT_WEIGHTS_SHADOW",
+        "PLOTPILOT_AI_CHAPTER_MODE_ENABLED",
+        "PLOTPILOT_AI_CHAPTER_MODE_APPLY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     data = yaml.safe_load(_read("config/performance.yaml"))
+
+    # ① dataclass 基线：全关（缺配置时的回落）
     cw = ContextWeightRuntimeSettings()
-    assert data["context_weights"]["enabled"] is cw.enabled is False
-    assert data["context_weights"]["shadow"] is cw.shadow is True
+    assert cw.enabled is False and cw.shadow is True
+    cm = ChapterModeRuntimeSettings()
+    assert cm.enabled is False and cm.apply is False
+    ct = ChapterTargetRuntimeSettings()
+    assert ct.enabled is False
+
+    # ② 非开关数值：配置 == dataclass（灰度没动过这些）
     assert data["context_weights"]["cache_ttl_seconds"] == cw.cache_ttl_seconds
     assert data["context_weights"]["failure_backoff_seconds"] == cw.failure_backoff_seconds
-
-    cm = ChapterModeRuntimeSettings()
-    assert data["chapter_mode"]["enabled"] is cm.enabled is False
-    assert data["chapter_mode"]["apply"] is cm.apply is False
-
-    ct = ChapterTargetRuntimeSettings()
-    assert data["chapter_target"]["enabled"] is ct.enabled is False
     assert data["chapter_target"]["max_deviation_ratio"] == ct.max_deviation_ratio
+
+    # ③ 开关：读出来 == 配置里写的（不另立真相源）
+    assert get_context_weight_runtime_settings().enabled is data["context_weights"]["enabled"]
+    assert get_context_weight_runtime_settings().shadow is data["context_weights"]["shadow"]
+    assert get_chapter_target_runtime_settings().enabled is data["chapter_target"]["enabled"]
+    assert get_chapter_mode_runtime_settings().enabled is data["chapter_mode"]["enabled"]
+    assert get_chapter_mode_runtime_settings().apply is data["chapter_mode"]["apply"]
 
 
 # ── 5. 缓存与退避必须真的生效 ────────────────────────────────────────────

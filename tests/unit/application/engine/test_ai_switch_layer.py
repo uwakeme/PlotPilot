@@ -137,18 +137,38 @@ def test_the_chapter_mode_settings_honor_the_novel_level():
     assert settings.apply is True
 
 
-def test_the_context_weight_settings_honor_the_novel_level():
+def test_the_context_weight_settings_honor_the_novel_level(monkeypatch):
+    """⚠ 逐条开关必须**真的**走读取层（否则这层就是装饰品）。
+
+    ⚠ 第 81 批：D-02 已灰度打开（config 级 = 开）⇒ 要证明「novel 级压过 config 级」，
+      novel 覆盖必须与 config 取**相反极性**
+      （两边都是 True ⇒ 断言恒真 ⇒ 这条守卫会变成空洞守卫）。
+    """
     from application.engine.services.context_weight_settings import (
         get_context_weight_runtime_settings,
     )
 
-    assert get_context_weight_runtime_settings().enabled is False
+    # 部署环境可能配过 env 级 ⇒ 别让它干扰「config 级 vs novel 级」这条断言
+    monkeypatch.delenv("PLOTPILOT_AI_CONTEXT_WEIGHTS_ENABLED", raising=False)
+    monkeypatch.delenv("PLOTPILOT_AI_CONTEXT_WEIGHTS_SHADOW", raising=False)
 
+    # config 级：读出来必须**就是配置里写的**（读不到 ⇒ 配置与生产脱节）
+    # ⚠ 灰度状态本身由 tests/unit/test_ai_participation_grayscale_state.py 钉住；
+    #   这里**不写死**当前是开是关（否则关灰度会变成一条看不懂的失败）。
+    config_level = get_context_weight_runtime_settings()
+
+    # novel 级：覆盖值取 config 级的**相反极性** ⇒ 断言有鉴别力
+    # （两边同极性 ⇒ 断言恒真 ⇒ 这条守卫会退化成空洞守卫）。
+    novel_enabled = not config_level.enabled
+    novel_shadow = not config_level.shadow
     settings = get_context_weight_runtime_settings(
-        novel_switches={"context_weights.enabled": True, "context_weights.shadow": False}
+        novel_switches={
+            "context_weights.enabled": novel_enabled,
+            "context_weights.shadow": novel_shadow,
+        }
     )
-    assert settings.enabled is True
-    assert settings.shadow is False
+    assert settings.enabled is novel_enabled, "novel 级没有压过 config 级"
+    assert settings.shadow is novel_shadow, "novel 级没有压过 config 级"
 
 
 def test_the_voice_settings_honor_the_env_level(monkeypatch):
