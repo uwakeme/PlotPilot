@@ -55,22 +55,72 @@ class VoiceDriftService:
         llm_voice_service: Optional["LLMVoiceAnalysisService"] = None,
         use_llm_mode: bool = False,
         runtime_settings: VoiceAnalysisRuntimeSettings | None = None,
+        llm_service_factory: Optional[Callable[[], Any]] = None,
     ):
         """
         Args:
             score_repo: SqliteChapterStyleScoreRepository
             fingerprint_repo: VoiceFingerprintRepository
-            llm_voice_service: LLM 文风分析服务（可选）
-            use_llm_mode: 是否使用 LLM 模式（默认 False，使用统计模式）
+            llm_voice_service: LLM 文风分析服务（可选；不给就**懒创建**）
+            use_llm_mode: LLM 模式的**默认级**（默认 False = 统计模式）
+            llm_service_factory: 懒创建 LLM 文风服务时用的「取 LLM 服务」工厂
+                （⚠ 给工厂而不是实例 ⇒ 统计模式下**启动时什么都不建**）
         """
         self.score_repo = score_repo
         self.fingerprint_repo = fingerprint_repo
         self.llm_voice_service = llm_voice_service
-        self.use_llm_mode = use_llm_mode
+        #: LLM 模式的**默认级**（构造时的取值）⇒ 真值由属性 ``use_llm_mode`` 解析。
+        self._use_llm_mode_default = bool(use_llm_mode)
+        #: 懒创建 LLM 文风服务用的工厂（可选）。
+        self._llm_service_factory = llm_service_factory
         self._runtime_settings = runtime_settings or get_voice_analysis_runtime_settings()
 
         self._baseline_cache: "OrderedDict[str, dict]" = OrderedDict()
         self._baseline_cache_loaded_at: dict[str, float] = {}
+
+    # ------------------------------------------------------------------
+    # 开关与懒创建
+    # ------------------------------------------------------------------
+
+    @property
+    def use_llm_mode(self) -> bool:
+        """文风漂移是否走 LLM 模式（**每次读都解析**）。
+
+        ⚠ 第 79 批：以前这是**构造时冻结**的普通属性 ⇒ 服务是进程级单例
+          ⇒ 「这本书」的覆盖（novel 级）在它身上**没有落点** ⇒ 静默无效。
+        ⇒ 现在按统一读取层解析：**novel 级 > env 级 > 默认级**
+          ⇒ 本书把 ``voice_llm_mode`` 设成 true 时，这本书的文风审计真的走 LLM。
+
+        ⚠ 4 个生产调用点读的都是这个属性 ⇒ 它们**自动**跟着上下文走，
+          不必逐个改签名。
+        """
+        from application.engine.services.ai_switch_layer import resolve_switch
+
+        return resolve_switch("voice_llm_mode", default=self._use_llm_mode_default)
+
+    @use_llm_mode.setter
+    def use_llm_mode(self, value: bool) -> None:
+        """显式设置时改的是**默认级**（兼容既有写法）。"""
+        self._use_llm_mode_default = bool(value)
+
+    def _ensure_llm_voice_service(self):
+        """按需创建 LLM 文风服务（**懒创建**）。
+
+        ⚠ 以前 LLM 文风服务只在**启动时**按 env 决定要不要建
+          ⇒ 就算开关解析对了（本书想开），服务不存在也走不到 LLM 模式。
+        ⇒ 改成懒创建：**统计模式下启动时什么都不建**（不擅自开 LLM 调用链），
+          真要跑 LLM 模式时再建。
+        """
+        if self.llm_voice_service is None and self._llm_service_factory is not None:
+            from application.analyst.services.llm_voice_analysis_service import (
+                LLMVoiceAnalysisService,
+            )
+
+            self.llm_voice_service = LLMVoiceAnalysisService(
+                llm_service=self._llm_service_factory(),
+                runtime_settings=self._runtime_settings,
+            )
+        return self.llm_voice_service
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -98,8 +148,8 @@ class VoiceDriftService:
         #   且「同一逻辑写两份」也消掉了（base.py 那处可以撤）。
         if (
             self.use_llm_mode
-            and self.llm_voice_service
             and ai_participation_enabled("voice_llm_mode")
+            and self._ensure_llm_voice_service() is not None
         ):
             return await self._score_chapter_llm(novel_id, chapter_number, content)
         else:

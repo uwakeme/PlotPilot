@@ -103,9 +103,11 @@ LEGACY_ENV_NAMES: Dict[str, str] = {
 #: ⚠ 这些开关的读取点在**进程级单例**里（构造时冻结）⇒ 「这本书」的覆盖
 #:   在那儿没有落点 ⇒ 之前是**静默无效**（用户以为配了，其实在跑 env/默认级）。
 #:   ⇒ 现在在设了它们的时候会**出声**（``warn_unreachable_novel_switches``）。
-NOVEL_UNREACHABLE_KEYS: Dict[str, str] = {
-    "voice_llm_mode": "文风漂移服务是进程级单例（use_llm_mode 构造时冻结）",
-}
+#:
+#: ⚠ 第 79 批：``voice_llm_mode`` **已摘出** —— 文风服务改成「每次读都解析」
+#:   ＋「LLM 文风服务懒创建」⇒ novel 级**真的生效**了
+#:   ⇒ 继续留着会**误报**（本书设了它就会喊「无效」）。
+NOVEL_UNREACHABLE_KEYS: Dict[str, str] = {}
 
 #: 当前「这本书」的开关覆盖（``None`` = 没有 novel 级上下文）。
 #:

@@ -324,10 +324,10 @@ def test_a_novel_level_switch_that_cannot_be_reached_warns():
         warn_unreachable_novel_switches,
     )
 
-    assert "voice_llm_mode" in NOVEL_UNREACHABLE_KEYS
-
     warned = warn_unreachable_novel_switches({"voice_llm_mode": True}, novel_id="novel-x")
-    assert warned == ["voice_llm_mode"]
+    # ⚠ 第 79 批：``voice_llm_mode`` **够得到**了（文风服务改成每次读都解析
+    #   + LLM 服务懒创建）⇒ 不在「够不到」清单里 ⇒ 不该再喊「无效」。
+    assert warned == [], "voice_llm_mode 现在生效了 ⇒ 不该再被当成『无效』"
 
     # ⚠ 能到的键不许误报
     assert warn_unreachable_novel_switches(

@@ -1077,23 +1077,16 @@ def get_voice_drift_service() -> VoiceDriftService:
     # F-04：文风漂移默认走统计模式（约 0 额外 token）。
     # 开启后每章多一次 LLM 调用（约 500 token），以抓深层风格特征。
     settings = get_voice_analysis_runtime_settings()
-    if not settings.use_llm_mode:
-        return VoiceDriftService(
-            score_repo, fingerprint_repo, runtime_settings=settings
-        )
-
-    from application.analyst.services.llm_voice_analysis_service import (
-        LLMVoiceAnalysisService,
-    )
-
-    llm_voice_service = LLMVoiceAnalysisService(
-        llm_service=get_llm_service(), runtime_settings=settings
-    )
+    # ⚠ 第 79 批：**不再**在这里按 env 决定要不要建 LLM 文风服务
+    #   ⇒ 那样的话，本书（novel 级）后来把开关打开也**走不到** LLM 模式
+    #   （服务都不存在）。
+    # ⇒ 改成传**工厂**：真要跑 LLM 模式时才建（懒创建）
+    #   ⇒ 统计模式下启动时**什么都不建**（不擅自开 LLM 调用链）。
     return VoiceDriftService(
         score_repo,
         fingerprint_repo,
-        llm_voice_service=llm_voice_service,
-        use_llm_mode=True,
+        llm_service_factory=lambda: get_llm_service(),
+        use_llm_mode=settings.use_llm_mode,
         runtime_settings=settings,
     )
 

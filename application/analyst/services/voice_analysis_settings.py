@@ -39,10 +39,9 @@ def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
     section = getattr(analyst, "voice_analysis", None)
     defaults = VoiceAnalysisRuntimeSettings()
     # ⚠ 第 74 批（Q-1）：走**统一读取层**（env 级可用）。
-    #   ⚠ 这一项的 novel 级**够不到**：文风服务是**进程级单例**（DI 工厂构造一次）
-    #     ⇒ 「这本书」的覆盖在那里没有上下文 ⇒ 只有 env 级与默认级生效。
-    #   ⚠ 第 76 批（N-3）：这件事**不再静默** —— 本书若覆盖了 voice_llm_mode，
-    #     开关层会打警告（``NOVEL_UNREACHABLE_KEYS`` + ``warn_unreachable_novel_switches``）。
+    #   ⚠ 第 79 批：**novel 级也生效了** —— 文风服务改成「每次读都解析」
+    #     （``VoiceDriftService.use_llm_mode`` 变成属性）＋「LLM 文风服务懒创建」
+    #     ⇒ 本书把 voice_llm_mode 设成 true 时，这本书的文风审计真的走 LLM。
     #     ⚠ env 级名 = ``PLOTPILOT_AI_VOICE_LLM_MODE``（按 ``PLOTPILOT_AI_<KEY>`` 推导）。
     from application.engine.services.ai_switch_layer import resolve_switch
 

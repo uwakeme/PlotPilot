@@ -173,15 +173,22 @@ def test_production_factory_wires_the_setting(monkeypatch):
 
     monkeypatch.setattr(deps, "VoiceDriftService", _Recorder)
 
-    # 关闭：只传 repos + settings
+    # 关闭：把开关的**默认级**传下去，但**不构造** LLM 服务
     monkeypatch.setattr(
         "application.analyst.services.voice_analysis_settings.get_voice_analysis_runtime_settings",
         lambda: VoiceAnalysisRuntimeSettings(use_llm_mode=False))
     deps.get_voice_drift_service()
-    assert made["kwargs"].get("use_llm_mode") is None, "关闭时不应传 use_llm_mode"
-    assert "llm_voice_service" not in made["kwargs"], "关闭时不应构造 LLM 服务"
+    assert made["kwargs"].get("use_llm_mode") is False, (
+        "关闭时必须把开关的默认级传下去（不能又造一个默认实例）"
+    )
+    assert made["kwargs"].get("llm_voice_service") is None, (
+        "关闭时不应构造 LLM 服务实例"
+    )
+    assert callable(made["kwargs"].get("llm_service_factory")), (
+        "必须传 llm_service_factory（懒创建）⇒ 否则本书后来打开开关也走不到 LLM 路径"
+    )
 
-    # 开启：必须传 llm_voice_service + use_llm_mode=True
+    # 开启：开关的默认级=True，且**仍然不构造实例**（懒创建）
     made.clear()
     monkeypatch.setattr(
         "application.analyst.services.voice_analysis_settings.get_voice_analysis_runtime_settings",
@@ -191,8 +198,11 @@ def test_production_factory_wires_the_setting(monkeypatch):
     assert made["kwargs"].get("use_llm_mode") is True, (
         "开关打开却没传 use_llm_mode —— LLM 模式仍然不会生效"
     )
-    assert made["kwargs"].get("llm_voice_service") is not None, (
-        "开关打开却没注入 llm_voice_service —— 分派条件仍然不成立"
+    assert made["kwargs"].get("llm_voice_service") is None, (
+        "启动时不该构造 LLM 服务实例（统计模式下什么都不建 ⇒ 不擅自开 LLM 调用链）"
+    )
+    assert callable(made["kwargs"].get("llm_service_factory")), (
+        "开关打开却没有 llm_service_factory ⇒ 懒创建不了 ⇒ 分派条件仍然不成立"
     )
 
 
