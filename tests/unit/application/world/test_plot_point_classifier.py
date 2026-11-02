@@ -28,6 +28,17 @@ from application.world.services.plot_point_classifier_schema import (
     normalize_verdict,
 )
 
+
+# ⚠ 第 81 批：**期望值写死字面量**。
+#   此前「未评估」的判据是 ``SOURCE_NONE`` —— 而它是**从被测模块 import 回来**的
+#   ⇒ 把它改成 ``"none"`` 守卫照样绿（独立验收实测：17 passed、全量仍全绿）。
+# ⇒ 现在「未评估」的标记被字面量钉住。
+def test_the_unassessed_marker_is_pinned_to_the_empty_string():
+    assert SOURCE_NONE == "", (
+        f"「未评估」的来源标记现在是 {SOURCE_NONE!r} ⇒ 下游会把未评估当成一个真实来源"
+    )
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 SYNC_PATH = REPO_ROOT / "application/world/services/chapter_narrative_sync.py"
 

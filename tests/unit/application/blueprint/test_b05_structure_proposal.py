@@ -49,6 +49,17 @@ from application.blueprint.services.structure_proposal import (
     clamp_structure_grid,
 )
 
+
+# ⚠ 第 81 批：**期望值写死字面量**。
+#   此前这条守卫把 ``FALLBACK_GRID`` 从**被测模块自己** import 回来比较
+#   ⇒ 自指恒真 ⇒ 把它改成 ``(9, 9, 9)``（729 幕！）这条守卫照样绿
+#   ⇒ 独立验收实测：点名守卫 22 passed、**全量 4297 也全绿**。
+# ⇒ 现在常量本身被字面量钉住 ⇒ 改它必须显式改这里。
+def test_the_fallback_grid_is_pinned_to_the_promised_shape():
+    assert FALLBACK_GRID == (3, 3, 3), (
+        f"兜底网格现在是 {FALLBACK_GRID} ⇒ B-05 承诺的「3部×3卷×3幕」变了"
+    )
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 SERVICE_REL = "application/blueprint/services/continuous_planning_service.py"
 ROUTES_REL = "interfaces/api/v1/blueprint/continuous_planning_routes.py"
