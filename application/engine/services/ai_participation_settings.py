@@ -266,7 +266,26 @@ class AiParticipationRuntimeSettings:
     disabled_features: tuple[str, ...] = ()
 
 
+#: 总闸的 **env 级**（部署级回退）。
+#:
+#: ⚠ 第 83 批（N-09）：此前总闸**只有 config 一级**
+#:   ⇒ 「这台机器上回退」「这本书回退」两件事都做不到
+#:   ⇒ 现在补上 env 级（与 config 同层，**env 优先**）与 novel 级（在判定里读）。
+ENV_MASTER_ENABLED = "PLOTPILOT_AI_MASTER_ENABLED"
+ENV_DISABLED_FEATURES = "PLOTPILOT_AI_DISABLED_FEATURES"
+
+
 def get_ai_participation_runtime_settings() -> AiParticipationRuntimeSettings:
+    """读总闸的运行时设置（**config 级 + env 级**）。
+
+    ⚠ 第 83 批（N-09）：补上 **env 级**。
+    ⚠ 优先级与统一开关层一致：**env > config**
+    （env 的 ``disabled_features`` **替换** config 那份 —— 同一层，env 更具体）。
+    """
+    import os
+
+    from application.engine.services.ai_switch_layer import parse_env_bool
+
     section = getattr(get_config(), "ai_participation", None)
     defaults = AiParticipationRuntimeSettings()
     raw_disabled = section_value(section, "disabled_features", ())
@@ -275,10 +294,25 @@ def get_ai_participation_runtime_settings() -> AiParticipationRuntimeSettings:
     disabled = tuple(
         str(item).strip() for item in (raw_disabled or ()) if str(item).strip()
     )
+    master_enabled = bool(
+        section_value(section, "master_enabled", defaults.master_enabled)
+    )
+
+    # ⚠ env 级：总闸本身
+    raw_env_master = os.environ.get(ENV_MASTER_ENABLED)
+    if raw_env_master is not None:
+        parsed = parse_env_bool(raw_env_master)
+        if parsed is not None:
+            master_enabled = parsed
+    # ⚠ env 级：逐条点名关闭（**替换** config 那份 —— 同一层，env 更具体）
+    raw_env_disabled = os.environ.get(ENV_DISABLED_FEATURES)
+    if raw_env_disabled is not None:
+        disabled = tuple(
+            part.strip() for part in raw_env_disabled.split(",") if part.strip()
+        )
+
     return AiParticipationRuntimeSettings(
-        master_enabled=bool(
-            section_value(section, "master_enabled", defaults.master_enabled)
-        ),
+        master_enabled=master_enabled,
         disabled_features=disabled,
     )
 
@@ -289,6 +323,13 @@ def ai_participation_enabled(feature: str) -> bool:
     总闸优先于逐条开关：总闸关闭 ⇒ 一律 False。
     未登记在 ``AI_PARTICIPATION_FEATURES`` 的 feature id 一律**拒绝**
     （不认识的 id 绝不默认放行 —— 那是「登记漏了 ⇒ 总闸失效」的入口）。
+
+    ⚠ 第 83 批（N-09）：**三级**回退能力（此前只有 config 一级）：
+      ① **config 级**：``ai_participation.master_enabled`` + ``disabled_features``；
+      ② **env 级**：``PLOTPILOT_AI_MASTER_ENABLED`` + ``PLOTPILOT_AI_DISABLED_FEATURES``；
+      ③ **novel 级**：这本书的 ``generation_prefs.ai_switches[<feature_id>] = False``
+         ⇒ 「**按这本书**回退」终于有了落点（规格 §3.2 承诺的那一层）。
+    ⚠ novel 级**只能关，不能开** —— 总闸关掉时一律 False（总闸是回退路径，不是开关）。
     """
     feature_id = str(feature or "").strip()
     if feature_id not in AI_PARTICIPATION_FEATURES:
@@ -296,4 +337,15 @@ def ai_participation_enabled(feature: str) -> bool:
     settings = get_ai_participation_runtime_settings()
     if not settings.master_enabled:
         return False
-    return feature_id not in settings.disabled_features
+    if feature_id in settings.disabled_features:
+        return False
+
+    # ⚠ novel 级：这本书把这项能力关掉了（键 = feature id）。
+    # ⚠ 键空间不冲突：feature id（``chapter_mode``）与逐条开关 key
+    #   （``chapter_mode.enabled``）是两个不同的字符串。
+    from application.engine.services.ai_switch_layer import current_novel_switches
+
+    novel_switches = current_novel_switches() or {}
+    if novel_switches.get(feature_id) is False:
+        return False
+    return True
