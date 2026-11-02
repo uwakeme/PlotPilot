@@ -157,7 +157,7 @@ Each is a bounded context in `application/` with one public service. Cross-impor
 | **Chronicles (Codex)** | `application/codex/chronicles_service.py` | Module-level functions, no class: `infer_chapter_from_texts`, `build_chronicles_rows` |
 | **Snapshot** | `application/snapshot/services/snapshot_service.py` | `SnapshotService` |
 | **Checkpoint** | `application/checkpoint/services/unified_checkpoint_service.py` | `UnifiedCheckpointService` |
-| **DAG Engine** | `application/engine/dag/` | LangGraph-style DAG executor; compiles `DAGDefinition` → StateGraph |
+| **DAG Engine** | `application/engine/dag/` | **只有** models / registry / nodes / plan —— **没有执行器**。后端 DAG 路由在 2026-05-10（`fc5de029`）被**主动**砍成**纯展示层**（run/stop/status/runs 全删）⇒ `POST /dag/{id}/run` 返回 **501 是有意的**（宁可报错也不谎称成功）；**生产写作走 `engine/runtime` 的 StoryPipeline**（12 步），DAG 画布只是它的状态可视化 |
 | **Narrative Engine** | `application/narrative_engine/` | `NarrativeEngineReadFacade` (read_facade.py) — a **read-only BFF facade**, not a generator. `NarrativeLens` enum (catalog.py) defines the 10 lens dimensions. |
 
 `application/narrative_engine/` route nuance: only `GET /api/v1/narrative-engine/surface-catalog` lives under that prefix (`surface_router`). The other endpoints hang off `GET /api/v1/novels/{novel_id}/narrative-engine/...`.

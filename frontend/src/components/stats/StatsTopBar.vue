@@ -58,12 +58,12 @@
     <!-- 右侧：操作按钮 -->
     <div class="top-bar-actions">
       <!--
-        守护进程监督者徽标（第 77 批）：
+        守护进程监督者徽标（第 79 批）：
         让「自动驾驶静默停摆」在**顶栏**也看得见（面板只有打开自动驾驶视图时才在）。
-        ⚠ 读的是既有的 autopilotStatusStore（`/autopilot/status` 的单一轮询链）
-          ⇒ 顶栏只是又一个订阅者 ⇒ **不新增轮询通道**。
+        ⚠ 数据源是**全局**的 `GET /health`（不碰 DB）⇒ 不用按书订阅
+          ⇒ 书库页（Home）也能显示同一枚徽标。
       -->
-      <DaemonSupervisorBadge :novel-id="slug" />
+      <DaemonSupervisorBadge />
 
       <!-- 导出按钮 -->
       <n-dropdown 

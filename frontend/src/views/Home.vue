@@ -22,6 +22,12 @@
               <n-icon :component="IconThemeSettings" :size="22" />
             </template>
           </n-button>
+          <!--
+            守护进程监督者徽标（第 79 批）：
+            书库页也挂 ⇒ 「自动驾驶静默停摆」在**任何页面**都看得见。
+            ⚠ 数据源是全局的 `GET /health`（不碰 DB）⇒ 不需要 novel 上下文。
+          -->
+          <DaemonSupervisorBadge />
           <div class="header-content">
             <BrandSeal class="header-seal" :size="52" />
             <h1 class="title">墨枢</h1>
@@ -361,6 +367,7 @@
 </template>
 
 <script setup lang="ts">
+import DaemonSupervisorBadge from '../components/global/DaemonSupervisorBadge.vue'
 import { defineAsyncComponent, h, ref, onMounted, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, NIcon } from 'naive-ui'

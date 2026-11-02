@@ -1,15 +1,15 @@
 <!--
-  守护进程监督者徽标（第 77 批）：让「自动驾驶静默停摆」在**顶栏**也看得见。
+  守护进程监督者徽标（第 79 批）：让「自动驾驶静默停摆」在**每一页**都看得见。
 
   ⚠ 为什么不放在自动驾驶面板里就够了：
-    面板只有打开自动驾驶视图时才在 ⇒ 用户在**写书**（工作台）时看不到
+    面板只有打开自动驾驶视图时才在 ⇒ 用户在**书库页/工作台**时看不到
     ⇒ 守护进程被外部杀掉又自动拉起这件事「界面完全无感」（那正是它要解决的事）。
 
-  ⚠ **不新增轮询通道**：读的是既有的 ``autopilotStatusStore``
-    （``/autopilot/status`` 的**单一**轮询链，本 store 就是它的所有者）
-    ⇒ 顶栏只是**又一个订阅者** ⇒ 同一条链、同一份快照。
+  ⚠ 数据源：`GET /health`（**全局**、不碰 DB）⇒ 不用按书订阅 ⇒ 书库页也能显示。
+    轮询由 `useDaemonHealthStore` 统一管（最后一个订阅者退出就停）。
 
-  ⚠ 平时**不占位**：只有「重启过 / 拉起失败 / 状态陈旧」时才出现。
+  ⚠ 平时**不占位**：只有「重启过 / 拉起失败」时才出现。
+  ⚠ 拉不到 `/health` 时**保留上一次的值**（≠「一切正常」）⇒ 徽标不会假装没事。
 -->
 <template>
   <n-tooltip v-if="notice" trigger="hover">
@@ -21,33 +21,22 @@
     <div class="ds-detail">
       <div>{{ detailLine }}</div>
       <div v-if="publishedAt">状态发布时间：{{ publishedAt }}</div>
+      <div v-if="store.lastError">最近一次读取失败：{{ store.lastError }}</div>
     </div>
   </n-tooltip>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { NTooltip } from 'naive-ui'
-import { useAutopilotStatusStore } from '@/stores/autopilotStatusStore'
+import { useDaemonHealthStore } from '@/stores/daemonHealthStore'
 
-const props = defineProps<{ novelId: string }>()
+const store = useDaemonHealthStore()
 
-const store = useAutopilotStatusStore()
+onMounted(() => store.start())
+onBeforeUnmount(() => store.stop())
 
-/** 订阅既有轮询链（不自己发请求）。 */
-let unsubscribe: (() => void) | null = null
-function subscribe() {
-  if (unsubscribe) unsubscribe()
-  unsubscribe = props.novelId ? store.subscribe(props.novelId, () => {}) : null
-}
-onMounted(subscribe)
-onBeforeUnmount(() => {
-  if (unsubscribe) unsubscribe()
-  unsubscribe = null
-})
-watch(() => props.novelId, subscribe)
-
-const supervisor = computed(() => store.statusByNovel[props.novelId]?.daemon_supervisor)
+const supervisor = computed(() => store.supervisor)
 
 const notice = computed(() => {
   const s = supervisor.value
