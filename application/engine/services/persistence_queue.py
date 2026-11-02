@@ -515,7 +515,9 @@ def register_persistence_handlers() -> None:
             tension_score = payload.get("tension_score")
 
             db.execute(
-                "UPDATE chapters SET tension_score = ?, updated_at = CURRENT_TIMESTAMP WHERE novel_id = ? AND number = ?",
+                # ⚠ 第 82 批（N-01）：写进去的是真实评分 ⇒ ``tension_evaluated`` 一并置 1
+                "UPDATE chapters SET tension_score = ?, tension_evaluated = 1, "
+                "updated_at = CURRENT_TIMESTAMP WHERE novel_id = ? AND number = ?",
                 (tension_score, novel_id, chapter_number)
             )
             db.get_connection().commit()

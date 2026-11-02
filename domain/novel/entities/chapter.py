@@ -31,6 +31,7 @@ class Chapter(BaseEntity):
         emotional_tension: float = 50.0,
         pacing_tension: float = 50.0,
         generation_hint: str = "",
+        tension_evaluated: bool = False,
     ):
         super().__init__(id)
         self.novel_id = novel_id
@@ -44,6 +45,12 @@ class Chapter(BaseEntity):
         self.emotional_tension = emotional_tension  # 情绪张力 0-100
         self.pacing_tension = pacing_tension  # 节奏张力 0-100
         self.generation_hint = generation_hint  # 用户手写的本章生成约束（直注 AI 上下文）
+        # ⚠ 第 82 批（N-01）：**张力有没有真的评过**。
+        #   四列的 50.0 是建表默认值 ⇒ 「没评过」与「恰好 50 分」在值上同形，
+        #   所以「评没评过」必须由这枚**独立标记**承载，不能从值反推。
+        #   ⚠ 默认 False（未评估）是安全的一侧：宁可漏一个已评估，
+        #   也不把没评过的当成评过的。
+        self.tension_evaluated = tension_evaluated
 
     @property
     def content(self) -> str:
@@ -71,6 +78,8 @@ class Chapter(BaseEntity):
         if not 0 <= score <= 100:
             raise ValueError(f"Tension score must be between 0 and 100, got {score}")
         self.tension_score = score
+        # ⚠ 第 82 批（N-01）：写进来的是**真实评分** ⇒ 本章从此「评过」。
+        self.tension_evaluated = True
         self.updated_at = datetime.now(timezone.utc)
 
     def update_tension_dimensions(self, dimensions: "TensionDimensions") -> None:
@@ -79,4 +88,8 @@ class Chapter(BaseEntity):
         self.emotional_tension = dimensions.emotional_tension
         self.pacing_tension = dimensions.pacing_tension
         self.tension_score = dimensions.composite_score
+        # ⚠ 第 82 批（N-01）：**只有真评出来的**才算「评过」——
+        #   未评估哨兵（-1）不是评分 ⇒ 不许把标记点亮。
+        if getattr(dimensions, "is_evaluated", False):
+            self.tension_evaluated = True
         self.updated_at = datetime.now(timezone.utc)

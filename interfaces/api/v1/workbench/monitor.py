@@ -64,19 +64,18 @@ def _get_tension_curve_sync(novel_id: str) -> TensionCurveResponse:
 
     for ch in chapters:
         raw = getattr(ch, "tension_score", None)
-        ch_status = getattr(ch, "status", None)
-        # 🔥 判断是否已完成真实张力评估：
-        # 1. raw 为 None 或 -1（UNEVALUATED）→ 未评估
-        # 2. 章节 status=draft 且 tension_score=50.0（schema默认值）→ 未评估
-        #    因为 draft 章节没有经过审计管线，50.0 只是建表默认值，不是真实评分
-        is_unevaluated = raw is None or float(raw) == UNEVALUATED
-        is_default_draft = (
-            ch_status == "draft"
-            and raw is not None
-            and float(raw) == 50.0
-            and getattr(ch, "plot_tension", None) is None
-        )
-        if is_unevaluated or is_default_draft:
+        # 🔥 判断是否已完成真实张力评估
+        # ⚠ 第 82 批（N-01）：**判据换成独立标记**。
+        #   旧判据是「status=draft 且 tension_score=50.0 且 plot_tension IS NULL」，
+        #   而 ``plot_tension`` 是 ``REAL DEFAULT 50.0`` ⇒ ``IS NULL`` **恒假**
+        #   ⇒ 未评估章节被当成「平缓 5/10」**假点**，还参与均值/方差统计。
+        #   ⇒ 现在「有没有真的评过」由 ``tension_evaluated`` 承载（值不可反推：
+        #     「没评过」与「恰好 50 分」在四列的**值上完全同形**）。
+        is_evaluated = bool(getattr(ch, "tension_evaluated", False))
+        if raw is None or float(raw) == UNEVALUATED:
+            # 哨兵值（-1）永远是「未评估」⇒ 标记说了算也不认它
+            is_evaluated = False
+        if not is_evaluated:
             # 未评估的章节
             points.append(
                 TensionPoint(

@@ -6,6 +6,8 @@ from application.services.voice_drift_service import VoiceDriftService, DRIFT_AL
 def _make_service(scores=None, fingerprint=None):
     score_repo = MagicMock()
     score_repo.list_by_novel.return_value = scores or []
+    # ⚠ 第 82 批（N-04）：漂移告警的窗口改用「最近 N 章」这个方法
+    score_repo.list_recent_by_novel.return_value = scores or []
     score_repo.upsert.return_value = "score-1"
 
     fp_repo = MagicMock()

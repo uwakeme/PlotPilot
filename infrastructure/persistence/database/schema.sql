@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS chapters (
     outline TEXT,
     status TEXT DEFAULT 'draft',
     tension_score REAL DEFAULT 50.0,
+    -- 第 82 批（N-01）：1 = 张力**真的评过**；0 = 未评估（此时四列的 50.0 只是占位，不是评分）
+    tension_evaluated INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
@@ -570,7 +572,10 @@ CREATE TABLE IF NOT EXISTS chapter_style_scores (
     adjective_density REAL NOT NULL DEFAULT 0.0,
     avg_sentence_length REAL NOT NULL DEFAULT 0.0,
     sentence_count INTEGER NOT NULL DEFAULT 0,
-    similarity_score REAL NOT NULL DEFAULT 0.0,
+    -- ⚠ 第 82 批（N-05）：**可空** —— NULL = 「没有基准，没评过」
+    --   （此前是 NOT NULL DEFAULT 0.0 ⇒ 「没评过」被压成 0.0，
+    --     与「真·相似度 0.0」同形 ⇒ 下游把没评过当成「完全不像」⇒ 假漂移告警）
+    similarity_score REAL DEFAULT 0.0,
     computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
     UNIQUE(novel_id, chapter_number)

@@ -21,8 +21,8 @@ class SqliteChapterRepository(ChapterRepository):
     _SAVE_SQL = """
         INSERT INTO chapters (id, novel_id, number, title, content, outline, status,
                               tension_score, plot_tension, emotional_tension, pacing_tension,
-                              generation_hint, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              tension_evaluated, generation_hint, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
@@ -32,6 +32,7 @@ class SqliteChapterRepository(ChapterRepository):
             plot_tension = excluded.plot_tension,
             emotional_tension = excluded.emotional_tension,
             pacing_tension = excluded.pacing_tension,
+            tension_evaluated = excluded.tension_evaluated,
             generation_hint = excluded.generation_hint,
             updated_at = excluded.updated_at
     """
@@ -58,6 +59,9 @@ class SqliteChapterRepository(ChapterRepository):
             chapter.plot_tension,
             chapter.emotional_tension,
             chapter.pacing_tension,
+            # ⚠ 第 82 批（N-01）：标记与值**必须同进同出**
+            #   （值被覆盖成占位 50.0 时，标记也要是「未评估」）。
+            bool(getattr(chapter, 'tension_evaluated', False)),
             getattr(chapter, 'generation_hint', ''),
             now,
             now
@@ -252,6 +256,8 @@ class SqliteChapterRepository(ChapterRepository):
             chapter.plot_tension,
             chapter.emotional_tension,
             chapter.pacing_tension,
+            # ⚠ 第 82 批（N-01）：与 ``save()`` 同一口径（标记与值同进同出）
+            bool(getattr(chapter, 'tension_evaluated', False)),
             getattr(chapter, 'generation_hint', ''),
             now,
             now
@@ -617,9 +623,12 @@ class SqliteChapterRepository(ChapterRepository):
         if not 0 <= score <= 100:
             raise ValueError(f"Tension score must be between 0 and 100, got {score}")
 
+        # ⚠ 第 82 批（N-01）：写进去的是**真实评分** ⇒ 必须同时把
+        #   ``tension_evaluated`` 置 1 ⇒ 否则这一章会被当成「没评过」
+        #   （值是 50.0 时它与「占位」在存储层同形）。
         sql = """
             UPDATE chapters
-            SET tension_score = ?, updated_at = ?
+            SET tension_score = ?, tension_evaluated = 1, updated_at = ?
             WHERE novel_id = ? AND number = ?
         """
         now = datetime.utcnow().isoformat()
@@ -636,6 +645,21 @@ class SqliteChapterRepository(ChapterRepository):
             status = ChapterStatus(raw_status)
         except ValueError:
             status = ChapterStatus.DRAFT
+        tension_score = row.get('tension_score', 50.0)
+        plot_tension = row.get('plot_tension', 50.0)
+        emotional_tension = row.get('emotional_tension', 50.0)
+        pacing_tension = row.get('pacing_tension', 50.0)
+        raw_evaluated = row.get('tension_evaluated')
+        if raw_evaluated is None:
+            # ⚠ 第 82 批（N-01）：**列不存在**（老库没跑迁移）⇒ 退回旧启发式
+            #   （「四列不全是 50.0 ⇒ 评过」）。
+            #   ⚠ 不这么兜底 ⇒ 整条曲线会被判成「全未评估」⇒ 比原来的 bug 更糟。
+            tension_evaluated = any(
+                float(v) != 50.0
+                for v in (tension_score, plot_tension, emotional_tension, pacing_tension)
+            )
+        else:
+            tension_evaluated = bool(raw_evaluated)
         return Chapter(
             id=row['id'],
             novel_id=NovelId(row['novel_id']),
@@ -644,9 +668,12 @@ class SqliteChapterRepository(ChapterRepository):
             content=row['content'],
             outline=row.get('outline', ''),
             status=status,
-            tension_score=row.get('tension_score', 50.0),
-            plot_tension=row.get('plot_tension', 50.0),
-            emotional_tension=row.get('emotional_tension', 50.0),
-            pacing_tension=row.get('pacing_tension', 50.0),
+            tension_score=tension_score,
+            plot_tension=plot_tension,
+            emotional_tension=emotional_tension,
+            pacing_tension=pacing_tension,
             generation_hint=row.get('generation_hint', '') or '',
+            # ⚠ 第 82 批（N-01）：「有没有真的评过」由**独立标记**承载
+            #   （值是不是 50.0 判不出来 —— 「没评过」与「恰好 50 分」同形）。
+            tension_evaluated=tension_evaluated,
         )

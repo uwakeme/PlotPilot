@@ -2232,6 +2232,7 @@ def _write_tension_ephemeral(
                         plot_tension = ?,
                         emotional_tension = ?,
                         pacing_tension = ?,
+                        tension_evaluated = 1,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE novel_id = ? AND number = ?""",
                     (
@@ -2250,8 +2251,11 @@ def _write_tension_ephemeral(
                     tension_dims["composite_score"],
                 )
         elif tension_score is not None:
+            # ⚠ 第 82 批（N-01）：同样是**真实评分** ⇒ 标记一并点亮
+            #   （否则 tension_score=50.0 时它与「占位」在存储层同形）。
             db.execute(
-                "UPDATE chapters SET tension_score = ?, updated_at = CURRENT_TIMESTAMP WHERE novel_id = ? AND number = ?",
+                "UPDATE chapters SET tension_score = ?, tension_evaluated = 1, "
+                "updated_at = CURRENT_TIMESTAMP WHERE novel_id = ? AND number = ?",
                 (float(tension_score), novel_id, chapter_number),
             )
             logger.debug(

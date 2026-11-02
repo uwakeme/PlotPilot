@@ -109,3 +109,34 @@ class SqliteChapterStyleScoreRepository:
             (novel_id, limit),
         )
         return [dict(r) for r in rows]
+
+    def list_recent_by_novel(
+        self, novel_id: str, limit: int = 50
+    ) -> List[dict]:
+        """取**最近** ``limit`` 章的评分（**按章号正序返回**）。
+
+        ⚠ 第 82 批（N-04）：``list_by_novel`` 是 ``ORDER BY chapter_number ASC LIMIT ?``
+          ⇒ 拿到的是**最早**的 N 章。
+          ⇒ 「最近 N 章连续低分」的告警窗口必须用这个方法，
+          否则超过 N 章的书，告警永远反映第 1~N 章。
+
+        ⚠ 返回顺序仍是**正序**（升序）：调用方取尾部 ⇒ 拿到的就是**最新**那几章。
+        """
+        rows = self.db.fetch_all(
+            """
+            SELECT score_id, novel_id, chapter_number, adjective_density,
+                   avg_sentence_length, sentence_count, similarity_score, computed_at
+            FROM chapter_style_scores
+            WHERE novel_id = ?
+              AND chapter_number IN (
+                    SELECT chapter_number
+                      FROM chapter_style_scores
+                     WHERE novel_id = ?
+                     ORDER BY chapter_number DESC
+                     LIMIT ?
+              )
+            ORDER BY chapter_number ASC
+            """,
+            (novel_id, novel_id, limit),
+        )
+        return [dict(r) for r in rows]

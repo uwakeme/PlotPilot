@@ -183,8 +183,11 @@ class VoiceDriftService:
             adjective_density=metrics["adjective_density"],
             avg_sentence_length=metrics["avg_sentence_length"],
             sentence_count=metrics["sentence_count"],
-            # 无指纹基准时存 0.0（NOT NULL 约束），业务层通过 fingerprint 是否存在来区分
-            similarity_score=similarity if similarity is not None else 0.0,
+            # ⚠ 第 82 批（N-05）：**没有基准 ⇒ 这一章没评过** ⇒ 存 None（可空列）
+            #   （此前压成 0.0 ⇒ 与「真·相似度 0.0」同形
+            #    ⇒ 下游那条 `IS NOT NULL` 过滤恒真 ⇒ 无基准的章节被当成
+            #    「相似度 0.0（远低于阈值）」⇒ **每本书的漂移告警都常亮**）
+            similarity_score=similarity,
         )
 
         drift_alert = self._check_drift_alert(novel_id)
@@ -239,8 +242,8 @@ class VoiceDriftService:
             adjective_density=metrics["adjective_density"],
             avg_sentence_length=metrics["avg_sentence_length"],
             sentence_count=metrics["sentence_count"],
-            # 无基准时存 0.0（NOT NULL 约束），业务层通过 fingerprint 是否存在来区分
-            similarity_score=similarity if similarity is not None else 0.0,
+            # ⚠ 第 82 批（N-05）：**没有基准 ⇒ 这一章没评过** ⇒ 存 None（可空列）
+            similarity_score=similarity,
         )
 
         drift_alert = self._check_drift_alert(novel_id)
@@ -411,10 +414,17 @@ class VoiceDriftService:
     def _check_drift_alert(self, novel_id: str) -> bool:
         """检查最近 N 章是否连续低于阈值。
 
-        跳过 similarity_score 为 None 的章节（无指纹基准时不告警）。
+        跳过 similarity_score 为 None 的章节（无指纹基准 ⇒ **没评过**）。
+
+        ⚠ 第 82 批（N-04）：窗口必须是**最近** N 章。
+          此前用的是 ``list_by_novel``，而它是 ``ORDER BY chapter_number ASC LIMIT ?``
+          ⇒ 拿到的是**最早**的 N 章 ⇒ 超过 N 章的书，告警永远反映第 1~N 章。
+          ⇒ 现在改用 ``list_recent_by_novel``（**倒序取最近、正序返回**）。
         """
-        scores = self.score_repo.list_by_novel(novel_id, limit=DRIFT_ALERT_CONSECUTIVE * 2)
-        # 过滤掉 None 值（无指纹基准的章节）
+        scores = self.score_repo.list_recent_by_novel(
+            novel_id, limit=DRIFT_ALERT_CONSECUTIVE * 2
+        )
+        # 过滤掉 None 值（无指纹基准 = 没评过的章节）
         valid_scores = [s for s in scores if s.get("similarity_score") is not None]
 
         if len(valid_scores) < DRIFT_ALERT_CONSECUTIVE:

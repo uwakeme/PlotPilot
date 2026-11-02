@@ -46,6 +46,10 @@ class _ScoreRepo:
     def list_by_novel(self, novel_id, limit=50):
         return list(self.rows)[-limit:]
 
+    def list_recent_by_novel(self, novel_id, limit=50):
+        # ⚠ 第 82 批（N-04）：告警窗口改用「最近 N 章」这个方法
+        return list(self.rows)[-limit:]
+
 
 class _FingerprintRepo:
     def __init__(self, sample_count=0):

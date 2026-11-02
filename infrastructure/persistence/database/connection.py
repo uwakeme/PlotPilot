@@ -322,6 +322,110 @@ def _apply_chapters_word_count_migration(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+#: ``chapter_style_scores`` 重建后的表结构（``similarity_score`` 改可空）。
+#:
+#: ⚠ 第 82 批（N-05）：SQLite **不能** ALTER 掉 NOT NULL ⇒ 只能重建表。
+#: ⚠ 这张表只有「指向 novels 的外键」+「(novel_id, chapter_number) 索引」，
+#:   没有别的表引用它 ⇒ 重建是安全的。
+_CHAPTER_STYLE_SCORES_DDL = """
+CREATE TABLE IF NOT EXISTS chapter_style_scores (
+    score_id TEXT PRIMARY KEY,
+    novel_id TEXT NOT NULL,
+    chapter_number INTEGER NOT NULL,
+    adjective_density REAL NOT NULL DEFAULT 0.0,
+    avg_sentence_length REAL NOT NULL DEFAULT 0.0,
+    sentence_count INTEGER NOT NULL DEFAULT 0,
+    similarity_score REAL DEFAULT 0.0,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
+    UNIQUE(novel_id, chapter_number)
+)
+"""
+
+
+def _apply_chapter_style_scores_nullable_similarity(conn: sqlite3.Connection) -> None:
+    """把 ``chapter_style_scores.similarity_score`` 改成**可空**（第 82 批 · N-05）。
+
+    ⚠ 病根：该列是 ``NOT NULL DEFAULT 0.0`` ⇒ 「**没评过**」（没有作者风格基准）
+      被压成 0.0 ⇒ 与「真·相似度 0.0」在存储层**同形**
+      ⇒ 下游那条 ``similarity_score IS NOT NULL`` 的过滤恒真
+      ⇒ 无基准的章节被当成「相似度 0.0（远低于阈值 0.75）」
+      ⇒ **每本书的漂移告警都常亮**（生产实测：三本书的
+      ``last_audit_drift_alert`` 全是 1，而 ``last_audit_similarity`` 是 NULL）。
+
+    ⚠ 为什么是**代码级补丁**而不是 .sql 迁移文件：
+      重建表是**多语句**的，而迁移运行器「一条语句失败就跳过继续」
+      ⇒ 中途失败会留下半张表 ⇒ **丢数据**。
+      ⇒ 这里自己控事务：失败就整体回滚。
+
+    ⚠ 回填口径：只有「**这本书根本没有合格的作者基准**」的行才置 NULL
+      （没基准 ⇒ 那本书的相似度只可能是占位 0.0）。
+      有基准的书**一律保留原值** ⇒ 宁可留着「可能真实」的 0.0，
+      也不误删真实评分。
+    """
+    try:
+        cur = conn.execute("PRAGMA table_info(chapter_style_scores)")
+        cols = {row[1]: row for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if "similarity_score" not in cols:
+        return
+    if not cols["similarity_score"][3]:
+        return  # notnull == 0 ⇒ 已经可空 ⇒ 不用动
+
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "CREATE TABLE chapter_style_scores_new (\n"
+            "    score_id TEXT PRIMARY KEY,\n"
+            "    novel_id TEXT NOT NULL,\n"
+            "    chapter_number INTEGER NOT NULL,\n"
+            "    adjective_density REAL NOT NULL DEFAULT 0.0,\n"
+            "    avg_sentence_length REAL NOT NULL DEFAULT 0.0,\n"
+            "    sentence_count INTEGER NOT NULL DEFAULT 0,\n"
+            "    similarity_score REAL DEFAULT 0.0,\n"
+            "    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n"
+            "    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,\n"
+            "    UNIQUE(novel_id, chapter_number)\n"
+            ")"
+        )
+        # ⚠ 回填：**没有合格基准**的书 ⇒ 相似度只可能是占位 ⇒ 置 NULL
+        conn.execute(
+            """
+            INSERT INTO chapter_style_scores_new
+                (score_id, novel_id, chapter_number, adjective_density,
+                 avg_sentence_length, sentence_count, similarity_score, computed_at)
+            SELECT s.score_id, s.novel_id, s.chapter_number, s.adjective_density,
+                   s.avg_sentence_length, s.sentence_count,
+                   CASE WHEN EXISTS (
+                        SELECT 1 FROM voice_fingerprint f
+                         WHERE f.novel_id = s.novel_id
+                           AND COALESCE(f.sample_count, 0) >= 10
+                   ) THEN s.similarity_score ELSE NULL END,
+                   s.computed_at
+              FROM chapter_style_scores s
+            """
+        )
+        conn.execute("DROP TABLE chapter_style_scores")
+        conn.execute(
+            "ALTER TABLE chapter_style_scores_new RENAME TO chapter_style_scores"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chapter_style_scores_novel "
+            "ON chapter_style_scores(novel_id, chapter_number)"
+        )
+        conn.commit()
+        logger.info("chapter_style_scores migration: similarity_score is now nullable")
+    except Exception as exc:  # noqa: BLE001 —— 重建失败不许拖垮启动
+        conn.rollback()
+        logger.warning("chapter_style_scores migration failed (kept old table): %s", exc)
+    finally:
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.OperationalError:
+            pass
+
+
 def _apply_chapter_summaries_enhancements(conn: sqlite3.Connection) -> None:
     """为 chapter_summaries 表补齐节拍和摘要扩展字段"""
     cur = conn.execute("PRAGMA table_info(chapter_summaries)")
@@ -485,6 +589,7 @@ class DatabaseConnection:
         _apply_chapter_summaries_enhancements(conn)
         _apply_chapters_word_count_migration(conn)
         _apply_chapters_generation_hint_migration(conn)
+        _apply_chapter_style_scores_nullable_similarity(conn)
         _apply_bible_props_is_key_migration(conn)
         _ensure_triple_provenance_table(conn)
         _apply_migration_files(conn)

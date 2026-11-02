@@ -42,6 +42,10 @@ class _ScoreRepo:
     def list_by_novel(self, novel_id, limit=10):
         return []
 
+    def list_recent_by_novel(self, novel_id, limit=10):
+        # ⚠ 第 82 批（N-04）：告警窗口改用「最近 N 章」这个方法
+        return []
+
 
 class _FakeLLMVoiceService:
     """记录自己被调用的假 LLM 文风服务。"""

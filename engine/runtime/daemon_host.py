@@ -349,6 +349,9 @@ class DaemonHostMixin:
         if tension_score is not None:
             set_parts.append("tension_score = ?")
             params.append(tension_score)
+            # ⚠ 第 82 批（N-01）：写入真实张力 ⇒ 标记一并点亮
+            #   （四列的 50.0 是占位，「评没评过」必须由独立标记承载）。
+            set_parts.append("tension_evaluated = 1")
         if plot_tension is not None:
             set_parts.append("plot_tension = ?")
             params.append(plot_tension)
