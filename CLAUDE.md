@@ -134,16 +134,39 @@ scripts/start_daemon.py :: build_daemon()
 
 **Step order ≠ definition order.** The orchestration calls `_step_find_next_chapter → _step_prepare_governance → _step_prepare_chapter_plan → _step_build_context → _step_generate` (grep the `self._step_*` call sites in `run_chapter`, not `def _step_`). This matters: `build_context` sits **after** `prepare_chapter_plan`, so anything a step writes into `ctx.outline` gets overwritten by that step's preplan result.
 
-### AI-participation switches (all default OFF)
+### AI-participation switches
 
-Four runtime switches live in `config/performance.yaml`. Off ⇒ behavior is byte-identical to before the switch existed.
+Two different mechanisms, and only one of them is per-feature:
 
-| Switch | Section | Effect |
-| --- | --- | --- |
-| D-02 context weights | `context_weights:` | AI judges which context slots this chapter needs most. **`enabled` alone does nothing** — `shadow: true` records without applying; both must change. |
-| D-01 chapter rhythm | `chapter_mode:` | AI decides whether this is a 余韵章. `enabled` only decides+logs; `apply` actually injects the pacing directive into the preplan prompt. |
-| D-05 chapter words | `chapter_target:` | AI proposes per-chapter word count within ±`max_deviation_ratio` (0.30); outside the band is rejected. |
-| F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. |
+**① The master switch (the actual rollback path)** — `config/performance.yaml` → `ai_participation:`.
+
+```yaml
+ai_participation:
+  master_enabled: true      # false ⇒ every registered AI capability stops calling the model
+  disabled_features: []     # name individual features to disable while the master is on
+```
+
+`ai_participation_enabled(feature)` (`application/engine/services/ai_participation_settings.py`) is the gate; the 25 registered feature ids live in `AI_PARTICIPATION_FEATURES`, and every one of them has a **real short-circuit gate on the model-call path** (guards: `test_ai_participation_master_switch.py`, `test_ai_participation_master_switch_coverage.py`, `test_ai_participation_gate_dominance.py`).
+
+⚠ The master switch reads **config only** — no env level, no novel level. Two features (`plot_point_classifier`, `character_belief_check`) have **no code fallback**: with the gate closed their judgement simply does not exist (marked UNASSESSED, never faked).
+
+**② The unified switch layer** (`application/engine/services/ai_switch_layer.py`) — priority `novel.generation_prefs.ai_switches` > `PLOTPILOT_AI_<KEY>` (name derived from the key) > default.
+
+⚠ It registers only **5 keys** and effectively serves **3 features** (D-01 / D-02 / F-04). The other 22 features have **no per-feature switch** — only the master switch. "Roll back per novel" is therefore **not available** for them.
+
+The per-capability config sections:
+
+| Switch | Section | Effect | Current state |
+| --- | --- | --- | --- |
+| D-02 context weights | `context_weights:` | AI judges which context slots this chapter needs most. **`enabled` alone does nothing** — `shadow: true` records without applying; both must change. | **ON** (grayscale: `enabled: true` + `shadow: false`) |
+| D-01 chapter rhythm | `chapter_mode:` | AI decides whether this is a 余韵章. `enabled` only decides+logs; `apply` actually injects the pacing directive into the preplan prompt. | OFF |
+| D-05 chapter words | `chapter_target:` | AI proposes per-chapter word count within ±`max_deviation_ratio` (0.30); outside the band is rejected. | **ON** (grayscale) |
+| E-06 rhythm quota | `rhythm_quota:` | AI assigns the chapter's pacing quota (replaces the hardcoded golden-three-chapters table). | **ON** (grayscale) |
+| E-01b chapter plan shape | `chapter_plan_structure:` | AI may choose its own paragraph structure instead of the fixed seven-section script. | OFF |
+| F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. | OFF |
+
+⚠ **Which channels are ON is a registry, not a memory** — `tests/unit/test_ai_participation_grayscale_state.py` pins the current state, because a grayscale switch that is silently flipped is the easiest thing to miss. Change the config **and** that table together.
+⚠ When a channel is ON the behavior is **no longer** byte-identical to pre-switch; degradation is always "cannot decide ⇒ do not inject" (never a fallback value passed off as a decision). The dataclass baselines stay OFF — they are the fallback when a config section is missing.
 
 ## Engine Subsystems
 
@@ -189,7 +212,7 @@ There is no DI container. Dependencies are module-level factory functions in **`
 
 ### Prompt strategy (CPMS)
 
-"Prompt injection points" are CPMS **node keys**. The real count is **82**, not "20+".
+"Prompt injection points" are CPMS **node keys**. The real count is **102** (`prompt_keys.ALL_KEYS`), not "20+", and not "82" (that number was the count as of 2026-10).
 
 - `infrastructure/ai/prompt_keys.py` — the single source of truth. Business code must import constants from here rather than hardcoding strings.
 - `infrastructure/ai/prompt_packages/nodes/<node_key>/` — seed content: `package.yaml` (metadata + `variables`), `system.md`, `user.md`, optional `extras.json`. `bundle_meta.yaml` carries the version.
