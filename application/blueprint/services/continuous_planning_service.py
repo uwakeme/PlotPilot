@@ -50,7 +50,10 @@ from application.blueprint.services.chapter_plan_renderer import (
     stringify_plan_value,
 )
 from application.blueprint.services.chapter_continuity_ledger import ChapterContinuityLedgerService
-from application.blueprint.services.chapter_planning_policy import validate_lightweight_act_plan
+from application.blueprint.services.chapter_planning_policy import (
+    resolve_ai_chapter_count_proposal,
+    validate_lightweight_act_plan,
+)
 from application.audit.services.macro_merge_engine import MacroMergeEngine, MergePlan, MergeConflictException
 from application.blueprint.services.chapter_book_structure_sync import (
     collect_structure_chapter_numbers,
@@ -1832,12 +1835,26 @@ class ContinuousPlanningService:
         chapters = plan.get("chapters", [])
         if not isinstance(chapters, list):
             chapters = []
-        errors = validate_lightweight_act_plan(chapters, expected_count=chapter_count)
+        # C-01：AI 可以报「本幕只需 N 章」⇒ 校验用**它报的数字**，
+        # 而不是代码解析出来的参考章数（此前这一条让 AI 没有任何出口）。
+        # ⚠ 代码保留的不变量：不增章、章号连续、伏笔配对。
+        proposal = plan.get("proposed_chapter_count")
+        accepted, effective_count, rejection = resolve_ai_chapter_count_proposal(
+            proposal, chapter_count
+        )
+        if rejection:
+            logger.warning(
+                "[ActPlanning] AI 报的章数未被采纳 act=%s proposal=%r reason=%s",
+                act_id,
+                proposal,
+                rejection,
+            )
+        errors = validate_lightweight_act_plan(chapters, expected_count=effective_count)
         if errors:
             logger.warning(
                 "幕级规划不完整或被截断 act=%s expected=%s errors=%s",
                 act_id,
-                chapter_count,
+                effective_count,
                 errors,
             )
             return {
@@ -1846,12 +1863,21 @@ class ContinuousPlanningService:
                 "chapters": [],
                 "error": "章节规划不完整/被截断",
                 "validation_errors": errors,
+                # ⚠ 失败也要带上「用的哪个章数、来源是谁」⇒ 排查时能看见是不是提案惹的祸
+                "act_chapter_count": effective_count,
+                "act_chapter_count_source": "ai" if accepted else "code",
+                "act_chapter_count_rejection": rejection,
             }
 
         return {
             "success": True,
             "act_id": act_id,
             "chapters": chapters,
+            # ⚠ C-01：来源如实 —— 「这一幕几章」到底是 AI 定的还是代码定的，必须看得见。
+            #   章数比参考值少 ⇒ 差额走「增量补章」（目标预算那边的事，J-01）。
+            "act_chapter_count": effective_count,
+            "act_chapter_count_source": "ai" if accepted else "code",
+            "act_chapter_count_rejection": rejection,
         }
 
     async def _remove_chapter_children_of_act(self, act_id: str) -> None:

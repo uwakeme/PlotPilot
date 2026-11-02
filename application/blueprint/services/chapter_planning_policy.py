@@ -27,6 +27,41 @@ class ChapterPlanningPolicy:
 DEFAULT_CHAPTER_PLANNING_POLICY = ChapterPlanningPolicy()
 
 
+def resolve_ai_chapter_count_proposal(
+    proposal: Any, budget_count: int
+) -> tuple[bool, int, str]:
+    """AI 报的「**本幕只需 N 章**」能不能采纳。
+
+    背景（登记表 C-01）
+    ------------------
+    此前「每幕章数」由**代码侧**解析（custom → ``suggested_chapter_count`` → 公式），
+    提示词还写着「请为这一幕规划 {chapter_count} 个章节」「必须严格输出 {chapter_count} 章」
+    ⇒ **AI 没有任何「这一幕其实只需更少章」的出口**，
+    而「这一幕该多长」是创作判断 ⇒ 登记表 C-01 的「该谁定」列写着「AI」。
+
+    ⇒ 现在 AI 可以报一个更小的数字；代码守的不变量：
+      * **不增章**（增章会破坏全书总量守恒 ⇒ 那是 J-01 目标预算的职责，不在本通道）；
+      * 章号连续、伏笔配对（由 :func:`validate_lightweight_act_plan` 保证）。
+
+    返回 ``(是否采纳, 实际用的章数, 拒绝理由)``。
+    ⚠ 拒绝时**必须给理由**（不静默）—— 静默回落 = 「AI 说了但没人听见」。
+    """
+    if proposal is None:
+        # AI 没报 ⇒ 用代码解析出来的参考章数（= 改造前的行为，逐位一致）
+        return False, budget_count, ""
+    if isinstance(proposal, bool) or not isinstance(proposal, int):
+        return False, budget_count, "AI 报的章数不是整数"
+    if proposal <= 0:
+        return False, budget_count, "AI 报的章数非正"
+    if proposal > budget_count:
+        return (
+            False,
+            budget_count,
+            "AI 报的章数超过参考章数（增章由目标预算负责，不在本通道）",
+        )
+    return True, proposal, ""
+
+
 #: 七段执行剧本的**段标题 + 计数单位**（**唯一一处**定义「哪七段、每段怎么报数」）。
 #:
 #: ⚠ E-01a：此前这段「标题 + 计数单位」在 `chapter_plan_renderer.py` 的段落表里
