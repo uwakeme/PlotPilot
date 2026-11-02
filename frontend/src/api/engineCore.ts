@@ -109,7 +109,12 @@ export interface GuardrailCheckRequest {
 export interface GuardrailDimensionScore {
   name: string
   key: string
-  score: number
+  /**
+   * ⚠ 可空：**null = 该维度未评估**（不是 0 分）。
+   * ⚠ 第 81 批：此前类型写的是 `number` ⇒ 前端把它当真值用
+   *   ⇒ `Math.round(null * 100)` = 0 ⇒ 未评估被画成红色 0 分。
+   */
+  score: number | null
   weight: number
 }
 
@@ -124,8 +129,12 @@ export interface GuardrailViolationDTO {
 }
 
 export interface GuardrailCheckResponse {
-  overall_score: number
-  passed: boolean
+  /** ⚠ 可空：**null = 护栏本次没跑成 / 无任何可评估维度**（不是 0 分）。 */
+  overall_score: number | null
+  /** ⚠ 可空：**null = 未评估**（既不是通过也不是不通过）。 */
+  passed: boolean | null
+  /** decided | unassessed | blocked */
+  state?: string | null
   dimensions: GuardrailDimensionScore[]
   violations: GuardrailViolationDTO[]
 }

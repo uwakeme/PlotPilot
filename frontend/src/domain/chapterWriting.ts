@@ -136,7 +136,12 @@ export function getCastRecommendationCssKey(value?: unknown): string {
   return CAST_RECOMMENDATION_META[key]?.cssKey ?? 'ignore'
 }
 
-export function getGuardrailScoreColor(score: number): string {
+export function getGuardrailScoreColor(score: number | null | undefined): string {
+  // ⚠ 第 81 批：null = **未评估** ⇒ 中性色。
+  //   此前 null 一路走到最后一行 ⇒ **红色** ⇒ 「没评」被画成「0 分（红）」。
+  if (score === null || score === undefined || !Number.isFinite(score)) {
+    return 'var(--app-text-muted)'
+  }
   if (score >= 0.75) return '#10b981'
   if (score >= 0.5) return '#f59e0b'
   return '#ef4444'

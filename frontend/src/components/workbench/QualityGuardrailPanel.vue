@@ -7,8 +7,14 @@
       <div class="guardrail-header">
         <n-space align="center" :size="8">
           <n-text strong>第 {{ chapter.number }} 章 质量检查</n-text>
-          <n-tag v-if="lastReport" :type="lastReport.passed ? 'success' : 'warning'" size="small" round>
-            {{ lastReport.passed ? '✓ 通过' : '✗ 未通过' }}
+          <n-tag
+            v-if="lastReport"
+            :type="lastReport.passed === null ? 'info' : lastReport.passed ? 'success' : 'warning'"
+            size="small"
+            round
+          >
+            <!-- ⚠ 第 81 批：未评估（passed === null）**不是**「未通过」 -->
+            {{ lastReport.passed === null ? '— 未评估' : lastReport.passed ? '✓ 通过' : '✗ 未通过' }}
           </n-tag>
         </n-space>
         <n-space :size="8">
@@ -45,17 +51,18 @@
             <div class="overall-score">
               <n-progress
                 type="circle"
-                :percentage="Math.round(lastReport.overall_score * 100)"
+                :percentage="scorePercent(lastReport.overall_score)"
                 :stroke-width="8"
                 :color="scoreColor(lastReport.overall_score)"
                 :rail-color="'var(--n-border-color)'"
                 style="width: 80px"
               >
-                {{ Math.round(lastReport.overall_score * 100) }}
+                <!-- ⚠ 第 81 批：未评估 ⇒ 显示「—」，不是红色 0 分 -->
+                {{ scoreText(lastReport.overall_score) }}
               </n-progress>
               <div class="overall-meta">
                 <n-text depth="3" style="font-size: 12px">综合评分</n-text>
-                <n-text style="font-size: 20px; font-weight: 700">{{ (lastReport.overall_score * 100).toFixed(0) }}</n-text>
+                <n-text style="font-size: 20px; font-weight: 700">{{ scoreText(lastReport.overall_score) }}</n-text>
               </div>
             </div>
           </n-card>
@@ -70,14 +77,15 @@
                 <n-text depth="3" style="font-size: 12px; min-width: 72px">{{ dim.name }}</n-text>
                 <n-progress
                   type="line"
-                  :percentage="Math.round(dim.score * 100)"
+                  :percentage="scorePercent(dim.score)"
                   :height="12"
                   :color="scoreColor(dim.score)"
                   :show-indicator="false"
                   style="flex: 1"
                 />
                 <n-text style="font-size: 12px; min-width: 36px; text-align: right">
-                  {{ Math.round(dim.score * 100) }}
+                  <!-- ⚠ 第 81 批：未评估的维度 ⇒ 「—」，不是 0 -->
+                  {{ scoreText(dim.score) }}
                 </n-text>
                 <n-text depth="3" style="font-size: 10px; min-width: 48px; text-align: right; white-space: nowrap">
                   ×{{ (dim.weight * 100).toFixed(0) }}%
@@ -118,6 +126,11 @@
               </n-collapse-item>
             </n-collapse>
           </n-card>
+
+          <!-- 未评估：没有结论，**不许**说「检查通过」 -->
+          <n-alert v-else-if="lastReport.passed === null" type="info" :show-icon="true" style="margin-top: 8px">
+            本次护栏**未评估**（没有结论）：既不是通过也不是不通过。
+          </n-alert>
 
           <!-- 无违规 -->
           <n-alert v-else type="success" :show-icon="true" style="margin-top: 8px">
@@ -181,8 +194,20 @@ const lastReport = ref<GuardrailCheckResponse | null>(null)
 
 const modeOptions = GUARDRAIL_MODE_OPTIONS
 
-function scoreColor(score: number): string {
+function scoreColor(score: number | null | undefined): string {
   return getGuardrailScoreColor(score)
+}
+
+/** ⚠ 第 81 批：未评估（null）⇒ 百分比按 0 画空条，但**文字**显示「—」。 */
+function scorePercent(score: number | null | undefined): number {
+  if (score === null || score === undefined || !Number.isFinite(score)) return 0
+  return Math.round(score * 100)
+}
+
+/** ⚠ 第 81 批：未评估 ⇒ 「—」（不是 0）。 */
+function scoreText(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score)) return '—'
+  return String(Math.round(score * 100))
 }
 
 function severityType(sev: string): 'error' | 'warning' | 'info' | 'default' {
