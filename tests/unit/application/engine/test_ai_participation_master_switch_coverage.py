@@ -65,22 +65,43 @@ def _rel(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
 
 
+#: LLMService 协议上的「打模型」方法名（出模型口就这两个）。
+_MODEL_CALL_METHODS = ("generate", "stream_generate")
+
+
+def _is_id_factory(func: ast.Attribute) -> bool:
+    """``StoryId.generate()`` / ``PropId.generate()`` ⇒ **ID 工厂**，不是模型调用。
+
+    ⚠ 第 82 批（N-11）：探测器放宽后，值对象工厂（``XxxId.generate()``）
+      会被当成「打模型」⇒ 分类清单被迫收录一堆实体文件 ⇒ 清单被噪音淹没。
+      ⇒ 显式排除「接收者名以 ``Id``/``_id`` 结尾」的调用。
+    """
+    base = func.value
+    name = getattr(base, "attr", None) or getattr(base, "id", None) or ""
+    return func.attr == "generate" and (name.endswith("Id") or name.endswith("_id"))
+
+
 def _calls_model(tree: ast.AST) -> bool:
     """这个模块会不会真的发起模型调用？
 
-    判据：**属性调用** ``<名字里带 llm 的东西>.generate(...)``。
-    只看 ``ast.Call`` + ``ast.Attribute``，不靠字符串匹配 ⇒
-    注释里写 ``llm.generate(...)`` 不会误判。
+    ⚠ 第 82 批（N-11）：判据从「``<名字里带 llm 的东西>.generate(...)``」
+      放宽成「**任意接收者**的 ``.generate(...)`` / ``.stream_generate(...)``」。
+
+    为什么放宽：旧判据有两个盲区 ⇒ 8 个真打模型的模块**从来没被归类过**
+    （分类清单一直残缺 ⇒ 将来再写一个同类模块会静默漏登记）：
+      * ``stream_generate(...)``（属性名不是 ``generate`` ⇒ 旧判据看不见）；
+      * ``self._attempt_service.generate(...)``（接收者名不带 ``llm`` ⇒ 旧判据看不见）。
+
+    ⚠ 仍然只看 ``ast.Call`` + ``ast.Attribute`` ⇒ 注释里写 ``llm.generate(...)``
+      不会误判。
     """
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not isinstance(func, ast.Attribute) or func.attr != "generate":
+        if not isinstance(func, ast.Attribute):
             continue
-        base = func.value
-        name = getattr(base, "attr", None) or getattr(base, "id", None)
-        if name and "llm" in name.lower():
+        if func.attr in _MODEL_CALL_METHODS and not _is_id_factory(func):
             return True
     return False
 
@@ -304,6 +325,36 @@ def _model_calling_modules() -> dict[str, Path]:
 
 
 # ───────────────────────── A1 · 分类完备 ─────────────────────────
+
+
+#: ⚠ 第 82 批（N-11）：**探测器必须能看见**这些模块。
+#:
+#: ⚠ 为什么要有这条：分类守卫是**单向**的（分类表里有但探测器看不见 ⇒ 不报红）
+#: ⇒ 探测器一旦被改弱，那 8 个模块就会**悄悄退出分类范围**而没人知道。
+#: ⇒ 这里把「探测器必须命中」的名单**写死** ⇒ 探测器变弱 ⇒ 立刻红。
+#:
+#: ⚠ 这 8 个正是第 82 批探测器放宽前**看不见**的那些（`stream_generate` /
+#:   `_attempt_service.generate` 这两种形状）。
+MODEL_CALLING_MODULES_THAT_MUST_BE_DETECTED: tuple[str, ...] = (
+    "application/ai_invocation/gateway.py",
+    "application/ai_invocation/autopilot/orchestrator.py",
+    "application/engine/dag/plan/outline_beat_planner.py",
+    "engine/runtime/daemon_host.py",
+    "infrastructure/ai/llm_client.py",
+    "infrastructure/ai/provider_factory.py",
+    "infrastructure/ai/providers/mock_provider.py",
+    "interfaces/api/v1/engine/ai_invocation_routes.py",
+)
+
+
+def test_the_detector_finds_every_known_model_calling_module():
+    """⚠ 探测器**不许**变弱（变弱 ⇒ 模块悄悄退出分类范围）。"""
+    hits = _model_calling_modules()
+    missing = [rel for rel in MODEL_CALLING_MODULES_THAT_MUST_BE_DETECTED if rel not in hits]
+    assert not missing, (
+        "探测器看不见这些真打模型的模块了（判据被改弱？）⇒ 它们会悄悄退出分类范围：\n"
+        + "\n".join(f"  - {rel}" for rel in missing)
+    )
 
 
 def test_every_model_calling_module_is_classified():
@@ -735,6 +786,36 @@ def test_the_features_without_a_fallback_are_declared_and_documented():
         assert feature in settings_source, (
             f"{feature} 没在总闸模块里被点名 ⇒ 「关闸=回到改造前行为」的表述会误导"
         )
+
+
+#: ⚠ 第 82 批（N-12）：**必须**在这张名单里的能力（写死字面量）。
+#:
+#: ⚠ 为什么要有这条：上面那条守卫是**单向**的（只查「名单里的都在册」）
+#: ⇒ 把某一项**从名单里删掉**它照样绿 ⇒ 「关闸=回到改造前行为」这句不实陈述
+#: 就会重新混进来（这正是 N-12 的病：`emotion_ledger` 被漏掉）。
+FEATURES_WITHOUT_CODE_FALLBACK_REQUIRED: tuple[str, ...] = (
+    "plot_point_classifier",   # F-08：剧情点标签的阈值表已刻意删除
+    "character_belief_check",  # H-03：信念冲突的关键词表 + 正则已刻意删除
+    "emotion_ledger",          # G-04：没有规则版抽取器 ⇒ 关闸 = 账本全空
+)
+
+
+def test_the_required_no_fallback_features_are_still_declared():
+    """⚠ 这几项**关闸 = 这项能力本轮不存在**（不是「回到改造前行为」）⇒ 不许被摘掉。"""
+    from application.engine.services.ai_participation_settings import (
+        FEATURES_WITHOUT_CODE_FALLBACK,
+    )
+
+    missing = [
+        feature
+        for feature in FEATURES_WITHOUT_CODE_FALLBACK_REQUIRED
+        if feature not in FEATURES_WITHOUT_CODE_FALLBACK
+    ]
+    assert not missing, (
+        "这些能力没有代码兜底，却没被登记进「无代码兜底」名单 ⇒ "
+        "「关闸 ⇒ 回到改造前行为」这句话对它们不成立：\n"
+        + "\n".join(f"  - {feature}" for feature in missing)
+    )
 
 
 def test_the_feature_table_ids_are_snake_case():

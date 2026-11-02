@@ -74,10 +74,16 @@ AI_PARTICIPATION_FEATURES: tuple[str, ...] = (
 #:   ⇒ 没有可回落的东西 ⇒ 关闸后它们只能标「未评估」。
 #: ⇒ 「关闸 ⇒ 回到改造前行为」这句话**对它们不成立**（第 3 批三次复审 R4）。
 #:
+#: ⚠ 第 82 批（N-12）：**G-04 `emotion_ledger` 也在这张表里** ——
+#:   关闸后 ``EmotionLedgerExtractor.extract_deltas`` 返回 ``_empty_deltas()``，
+#:   而模块里**没有任何规则版的情绪抽取器** ⇒ 关闸 = **账本全空**，
+#:   不是「回到改造前行为」（改造前根本没有情绪账本）。
+#:
 #: 其余登记在册的能力都有代码兜底 ⇒ 关闸 = 回到改造前行为。
 FEATURES_WITHOUT_CODE_FALLBACK: tuple[str, ...] = (
     "plot_point_classifier",  # F-08：剧情点标签的阈值表已刻意删除
     "character_belief_check",  # H-03：信念冲突的关键词表 + 正则已刻意删除
+    "emotion_ledger",  # G-04：没有规则版抽取器 ⇒ 关闸 = 账本全空
 )
 
 #: 走「settings 模块」**间接**接闸的服务（服务本身不直接调用总闸）。
@@ -163,6 +169,21 @@ AI_PARTICIPATION_CORE_PIPELINE_MODULES: frozenset[str] = frozenset(
     {
         "application/ai/llm_control_service.py",
         "application/ai/structured_json_pipeline.py",
+        # ── 第 82 批（N-11）：探测器放宽后**暴露**出来的 8 个真打模型的模块 ──
+        # 此前分类守卫的探测器只认「<名字带 llm 的东西>.generate(...)」
+        # ⇒ 看不见 ``stream_generate`` 与 ``self._attempt_service.generate(...)``
+        # ⇒ 这 8 个模块**从来没被归类过** ⇒ 分类清单一直是残缺的。
+        # ⚠ 归类是**声明**，不是「它们不受总闸管辖」的结论：
+        #   它们要么是**出模型口本身**（关掉 = 写不出书），
+        #   要么是**把模型调用转发出去**的通道 ⇒ 都属核心链路。
+        "application/ai_invocation/gateway.py",  # CPMS 调用网关（生产主路）
+        "application/ai_invocation/autopilot/orchestrator.py",  # 自动驾驶的调用编排
+        "application/engine/dag/plan/outline_beat_planner.py",  # DAG 大纲节拍规划
+        "engine/runtime/daemon_host.py",  # 守护进程（正文生成等）
+        "infrastructure/ai/llm_client.py",  # LLM 客户端（出模型口）
+        "infrastructure/ai/provider_factory.py",  # provider 工厂（最终出模型口）
+        "infrastructure/ai/providers/mock_provider.py",  # Mock provider（同一出口）
+        "interfaces/api/v1/engine/ai_invocation_routes.py",  # 调用网关的 HTTP 入口
         # ── 第 63 批：AI 调用通道（CPMS invocation）的**统一出模型口** ──
         # `AttemptService.generate / generate_streaming` 直接调 `LLMService`
         # ⇒ 正文生成（chapter.generate.prose）、A1 审计、章后同步、桥接修复…
