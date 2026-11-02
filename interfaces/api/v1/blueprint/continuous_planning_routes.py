@@ -312,7 +312,15 @@ async def generate_macro_plan(
                 result = await service.generate_macro_plan(
                     novel_id=novel_id,
                     target_chapters=request.target_chapters,
-                    structure_preference=request.structure.dict()
+                    # ⚠ 第 82 批（N-08）：``structure`` 是**可选**的
+                    #   （``MacroPlanRequest.structure: Optional[StructurePreference] = None``）
+                    #   ⇒ 此前直接 ``request.structure.dict()`` ⇒ 不传就 AttributeError。
+                    #   ⚠ 顺带用 ``model_dump()``（``.dict()`` 在 Pydantic v2 已废弃）。
+                    structure_preference=(
+                        request.structure.model_dump()
+                        if request.structure is not None
+                        else None
+                    ),
                 )
                 service.store_macro_plan_result(novel_id, result)
             except Exception as e:

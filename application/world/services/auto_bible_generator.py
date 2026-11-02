@@ -25,6 +25,23 @@ from infrastructure.ai.prompt_keys import (
 
 logger = logging.getLogger(__name__)
 
+# ⚠ 第 82 批（N-07）：三元组**谓词的来源**必须可分辨。
+#:
+#: A-05 要求「关系谓词由 AI 定」，但**旧格式**分支（关系是字符串）里
+#: 谓词是**代码按关键词猜的**（``"师徒" in rel`` → 「师徒关系」…）
+#: ⇒ 而所有三元组的 ``confidence`` 又都写死 0.9
+#: ⇒ **代码的猜测**与**AI 的判断**在数据上完全同形 ⇒ 下游分不出来。
+#:
+#: ⇒ 现在：谓词来源进 ``attributes["predicate_source"]``，
+#:   置信度按来源分档（猜的必须低于 AI 给的）。
+PREDICATE_SOURCE_AI = "ai"
+PREDICATE_SOURCE_KEYWORD_GUESS = "keyword_guess"
+
+#: 谓词由 **AI** 给出时的三元组置信度
+AI_DERIVED_TRIPLE_CONFIDENCE = 0.9
+#: 谓词由**代码关键词猜**时的置信度（**必须低于** AI 给的 ⇒ 两者可分辨）
+KEYWORD_GUESSED_TRIPLE_CONFIDENCE = 0.5
+
 
 # ============================================================================
 # 流式 JSON 数组增量解析器
@@ -1475,6 +1492,9 @@ class AutoBibleGenerator:
                     target_name = None
                     predicate = "关系"
                     description = rel
+                    # ⚠ 第 82 批（N-07）：谓词是**代码按关键词猜的** ⇒ 来源与置信度都降级
+                    predicate_source = PREDICATE_SOURCE_KEYWORD_GUESS
+                    confidence = KEYWORD_GUESSED_TRIPLE_CONFIDENCE
 
                     # 简单的名称匹配
                     for other_id, other_data in character_ids:
@@ -1498,6 +1518,9 @@ class AutoBibleGenerator:
                     target_name = rel.get("target")
                     predicate = rel.get("relation", "关系")
                     description = rel.get("description", "")
+                    # ⚠ 谓词是 **AI 给的** ⇒ 来源与置信度如实记
+                    predicate_source = PREDICATE_SOURCE_AI
+                    confidence = AI_DERIVED_TRIPLE_CONFIDENCE
 
                 # 查找目标人物ID
                 target_char_id = name_to_id.get(target_name)
@@ -1515,7 +1538,8 @@ class AutoBibleGenerator:
                         predicate=predicate,
                         object_type="character",
                         object_id=target_char_id,
-                        confidence=0.9,
+                        # ⚠ 第 82 批（N-07）：置信度按**谓词来源**分档（不再是写死的 0.9）
+                        confidence=confidence,
                         source_type=SourceType.BIBLE_GENERATED,
                         description=description,
                         attributes={
@@ -1523,6 +1547,8 @@ class AutoBibleGenerator:
                             "object_label": target_name,
                             "subject_importance": subj_imp,
                             "object_importance": obj_imp,
+                            # ⚠ 谓词来源可分辨（AI 给的 vs 代码猜的）
+                            "predicate_source": predicate_source,
                         },
                         created_at=datetime.now(),
                         updated_at=datetime.now()
@@ -1553,6 +1579,9 @@ class AutoBibleGenerator:
                     target_name = None
                     predicate = "连接"
                     description = conn
+                    # ⚠ 第 82 批（N-07）：连接类型是**代码按关键词猜的** ⇒ 来源与置信度都降级
+                    predicate_source = PREDICATE_SOURCE_KEYWORD_GUESS
+                    confidence = KEYWORD_GUESSED_TRIPLE_CONFIDENCE
 
                     # 简单的名称匹配
                     for other_id, other_data in location_ids:
@@ -1574,6 +1603,9 @@ class AutoBibleGenerator:
                     target_name = conn.get("target")
                     predicate = conn.get("relation", "连接")
                     description = conn.get("description", "")
+                    # ⚠ 连接类型是 **AI 给的** ⇒ 来源与置信度如实记
+                    predicate_source = PREDICATE_SOURCE_AI
+                    confidence = AI_DERIVED_TRIPLE_CONFIDENCE
 
                 pred_norm = (predicate or "").strip()
                 if pred_norm == "位于":
@@ -1597,7 +1629,8 @@ class AutoBibleGenerator:
                         predicate=predicate,
                         object_type="location",
                         object_id=target_loc_id,
-                        confidence=0.9,
+                        # ⚠ 第 82 批（N-07）：置信度按**谓词来源**分档（不再是写死的 0.9）
+                        confidence=confidence,
                         source_type=SourceType.BIBLE_GENERATED,
                         description=description,
                         attributes={
@@ -1607,6 +1640,8 @@ class AutoBibleGenerator:
                             "subject_location_type": subj_lt,
                             "object_importance": obj_imp,
                             "object_location_type": obj_lt,
+                            # ⚠ 谓词来源可分辨（AI 给的 vs 代码猜的）
+                            "predicate_source": predicate_source,
                         },
                         created_at=datetime.now(),
                         updated_at=datetime.now()

@@ -94,11 +94,39 @@ class PlanningNode(BaseNode):
                 # 改走 dependencies 的正确装配点
                 from interfaces.api.dependencies import get_continuous_planning_service
                 svc = get_continuous_planning_service()
-                result = await svc.generate_macro_plan(novel_id)
+                # ⚠ 第 82 批（N-08）：``generate_macro_plan`` 的 ``target_chapters``
+                #   是**必填** ⇒ 此前少传 ⇒ TypeError 被下面的 except 吞掉
+                #   ⇒ 节点恒 SUCCESS、计划恒空（**假成功**）。
+                #   ⇒ 现在：先取目标章数（输入端口 → 上下文 → 小说档案），
+                #     取不到就**明确报错**，不许悄悄变成「成功但空」。
+                target_chapters = (
+                    inputs.get("target_chapters") or context.get("target_chapters")
+                )
+                if not target_chapters:
+                    try:
+                        from domain.novel.value_objects.novel_id import NovelId
+
+                        novel = svc.novel_repository.get_by_id(NovelId(novel_id))
+                        target_chapters = getattr(novel, "target_chapters", None)
+                    except Exception:  # noqa: BLE001 —— 取不到就报「缺参数」
+                        target_chapters = None
+                if not target_chapters:
+                    raise ValueError(
+                        "拿不到 target_chapters（输入端口没给，小说档案也没有）"
+                        " ⇒ 不能生成宏观规划"
+                    )
+                result = await svc.generate_macro_plan(
+                    novel_id=novel_id,
+                    target_chapters=int(target_chapters),
+                )
                 if result:
                     macro_plan = getattr(result, "plan_text", "") or str(result)
             except Exception as e:
                 logger.warning(f"PlanningService 调用失败: {e}")
+                # ⚠ 第 82 批（N-08）：**不许**把失败吞成「SUCCESS + 空计划」
+                #   ⇒ 那正是「假成功」的形状（画布上看着跑通了，其实什么都没产出）。
+                #   ⇒ 往上抛 ⇒ 外层返回 ERROR（诚实的失败）。
+                raise
 
             return NodeResult(
                 outputs={"macro_plan": macro_plan, "act_plan": act_plan},
