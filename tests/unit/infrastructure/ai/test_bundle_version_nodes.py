@@ -28,11 +28,19 @@ NODES_DIR = ROOT / "infrastructure/ai/prompt_packages/nodes"
 
 #: **历史上被删掉**的节点包 —— 旧版本引用它们是**正常的历史事实**，
 #: 不是陈旧引用。但这份名单**不许腐化**（下面有一条守卫钉住它）。
+#:
+#: ⚠ 第 83 批（N-13）：`version_nodes` 的推导改成「按该提交时刻生效的版本」归因
+#:   ⇒ 历史上**没 bump 版本**的那些改动也进了版本桶
+#:   ⇒ 于是暴露出**更多**已删除的节点（此前推导漏了它们）。
+#:   ⇒ 名单补全（每一条都必须在磁盘上**真的不存在**，否则白名单会变成永久豁免）。
 DELETED_NODES = frozenset(
     {
         "planning-main-plot-suggest",  # 旧名，5.3.x 时代
         "refactor-proposal",  # 已并入其它节点
         "autopilot-info-density-supplement",  # 已并入其它节点
+        # A-06 的五维键集曾拆成两个节点包，后并回 bible-worldbuilding（第 56/57 批）
+        "bible-worldbuilding-dimension",
+        "bible-worldbuilding-field",
     }
 )
 

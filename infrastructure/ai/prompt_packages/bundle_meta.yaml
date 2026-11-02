@@ -51,12 +51,74 @@ version_nodes:
     - tension-analysis-diagnosis
     - tension-scoring
     - workflow-chapter-generation
-  5.2.0:
+  5.0.0:
+    - anti-ai-allowlist-explain
+    - anti-ai-behavior-protocol
+    - anti-ai-chapter-audit
+    - anti-ai-character-state-lock
+    - anti-ai-finale-enhancement
+    - anti-ai-mid-generation-refresh
+    - autopilot-info-density-supplement
+    - autopilot-stream-beat
+    - beat-focus-instructions
+    - beat-sheet-decomposition
+    - bible-all
     - bible-characters
     - bible-locations
     - bible-style-convention
     - bible-worldbuilding
+    - bible-worldbuilding-dimension
+    - bible-worldbuilding-field
+    - chapter-bridge-check
+    - chapter-bridge-extract
+    - chapter-bridge-fix
+    - chapter-generation-basic
+    - chapter-generation-main
+    - chapter-narrative-sync
+    - chapter-state-extraction
+    - chapter-summarizer
+    - dialogue-generation
+    - knowledge-initial
+    - lifecycle-phase-directives
+    - planning-act
+    - planning-main-plot-option
+    - planning-main-plot-suggest
+    - planning-quick-macro
+    - prop-event-extraction
+    - refactor-proposal
+    - refactor-proposal-macro
+    - review-character-consistency
+    - review-foreshadowing-usage
+    - review-improvement-suggestions
+    - review-storyline-consistency
+    - review-timeline-consistency
+    - scene-director
+    - scene-generation
+    - style-analysis
+    - summary-act
+    - summary-checkpoint
+    - summary-part
+    - summary-volume
+    - tension-analysis-diagnosis
+    - tension-scoring
+    - voice-rewrite
+    - workflow-chapter-generation
+  5.2.0:
+    - beat-cot-bridge
+    - beat-focus-instructions
+    - bible-characters
+    - bible-locations
+    - bible-style-convention
+    - bible-worldbuilding
+    - bible-worldbuilding-dimension
+    - bible-worldbuilding-field
+    - chapter-generation-main
+    - chapter-narrative-sync
+    - outline-beat-partition
   5.3.0:
+    - bible-characters
+    - bible-locations
+    - bible-worldbuilding
     - chapter-aftermath
     - circuit-breaker
     - cliche-scan
@@ -73,11 +135,17 @@ version_nodes:
     - voice-drift
     - voice-style-analysis
   5.3.1:
+    - anti-ai-character-state-lock
+    - anti-ai-mid-generation-refresh
+    - beat-focus-instructions
     - bible-worldbuilding
     - chapter-generation-main
+    - lifecycle-phase-directives
     - planning-main-plot-option
     - planning-main-plot-suggest
     - planning-quick-macro
+    - tension-scoring
+    - workflow-chapter-generation
   5.3.3:
     - anti-ai-allowlist-explain
     - anti-ai-behavior-protocol
@@ -109,16 +177,31 @@ version_nodes:
     - chapter-generation-main
     - emotion-ledger-extraction
     - prop-event-extraction
+    - prose-from-script
     - scene-generation
+    - script-generation
   5.3.6:
     - bible-characters
     - bible-locations
     - bible-worldbuilding
+    - chapter-prose-generation
     - planning-main-plot-option
     - planning-plot-outline
     - planning-quick-macro
   5.3.7:
+    - bible-characters
+    - bible-locations
     - bible-worldbuilding
+    - book-act-review
+    - book-review-synthesis
+    - chapter-aftermath
+    - chapter-prose-generation
+    - chapter-revise
+    - planning-act
+    - planning-chapter-preplan
+    - planning-main-plot-option
+    - planning-plot-outline
+    - planning-quick-macro
   5.4.0:
     - setting-drift-audit
   5.5.0:
@@ -133,11 +216,14 @@ version_nodes:
   5.9.0:
     - planning-chapter-mode
   5.10.0:
+    - planning-chapter-preplan
     - planning-precise-macro
   5.11.0:
     - chapter-narrative-sync
     - planning-chapter-preplan
   5.12.0:
+    - chapter-state-extraction
+  5.13.0:
     - chapter-state-extraction
   5.14.0:
     - planning-chapter-preplan
