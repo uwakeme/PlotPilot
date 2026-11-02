@@ -1860,21 +1860,30 @@ async def _classify_plot_point(
         return UNASSESSED
 
 
-def _fetch_previous_tension(
-    novel_id: str,
-    chapter_number: int,
-    chapter_repository: Any,
+def _fetch_evaluated_tension(
+    db: Any, novel_id: str, chapter_number: int
 ) -> Optional[float]:
-    """取前章张力（作为 AI 判断的**证据**）；取不到 ⇒ None。"""
+    """读某章的**真评过**的综合张力；没评过 ⇒ ``None``。
+
+    ⚠ 第 84 批：此前只读 ``tension_score``
+      ⇒ 未评估章节的**占位 50.0** 被当成「张力 50」喂给模型
+      （评分提示词的「前章张力」、剧情点判定的证据）
+      ⇒ 而且提示词里还带着「若前章≥70 可以回落 / 若前章≤30 需要拉升」的**条件指令**
+      ⇒ 模型会以为前章张力正好是 50。
+    ⇒ 现在必须连 ``tension_evaluated`` 一起读。
+    """
     try:
-        db = chapter_repository.db if hasattr(chapter_repository, "db") else None
-        if db is None:
-            return None
         row = db.fetch_one(
-            "SELECT tension_score FROM chapters WHERE novel_id = ? AND number = ?",
-            (novel_id, chapter_number - 1),
+            "SELECT tension_score, tension_evaluated FROM chapters "
+            "WHERE novel_id = ? AND number = ?",
+            (novel_id, chapter_number),
         )
-        if not row:
+    except Exception:
+        return None
+    if not row:
+        return None
+    try:
+        if not bool(row["tension_evaluated"]):
             return None
         raw = row["tension_score"]
         if raw is None:
@@ -1885,6 +1894,21 @@ def _fetch_previous_tension(
         if value == UNEVALUATED:
             return None
         return value
+    except Exception:
+        return None
+
+
+def _fetch_previous_tension(
+    novel_id: str,
+    chapter_number: int,
+    chapter_repository: Any,
+) -> Optional[float]:
+    """取前章张力（作为 AI 判断的**证据**）；取不到或**没评过** ⇒ None。"""
+    try:
+        db = chapter_repository.db if hasattr(chapter_repository, "db") else None
+        if db is None:
+            return None
+        return _fetch_evaluated_tension(db, novel_id, chapter_number - 1)
     except Exception:
         return None
 
@@ -2639,25 +2663,26 @@ async def sync_chapter_narrative_after_save(
 
     tension_dimensions: Optional[TensionDimensions] = None
     try:
-        prev_tension = 50.0
+        # ⚠ 第 84 批：默认从 ``50.0`` 改成 ``None`` ——
+        #   「没有前章」与「前章正好 50 分」是两件事
+        #   ⇒ 没前章就是**未评估**（提示词里明确说「不要假设前章是 50 分」）。
+        prev_tension: Optional[float] = None
         if chapter_repository:
             try:
                 # 🔥 性能优化：用轻量 SQL 查询替代 list_by_novel
                 # 原来加载所有章节内容（可能几百 KB），现在只查一个值
                 db = chapter_repository.db if hasattr(chapter_repository, 'db') else None
                 if db is not None:
-                    row = db.fetch_one(
-                        "SELECT tension_score FROM chapters WHERE novel_id = ? AND number = ?",
-                        (novel_id, chapter_number - 1)
-                    )
-                    if row and row['tension_score'] is not None and row['tension_score'] != -1:
-                        prev_tension = float(row['tension_score'])
+                    # ⚠ 第 84 批：轻量路径**也**必须看 ``tension_evaluated``
+                    #   （此前只查 tension_score ⇒ 未评估章节的占位 50.0 被当真值）
+                    prev_tension = _fetch_evaluated_tension(db, novel_id, chapter_number - 1)
                 else:
                     # 降级：用原方法
                     chapters = chapter_repository.list_by_novel(NovelId(novel_id))
                     prev_ch = next((ch for ch in chapters if ch.number == chapter_number - 1), None)
                     if prev_ch:
-                        prev_tension = prev_ch.tension_score
+                        # ⚠ 同上：实体口径 ⇒ 没评过就是 None
+                        prev_tension = prev_ch.evaluated_tension_score
             except Exception:
                 pass
 

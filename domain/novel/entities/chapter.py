@@ -1,6 +1,7 @@
 # domain/novel/entities/chapter.py
 from enum import Enum
 from datetime import datetime, timezone
+from typing import Optional
 from domain.shared.base_entity import BaseEntity
 from domain.novel.value_objects.novel_id import NovelId
 from domain.novel.value_objects.chapter_content import ChapterContent
@@ -67,6 +68,20 @@ class Chapter(BaseEntity):
         """更新内容（允许空内容用于草稿）"""
         self._content_text = content
         self.updated_at = datetime.now(timezone.utc)
+
+    @property
+    def evaluated_tension_score(self) -> Optional[float]:
+        """**真的评过**时的综合张力分；没评过 ⇒ ``None``。
+
+        ⚠ 第 84 批：「没评过」时 ``tension_score`` 里躺的是建表默认值 ``50.0``
+          ⇒ 直接把它当「张力 50」喂给提示词 ⇒ **模型会以为前章张力正好是 50**
+          （提示词里还写着「若前章≤30 需要拉升 / 若前章≥70 可以回落」）
+          ⇒ 假值污染了判断依据。
+        ⇒ 这里给出**唯一的合法出口**：没评过就是 ``None``（未评估）。
+        """
+        if not self.tension_evaluated:
+            return None
+        return float(self.tension_score)
 
     def update_generation_hint(self, hint: str) -> None:
         """更新本章生成约束文本（直接注入 AI 上下文的用户手写约束）"""

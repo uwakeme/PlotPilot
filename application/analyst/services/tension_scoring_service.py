@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from domain.ai.services.llm_service import LLMService
 from domain.novel.value_objects.tension_dimensions import TensionDimensions
@@ -33,6 +34,33 @@ _TENSION_SCORING_CONTRACT = PromptContract(
 )
 
 
+#: 「前章综合张力」进提示词时的**两种**形态。
+#:
+#: ⚠ 第 84 批：此前这个变量的**默认值是 50.0** ⇒ 没有前章时也在告诉模型
+#:   「前章综合张力为 50/100」⇒ 假值污染判断依据（提示词里还有
+#:   「若前章≥70 可以回落 / 若前章≤30 需要拉升」这种**条件指令**）
+#:   ⇒ 光把数字换成「未评估」不够 ⇒ 条件指令也要一起撤掉。
+PREV_TENSION_UNKNOWN_TEXT = (
+    "前章综合张力未评估（没有可参考的前章）⇒ 只依据本章正文判断；"
+    "不要假设前章是 50 分，也不要因为「前章是中庸的 50 分」而给出中庸的分。"
+)
+PREV_TENSION_KNOWN_TEMPLATE = (
+    "前章综合张力为 {value}/100。若前章≥70，本章可以短暂回落但必须保留余震；"
+    "若前章≤30，本章需要明显拉升冲突或信息增量。"
+)
+
+
+def build_prev_tension_text(prev_chapter_tension: Optional[float]) -> str:
+    """把「前章张力」渲染成**可直接进提示词**的一句话。
+
+    ⚠ ``None`` ⇒ 未评估 ⇒ 明确说「未评估」并**撤掉条件指令**
+    （否则模型会自己假设一个数）。
+    """
+    if prev_chapter_tension is None:
+        return PREV_TENSION_UNKNOWN_TEXT
+    return PREV_TENSION_KNOWN_TEMPLATE.format(value=f"{float(prev_chapter_tension):.0f}")
+
+
 class TensionScoringService:
     """独立多维张力分析服务。
 
@@ -47,14 +75,17 @@ class TensionScoringService:
         self,
         chapter_content: str,
         chapter_number: int,
-        prev_chapter_tension: float = 50.0,
+        prev_chapter_tension: Optional[float] = None,
     ) -> TensionDimensions:
         """分析章节的多维张力。
 
         Args:
             chapter_content: 章节正文
             chapter_number: 章节号
-            prev_chapter_tension: 前章综合张力（0-100），用于提供上下文基准
+            prev_chapter_tension: 前章综合张力（0-100），用于提供上下文基准。
+                ⚠ 第 84 批：默认从 ``50.0`` 改成 ``None``
+                  —— 「没有前章」与「前章正好 50 分」是两件事
+                  ⇒ 没给就是**未评估**，不许拿 50 冒充。
 
         Returns:
             TensionDimensions 多维张力结果
@@ -70,7 +101,7 @@ class TensionScoringService:
                 _TENSION_SCORING_CONTRACT,
                 {
                     "content": body,
-                    "prev_tension": f"{prev_chapter_tension:.0f}",
+                    "prev_tension": build_prev_tension_text(prev_chapter_tension),
                 },
             ).prompt
         except PromptGatewayError as exc:

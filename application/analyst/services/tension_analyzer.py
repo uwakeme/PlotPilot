@@ -74,13 +74,22 @@ class TensionAnalyzer:
                     blocks.append(
                         f"当前章正文摘录（可能截断）:\n{excerpt}"
                     )
-                blocks.append(
-                    "库内章节张力字段（0–100，仅作参考）: "
-                    f"tension_score={current.tension_score:.0f}, "
-                    f"plot_tension={current.plot_tension:.0f}, "
-                    f"emotional_tension={current.emotional_tension:.0f}, "
-                    f"pacing_tension={current.pacing_tension:.0f}"
-                )
+                # ⚠ 第 84 批：没评过的章节 ⇒ 那四个 50.0 只是**建表占位**
+                #   ⇒ 说成「张力字段 50」等于把假值当依据喂给模型
+                #   ⇒ 现在明确说「未评估」，并提醒不要把占位当分值。
+                if getattr(current, "tension_evaluated", False):
+                    blocks.append(
+                        "库内章节张力字段（0–100，仅作参考）: "
+                        f"tension_score={current.tension_score:.0f}, "
+                        f"plot_tension={current.plot_tension:.0f}, "
+                        f"emotional_tension={current.emotional_tension:.0f}, "
+                        f"pacing_tension={current.pacing_tension:.0f}"
+                    )
+                else:
+                    blocks.append(
+                        "库内章节张力字段：**未评估**（这一章的张力还没评过；"
+                        "不要把占位的 50 当成真实分值）"
+                    )
             else:
                 blocks.append(
                     f"库中未找到第 {request.chapter_number} 章实体，暂无正文/张力字段。"

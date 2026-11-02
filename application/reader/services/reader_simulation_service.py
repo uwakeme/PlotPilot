@@ -113,7 +113,13 @@ class ReaderSimulationService:
             prev_summary=prev_summary,
             prev_content=_excerpt(prev_chapter.content, 2000) if prev_chapter else "",
             next_exists=next_chapter is not None,
-            tension_score=current.tension_score,
+            # ⚠ 第 84 批：没评过的章节 ⇒ 50.0 只是建表占位
+            #   ⇒ 不许当成「张力 50」喂给读者模拟（模型会拿它当阅读体验的依据）
+            tension_score=(
+                current.tension_score
+                if getattr(current, "tension_evaluated", False)
+                else None
+            ),
         )
 
         prompt = self._build_prompt(context)
@@ -145,7 +151,7 @@ class ReaderSimulationService:
         prev_summary: str,
         prev_content: str,
         next_exists: bool,
-        tension_score: float,
+        tension_score: Optional[float],
     ) -> Dict[str, str]:
         """组装供 prompt 使用的上下文数据。"""
         parts = {
@@ -153,7 +159,12 @@ class ReaderSimulationService:
             "chapter_number": str(chapter_number),
             "chapter_content": _excerpt(current_content),
             "chapter_outline": current_outline,
-            "tension_score": f"{tension_score:.0f}",
+            # ⚠ 第 84 批：未评估 ⇒ 明确说「未评估」（此前把占位的 50.0 写成「50」）
+            "tension_score": (
+                "未评估（本章张力还没评过）"
+                if tension_score is None
+                else f"{tension_score:.0f}"
+            ),
             "has_next": "是" if next_exists else "否（本章是最新章）",
         }
         if prev_summary:

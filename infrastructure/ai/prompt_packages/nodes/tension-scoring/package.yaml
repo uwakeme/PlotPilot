@@ -13,8 +13,12 @@ variables:
   type: string
   required: true
 - name: prev_tension
-  desc: 前章综合张力值
-  type: number
-  default: 50
+  desc: 前章综合张力的**整句**说明（未评估时是「前章综合张力未评估…」的整句）
+  type: string
+  required: true
+# ⚠ 第 84 批：此前这个变量是 `type: number` + `default: 50`
+#   ⇒ 「没有前章」也会被渲染成「前章综合张力为 50/100」⇒ 假值污染判断依据
+#   （提示词里还带着「若前章≥70 可以回落 / 若前章≤30 需要拉升」的条件指令）
+#   ⇒ 现在由调用方**整句**给出；未评估 ⇒ 明确说「未评估」并撤掉条件指令。
 id: tension-scoring
 sort_order: 6
