@@ -148,11 +148,14 @@ async def test_null_proposal_falls_back_to_engine_formula(monkeypatch):
     )
 
     assert result["source"] == SOURCE_FALLBACK
-    # 回落值与「改造前逐位相同」的公式一致
-    assert result["continue_block"] == propose_continue_block(
-        target_chapters=100, completed_chapters=100
-    )
-    assert result["finale_budget"] == clamp_finale_budget(12)
+    # ⚠ 第 84 批（N-10 ③）：期望值**写死字面量**。
+    #   此前是「结果 == 被测模块自己的公式算出来的值」⇒ **自指恒真**
+    #   ⇒ 把公式改坏（例如把 0.2 改成 0.3、钳位范围改掉）这条守卫照样绿。
+    #   ⇒ 现在写死：100 章目标的加写块 = max(20, round(100 * 0.2)) = **20**；
+    #     终局预算 12 落在 [5, 200] 内 ⇒ 仍是 **12**。
+    #   ⇒ 公式本身的行为由下面的「公式口径」那几条**单独**用字面量钉住。
+    assert result["continue_block"] == 20
+    assert result["finale_budget"] == 12
     assert result["finale_budget_min"] == 5
     assert result["finale_budget_max"] == 200
 
@@ -192,9 +195,8 @@ async def test_llm_failure_falls_back(monkeypatch):
     )
 
     assert result["source"] == SOURCE_FALLBACK
-    assert result["continue_block"] == propose_continue_block(
-        target_chapters=100, completed_chapters=100
-    )
+    # ⚠ 第 84 批（N-10 ③）：字面量（不是「调被测公式算出来」⇒ 自指恒真）
+    assert result["continue_block"] == 20
 
 
 @pytest.mark.asyncio
@@ -274,3 +276,33 @@ async def test_http_endpoint_surfaces_the_proposal_source(monkeypatch):
 def test_the_finale_budget_bounds_are_pinned_by_value():
     """常量本身的值必须被钉住（终局预算 [5,200] 是登记表写死的不变量）。"""
     assert (FINALE_BUDGET_MIN, FINALE_BUDGET_MAX) == (5, 200)
+
+
+# ── 第 84 批（N-10 ③）：公式口径**用字面量**钉住 ─────────────────────────
+#
+# ⚠ 上面的回落用例已经改成写死字面量（不再是「结果 == 被测公式算出来的值」）。
+#   那公式本身的口径就得**另立**几条用例钉住 —— 否则公式改了没人知道。
+
+
+def test_the_continue_block_formula_keeps_its_ratio_and_floor():
+    """⚠ 手动「继续写」的加写块 = ``max(20, round(target * 0.2))``。
+
+    ⚠ 期望值**写死**（不是调被测函数算出来 ⇒ 自指恒真）。
+    """
+    assert propose_continue_block(target_chapters=100, completed_chapters=100) == 20
+    assert propose_continue_block(target_chapters=50, completed_chapters=0) == 20, (
+        "目标 50 章 ⇒ round(50*0.2)=10 ⇒ 被下限 20 兜住"
+    )
+    assert propose_continue_block(target_chapters=200, completed_chapters=0) == 40
+    assert propose_continue_block(target_chapters=0, completed_chapters=0) == 20, (
+        "目标未设置 ⇒ 回落下限 20"
+    )
+
+
+def test_the_finale_budget_clamp_keeps_its_range_and_default():
+    """⚠ 终局预算钳制 = ``max(5, min(200, v))``；解析不了 ⇒ 默认 20。"""
+    assert clamp_finale_budget(12) == 12
+    assert clamp_finale_budget(3) == 5, "低于下限 ⇒ 抬到 5"
+    assert clamp_finale_budget(999) == 200, "高于上限 ⇒ 压到 200"
+    assert clamp_finale_budget("不是数字") == 20, "解析不了 ⇒ 默认 20"
+    assert clamp_finale_budget(None) == 20
