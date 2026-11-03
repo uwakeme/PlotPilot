@@ -127,20 +127,30 @@ class SqliteChapterStyleScoreRepository:
         return dict(row) if row else None
 
     def list_by_novel(
-        self, novel_id: str, limit: int = 50
+        self, novel_id: str, limit: Optional[int] = 50
     ) -> List[dict]:
-        rows = self.db.fetch_all(
-            """
+        """取该书的评分行（**按章号升序**）。
+
+        ⚠ 第 90 批（N-22）：``limit=None`` ⇒ **不限**（返回全部）。
+          此前默认 50 ⇒ 漂移报告（承诺「全量章节评分序列」）
+          对长书只会返回**最早** 50 行 ⇒ 面板看到的是开篇数据，不是现状。
+
+        ⚠ 注意方向：这是 **ASC + LIMIT** ⇒ 拿到的总是**最早**的 N 章。
+          「最近 N 章」必须用 ``list_recent_by_novel``。
+        """
+        sql = """
             SELECT score_id, novel_id, chapter_number, adjective_density,
                    avg_sentence_length, sentence_count, similarity_score,
                    style_vector_json, computed_at
             FROM chapter_style_scores
             WHERE novel_id = ?
             ORDER BY chapter_number ASC
-            LIMIT ?
-            """,
-            (novel_id, limit),
-        )
+        """
+        params: tuple = (novel_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (novel_id, int(limit))
+        rows = self.db.fetch_all(sql, params)
         return [dict(r) for r in rows]
 
     def list_recent_by_novel(

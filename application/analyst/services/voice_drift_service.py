@@ -495,8 +495,13 @@ class VoiceDriftService:
         self._baseline_cache_loaded_at.pop(novel_id, None)
 
     def get_drift_report(self, novel_id: str) -> dict:
-        """获取漂移报告（全量评分 + 告警状态）。"""
-        scores = self.score_repo.list_by_novel(novel_id)
+        """获取漂移报告（**全量**评分 + 告警状态）。
+
+        ⚠ 第 90 批（N-22）：此前用默认 ``limit=50`` ⇒ 长书只返回**最早** 50 行
+          ⇒ 端点承诺的「全量章节评分序列」没兑现 ⇒ 面板看到的是开篇数据。
+          ⇒ 现在不限条数。
+        """
+        scores = self.score_repo.list_by_novel(novel_id, limit=None)
         drift_alert = self._check_drift_alert(novel_id)
 
         return {

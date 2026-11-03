@@ -48,8 +48,8 @@ FORBIDDEN_PATTERNS = [
 #: **正当例外**（文件 → 理由）。例外必须写清理由，否则它就变成了「漏网」的借口。
 EXEMPTED: dict[str, str] = {
     "application/world/services/worldbuilding_stream_parser.py": (
-        "流式解析器：自带**三段降级链**（注入式 repair 回调 + 大括号截取 + "
-        "缓冲快照兜底），换共享抽取器会改它的语义 ⇒ 属另一类实现，**不改**。"
+        "流式解析器：自带**大括号截取**（`buf[brace:end]`）⇒ **已经能剥围栏**，"
+        "且它是流式增量解析（边收边切）⇒ 语义与「整段抽取」不同 ⇒ **不改**。"
     ),
     "application/blueprint/services/beat_sheet_service.py": (
         "节拍表：这里**已手工剥围栏**（能用）⇒ 只是**重复实现**，待收敛到共享抽取器。"
@@ -58,17 +58,17 @@ EXEMPTED: dict[str, str] = {
         "设定漂移审计：这里**已手工剥围栏**（能用）⇒ 只是**重复实现**，待收敛。"
     ),
     "application/engine/dag/nodes/anti_ai_nodes.py": (
-        "DAG 是**展示层**（生产写作走 StoryPipeline）⇒ 节点的降级形态是"
-        "「原样透出 raw_text」⇒ 与本守卫的规则不同 ⇒ **已登记未修**（N-25 残余）。"
+        "DAG 是**展示层**（生产写作走 StoryPipeline）⇒ 这些节点**不进生产链路**，"
+        "解析失败只影响画布显示 ⇒ **已登记未修**（N-25 残余，低优先）。"
     ),
     "application/engine/dag/nodes/ext_supplement_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余）。"
+        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
     ),
     "application/engine/dag/nodes/planning_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余）。"
+        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
     ),
     "application/engine/dag/nodes/review_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余）。"
+        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
     ),
 }
 

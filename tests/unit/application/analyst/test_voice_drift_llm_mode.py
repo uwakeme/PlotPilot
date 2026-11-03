@@ -44,7 +44,9 @@ class _ScoreRepo:
         self.rows.append(kw)
 
     def list_by_novel(self, novel_id, limit=50):
-        return list(self.rows)[-limit:]
+        # ⚠ 第 90 批（N-22）：``limit=None`` ⇒ 不限条数（漂移报告要全量）
+        rows = list(self.rows)
+        return rows if limit is None else rows[-limit:]
 
     def list_recent_by_novel(self, novel_id, limit=50):
         # ⚠ 第 82 批（N-04）：告警窗口改用「最近 N 章」这个方法

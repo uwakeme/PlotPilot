@@ -12,6 +12,7 @@
 """
 from typing import List, Optional
 import asyncio
+import contextlib
 import json
 import os
 import logging
@@ -284,38 +285,107 @@ class ChromaDBVectorStore(VectorStore):
             coll["metadata"][vid] = {"idx": base + offset, "payload": payload}
         return len(pending)
 
+    # ── 第 90 批：跨进程写锁（落盘目录被多个进程共用）──────────────────
+
+    @contextlib.contextmanager
+    def _cross_process_lock(self, collection: str):
+        """同一集合的「**合并 + 落盘**」必须**串行**（跨进程）。
+
+        ⚠ 第 90 批：落盘目录被 **API 进程与守护进程共用**
+          （``get_vector_store()`` 是**进程级单例** ⇒ 两个进程各持一份实例）。
+          ⇒ 没有锁时：两个进程会「各自读磁盘、各自合并、各自覆盖」
+          ⇒ ⇒ **后写的把先写的向量静默抹掉**（读-合并-写之间仍有窗口）。
+
+        ⚠ 锁拿不到时**不抛**（降级继续写）：写路径不能因为锁失败就整个断掉
+          ⇒ 这种情况仍有丢更新风险，但比「写不进去」好。
+        """
+        lock_path = self.persist_directory / ("." + collection + ".lock")
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(lock_path, "a+b")
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "向量集合锁文件打不开（继续写，存在丢更新风险）collection=%s err=%s",
+                collection, exc,
+            )
+            yield
+            return
+
+        locked = False
+        try:
+            try:
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                locked = True
+            except OSError as exc:
+                logging.getLogger(__name__).warning(
+                    "向量集合锁获取失败（继续写，存在丢更新风险）collection=%s err=%s",
+                    collection, exc,
+                )
+            yield
+        finally:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
     def _save_collection(self, collection: str):
-        """保存集合到磁盘"""
+        """保存集合到磁盘（**合并 + 写**在**同一把跨进程锁**内）。
+
+        ⚠ 锁必须包住「合并」与「写」两段：只锁写那一段的话，
+          两个进程仍可能各自基于**同一个旧磁盘状态**做合并 ⇒ 还是会互相抹掉。
+        """
         index_backend = _get_vector_index_backend()
 
-        coll = self.collections[collection]
+        with self._cross_process_lock(collection):
+            coll = self.collections[collection]
 
-        # ⚠ 第 88 批（N-23）：落盘目录**跨进程共享** ⇒ 我们写之前，
-        #   先看「磁盘是不是被另一个进程改过」⇒ 是的话**先把它的向量并进来**
-        #   ⇒ 否则「后写覆盖先写」⇒ 另一个进程刚写的向量全丢。
-        known = self._disk_state.get(collection)
-        current = self._current_disk_state(collection)
-        if known is not None and current is not None and current != known:
-            merged = self._merge_disk_vectors(collection)
-            if merged:
-                logging.getLogger(__name__).warning(
-                    "检测到其他进程写过同一集合，已并入其向量 collection=%s merged=%d",
-                    collection, merged,
-                )
-                coll = self.collections[collection]
+            # ⚠ 第 88 批（N-23）：落盘目录**跨进程共享** ⇒ 我们写之前，
+            #   先看「磁盘是不是被另一个进程改过」⇒ 是的话**先把它的向量并进来**
+            #   ⇒ 否则「后写覆盖先写」⇒ 另一个进程刚写的向量全丢。
+            known = self._disk_state.get(collection)
+            current = self._current_disk_state(collection)
+            if known is not None and current is not None and current != known:
+                merged = self._merge_disk_vectors(collection)
+                if merged:
+                    logging.getLogger(__name__).warning(
+                        "检测到其他进程写过同一集合，已并入其向量 collection=%s merged=%d",
+                        collection, merged,
+                    )
+                    coll = self.collections[collection]
 
-        collection_dir = self.persist_directory / collection
-        collection_dir.mkdir(parents=True, exist_ok=True)
+            collection_dir = self.persist_directory / collection
+            collection_dir.mkdir(parents=True, exist_ok=True)
 
-        index_path = collection_dir / "index.faiss"
-        metadata_path = collection_dir / "metadata.json"
+            index_path = collection_dir / "index.faiss"
+            metadata_path = collection_dir / "metadata.json"
 
-        index_backend.write_index(coll["index"], str(index_path))
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(coll["metadata"], f, ensure_ascii=False, indent=2)
+            index_backend.write_index(coll["index"], str(index_path))
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(coll["metadata"], f, ensure_ascii=False, indent=2)
 
-        # 记住我们刚写下的磁盘状态 ⇒ 下次只有「别人又改了」才会再合并
-        self._disk_state[collection] = self._current_disk_state(collection)
+            # 记住我们刚写下的磁盘状态 ⇒ 下次只有「别人又改了」才会再合并
+            self._disk_state[collection] = self._current_disk_state(collection)
 
     async def insert(
         self,

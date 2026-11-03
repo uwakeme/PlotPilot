@@ -18,7 +18,9 @@
 1. DTO 必须接受 ``similarity_score=None``（未评估 ≠ 0.0）；
 2. DB 的列可空 ⇒ DTO **必须**可空（契约一致，不许一边可空一边必填）；
 3. 路由函数遇到未评分的章必须**照常返回**（不许 500），且 None **原样保留**
-   （不许被压成 0.0 —— 那会把「没评过」说成「完全不像」）。
+   （不许被压成 0.0 —— 那会把「没评过」说成「完全不像」）；
+4. ⚠ 第 90 批（N-22）：报告必须返回**全量**评分行
+   （此前默认 ``limit=50`` ⇒ 长书只给**最早** 50 行 ⇒ 端点承诺没兑现）。
 """
 from __future__ import annotations
 
@@ -137,3 +139,86 @@ def test_the_report_endpoint_reports_the_calibrated_threshold():
 
     response = get_drift_report("n1", service=_Service())
     assert response.alert_threshold == pytest.approx(0.50)
+
+
+def test_the_report_returns_every_scored_chapter_not_just_the_first_fifty():
+    """⚠ 第 90 批（N-22）：报告承诺「**全量**章节评分序列」⇒ 必须真的全量。
+
+    ⚠ 此前仓储默认 ``limit=50`` ⇒ 600 章的书只返回**最早** 50 行
+    ⇒ 面板上看到的是开篇数据，不是现状。
+    """
+    from application.analyst.services.voice_drift_service import VoiceDriftService
+
+    class _Repo:
+        def __init__(self, rows):
+            self.rows = rows
+            self.calls = []
+
+        def list_by_novel(self, novel_id, limit=50):
+            self.calls.append(limit)
+            return list(self.rows)
+
+        def list_recent_by_novel(self, novel_id, limit=50):
+            return list(self.rows)[-limit:]
+
+    rows = [
+        {"chapter_number": i, "similarity_score": 0.5, "adjective_density": 0.02,
+         "avg_sentence_length": 15.0, "sentence_count": 100, "computed_at": "2026-11-03 10:00:00"}
+        for i in range(1, 121)
+    ]
+    repo = _Repo(rows)
+
+    class _Fingerprint:
+        def get_by_novel(self, novel_id, pov=None):
+            return None
+
+    svc = VoiceDriftService(repo, _Fingerprint())
+    report = svc.get_drift_report("n1")
+
+    assert repo.calls == [None], (
+        "取分时必须显式不限条数（limit=None），实得 %s" % repo.calls
+    )
+    assert len(report["scores"]) == 120, (
+        "报告只给了 %d 条 ⇒ 长书看到的是最早那一段，不是现状" % len(report["scores"])
+    )
+
+
+def test_the_repository_limit_none_really_means_unlimited(tmp_path):
+    """⚠ 第 90 批：**仓储**这一侧也得钉住（否则上面那条只验了「服务传了 None」）。
+
+    ⚠ 变异的教训：只断言「调用方传了 limit=None」是**空守卫** ——
+      仓储完全可以把 None 当 0 处理，守卫照样绿。
+    """
+    from infrastructure.persistence.database.connection import DatabaseConnection
+    from infrastructure.persistence.database.sqlite_chapter_style_score_repository import (
+        SqliteChapterStyleScoreRepository,
+    )
+
+    db = DatabaseConnection(str(tmp_path / "drift.db"))
+    try:
+        # ⚠ chapter_style_scores.novel_id 有外键 ⇒ 先有书
+        db.execute(
+            "INSERT INTO novels (id, title, slug, target_chapters) "
+            "VALUES ('n1', 'N', 'n1', 200)"
+        )
+        db.get_connection().commit()
+
+        repo = SqliteChapterStyleScoreRepository(db)
+        for i in range(1, 121):
+            repo.upsert(
+                novel_id="n1",
+                chapter_number=i,
+                adjective_density=0.02,
+                avg_sentence_length=15.0,
+                sentence_count=100,
+                similarity_score=0.5,
+            )
+
+        assert len(repo.list_by_novel("n1", limit=None)) == 120, (
+            "limit=None 没有被当成「不限」⇒ 报告仍会被截断"
+        )
+        assert len(repo.list_by_novel("n1", limit=50)) == 50, (
+            "limit=50 仍然应当生效（取最早 50 行）"
+        )
+    finally:
+        db.close()
