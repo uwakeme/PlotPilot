@@ -222,25 +222,47 @@ def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
     if not novel:
         return None
 
-    # 1. 有没有合格的作者风格基准？没有就一律未评估。
+    # 1. 取最近一次**真实评分**（``get_latest_by_novel`` 只取 similarity 非空的行）。
+    #
+    # ⚠ 第 86 批：**「有没有基准」不该只看作者指纹**。
+    #   统计模式的基准来自作者指纹（``voice_fingerprint``）；
+    #   但 LLM 模式（F-04 自第 84 批起是**默认**）的基准来自
+    #   **本书自己的 LLM 风格向量** ⇒ 指纹 0 行时照样有真分数。
+    #   此前这里先卡指纹 ⇒ 面板对所有 LLM 模式的书都显示「未评估」
+    #   ⇒ 用户明明有分数却**看不到**（展示层与实际不一致）。
+    #   ⇒ 现在以「**有没有真分数**」为准；指纹只用来解释「为什么还没分数」。
     fingerprint = get_voice_fingerprint_repository().get_by_novel(novel_id, None)
     sample_count = int((fingerprint or {}).get("sample_count") or 0)
-    if fingerprint is None:
-        return _unevaluated(novel_id, 0, "尚无作者风格基准（文风指纹需随章节生成）")
-    if sample_count < FINGERPRINT_MIN_SAMPLES:
-        return _unevaluated(
-            novel_id,
-            sample_count,
-            f"基准样本不足（{sample_count}/{FINGERPRINT_MIN_SAMPLES}）",
-        )
 
-    # 2. 取最近一次真实评分。similarity 越高越像基准 ⇒ 漂移 = 1 - similarity。
     latest = (
         SqliteChapterStyleScoreRepository(get_database()).get_latest_by_novel(novel_id)
     )
     if latest is None:
+        if fingerprint is None:
+            return _unevaluated(
+                novel_id,
+                0,
+                "尚无可用基准（统计模式要作者指纹；LLM 模式要本书前 5 章自建基准）",
+            )
+        if sample_count < FINGERPRINT_MIN_SAMPLES:
+            return _unevaluated(
+                novel_id,
+                sample_count,
+                f"基准样本不足（{sample_count}/{FINGERPRINT_MIN_SAMPLES}）",
+            )
         return _unevaluated(novel_id, sample_count, "已有基准，但尚无章节评分记录")
 
+    if fingerprint is None:
+        # LLM 模式：基准来自**本书前 N 章的 LLM 风格向量**（不是作者指纹）
+        # ⇒ 上报的「基准样本数」必须如实说这个数，否则面板会显示
+        #   「基准样本 0 章」却又给出一个漂移分 ⇒ 自相矛盾。
+        from application.analyst.services.voice_drift_service import (
+            LLM_BASELINE_MIN_SAMPLES,
+        )
+
+        sample_count = LLM_BASELINE_MIN_SAMPLES
+
+    # 2. similarity 越高越像基准 ⇒ 漂移 = 1 - similarity。
     similarity = float(latest["similarity_score"])
     drift = round(max(0.0, min(1.0, 1.0 - similarity)), 4)
     if drift >= DRIFT_CRITICAL:

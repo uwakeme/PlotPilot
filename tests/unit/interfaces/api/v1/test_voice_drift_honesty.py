@@ -56,22 +56,64 @@ def test_unevaluated_never_reports_a_normal_looking_number():
 
 
 def test_endpoint_returns_explicit_unevaluated_without_a_fingerprint(monkeypatch):
-    """没有指纹 ⇒ 显式未评估，而不是空数组或常数。
+    """既没有基准、也没有评分记录 ⇒ 显式未评估，而不是空数组或常数。
 
     旧实现对**任何**小说都返回 `[]`（因为 `novel.characters` 不存在），
     前端再把 null 压成 0 显示「文风稳定」。这里断言端点**总会给一个对象**，
     带明确的 evaluated 标志。
+
+    ⚠ 第 86 批：**「没有指纹」本身不再等于「未评估」** ——
+      LLM 模式（F-04 自第 84 批起是默认）的基准来自**本书自己的 LLM 风格向量**，
+      不需要作者指纹 ⇒ 判定基准改成「**有没有真分数**」。
+      这条用例里既没指纹也没分数 ⇒ 仍然未评估。
     """
     monkeypatch.setattr(mon, "get_novel_repository", lambda: type(
         "R", (), {"get_by_id": lambda self, nid: type("N", (), {"id": nid})()})())
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: None})())
+    monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
+        "R", (), {"get_latest_by_novel": lambda self, nid: None})())
+    monkeypatch.setattr(mon, "get_database", lambda: object())
 
     res = mon._get_voice_drift_sync("n1")
     assert res is not None, "端点返回了 None —— 前端会退化成「空数组 → 文风稳定」"
     assert res.evaluated is False
     assert res.drift_score is None
     assert "基准" in res.reason
+
+
+def test_a_real_score_counts_even_without_the_author_fingerprint(monkeypatch):
+    """⚠ 第 86 批：**有真分数就是已评估**（哪怕没有作者指纹）。
+
+    ⚠ LLM 模式（F-04 的默认）用**本书前 5 章**自建基准 ⇒ 不需要作者指纹
+      ⇒ 生产库 ``voice_fingerprint`` 是 0 行，但书**确实有**文风分数。
+      ⇒ 此前这里先卡指纹 ⇒ 面板对所有 LLM 模式的书都显示「未评估」
+      ⇒ 用户明明有分数却看不到 ⇒ 展示层与实际不一致。
+    """
+    monkeypatch.setattr(mon, "get_novel_repository", lambda: type(
+        "R", (), {"get_by_id": lambda self, nid: type("N", (), {"id": nid})()})())
+    monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
+        "R", (), {"get_by_novel": lambda self, nid, pov: None})())
+    monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
+        "R", (), {"get_latest_by_novel": lambda self, nid: {
+            "chapter_number": 9, "similarity_score": 0.5247}})())
+    monkeypatch.setattr(mon, "get_database", lambda: object())
+
+    res = mon._get_voice_drift_sync("n1")
+    assert res.evaluated is True, (
+        "有真分数却报「未评估」⇒ 面板上的文风检测永远是空的"
+    )
+    assert res.drift_score == pytest.approx(1.0 - 0.5247, abs=1e-3)
+    assert res.last_scored_chapter == 9
+    # ⚠ 「基准样本数」必须如实说 LLM 模式的基准（本书前 5 章的风格向量），
+    #   否则面板会同时显示「基准样本 0 章」和一个真实漂移分 ⇒ 自相矛盾。
+    from application.analyst.services.voice_drift_service import (
+        LLM_BASELINE_MIN_SAMPLES,
+    )
+
+    assert res.sample_count == LLM_BASELINE_MIN_SAMPLES, (
+        "基准样本数 %s 与 LLM 模式的基准规模不一致" % res.sample_count
+    )
 
 
 def test_insufficient_samples_is_unevaluated_not_zero(monkeypatch):

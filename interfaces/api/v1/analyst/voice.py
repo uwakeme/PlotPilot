@@ -130,7 +130,13 @@ def get_voice_fingerprint(
 
 class StyleScoreItem(BaseModel):
     chapter_number: int
-    similarity_score: float
+    # ⚠ 第 86 批：**可空**（NULL = 这一章**没评过**）。
+    #   DB 的 `chapter_style_scores.similarity_score` 自第 82 批（N-05）起就是可空列，
+    #   而这里还声明成必填 ``float`` ⇒ 只要书里有「没评过」的章
+    #   （前 5 章建基准、或没跑过评分的章）⇒ pydantic 校验失败
+    #   ⇒ **整个漂移报告接口 500**（生产实测：两本书都打不开）。
+    #   ⇒ 与全项目的三态纪律一致：未评估 ≠ 0.0。
+    similarity_score: Optional[float] = None
     adjective_density: float
     avg_sentence_length: float
     sentence_count: int
