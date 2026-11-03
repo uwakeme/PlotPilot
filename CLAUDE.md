@@ -276,6 +276,19 @@ Copy `.env.example` to `.env` (loaded by `load_env.py` / `python-dotenv`) and se
 - Logs: `logs/plotpilot.log`
 - `.env` is gitignored. Never commit `data/`, `logs/`, databases, or secrets — see the security section in README.md.
 
+### ⚠ 开发阶段：**老数据问题一律不处理**
+
+用户 2026-11-03 定的规矩：**还在开发阶段 ⇒ 存量数据没有价值 ⇒ 凡是「历史数据引发的问题」都不修**。
+
+| 类别 | 处置 |
+|---|---|
+| **老数据问题**（迁移 / 回填 / 兼容层 / 清理旧行 / 把老分数重算成新口径 / 历史索引被清空后重跑） | **不做** —— 发现就在台账里**登记一行**即可，不写实现 |
+| **代码缺陷**（影响**现在**的行为：解析器不剥围栏、缓存键缺内容身份、判定口径不对） | **照做** |
+| **产品口味**（要用户拍板的） | 列出来等决定 |
+
+⇒ 推论：**不要**为了「让老数据也正确」而给新逻辑加兼容分支 —— 那会让新口径长期背着旧包袱。
+⇒ 例外：若某条「老数据」已经**影响当下**的正确性（例如旧分数与新分数同列会让面板显示错），那是**展示层口径问题**（算代码缺陷），不是老数据问题。
+
 ## Runtime gotchas
 
 - **Don't run `python interfaces/main.py`** — it binds `0.0.0.0:8000` and conflicts with nothing but confuses the 8005 default.
