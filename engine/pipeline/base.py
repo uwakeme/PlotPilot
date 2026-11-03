@@ -2137,8 +2137,16 @@ class BaseStoryPipeline(ABC):
         严重漂移的章节「改写」后一字未变，审计快照与前端都误以为修过文。
         现在与 legacy 路径（daemon_host._apply_voice_rewrite_loop）同语义：
         有限次改写 + 即时复评，改写失败或无变化时如实记录 attempts。
+
+        ⚠ 第 85 批（真跑一本书时暴露）：**分数不动就别再改** ——
+        实测生产实跑第 8 章连续 3 次定向修文，相似度**始终 0.4167**
+        ⇒ 分数是「落在容差内的维度计数」（离散分桶）⇒ 重写后常落回同一批桶
+        ⇒ 后两次调用**纯烧钱** ⇒ 现在「没变好就停」（与 daemon 那条链同口径）。
         """
         from application.engine.services.style_constraint_builder import build_style_summary
+        from application.engine.services.voice_rewrite_result import (
+            voice_similarity_improved,
+        )
 
         style_summary = ""
         try:
@@ -2186,6 +2194,9 @@ class BaseStoryPipeline(ABC):
             if outcome is not None:
                 previous_diagnosis = outcome.diagnosis
                 previous_next_technique = outcome.next_technique
+            # ⚠ 第 85 批（真跑一本书时暴露）：记下**改之前**的分数
+            #   —— 后面要判断「这次改写到底有没有用」。
+            similarity_before = ctx.similarity_score
             # 即时复评：达标则停止循环
             try:
                 vr = ctx.voice_drift_service.score_chapter(
@@ -2197,6 +2208,22 @@ class BaseStoryPipeline(ABC):
                 ctx.drift_alert = bool(vr.get("drift_alert", False))
             except Exception as e:
                 logger.warning("[%s] 改写后复评失败: %s", ctx.novel_id, e)
+                break
+            # ⚠ 第 85 批：**分数不动就别再改**（与 daemon 那条链同口径）。
+            #   实测：生产实跑第 8 章连续 3 次定向修文，相似度**始终 0.4167**
+            #   ⇒ 分数是「落在容差内的维度计数」（离散分桶）⇒ 重写后常落回同一批桶
+            #   ⇒ 后两次调用**纯烧钱** ⇒ 「没变好就停」。
+            if not voice_similarity_improved(
+                similarity_before, ctx.similarity_score
+            ):
+                logger.warning(
+                    "[%s] 定向修文后相似度没有变好（%s -> %s）⇒ 停止继续修文"
+                    "（改了也没用，别再烧调用）（attempt=%d）",
+                    ctx.novel_id,
+                    similarity_before,
+                    ctx.similarity_score,
+                    attempt,
+                )
                 break
             if not (
                 ctx.drift_alert

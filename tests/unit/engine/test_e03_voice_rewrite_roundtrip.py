@@ -181,7 +181,14 @@ def _ctx_with_drift():
     fingerprint_repo.get_by_novel.return_value = None
     voice = MagicMock()
     voice.fingerprint_repo = fingerprint_repo
-    voice.score_chapter.return_value = {"similarity_score": 0.4, "drift_alert": True}
+    # ⚠ 第 85 批：复评要**会变好**（真实的复评当然会动）——
+    #   否则第 85 批新增的「分数没变好就停」会把循环在第 1 轮就掐掉
+    #   ⇒ 这条用例（验「上一轮回传」）就跑不到第 2 轮了。
+    voice.score_chapter.side_effect = [
+        {"similarity_score": 0.45, "drift_alert": True},
+        {"similarity_score": 0.5, "drift_alert": True},
+        {"similarity_score": 0.55, "drift_alert": True},
+    ]
     ctx.voice_drift_service = voice
     ctx.llm_service = MagicMock()
     return ctx

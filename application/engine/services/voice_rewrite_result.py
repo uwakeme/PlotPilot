@@ -34,6 +34,29 @@ from typing import Any, Dict, Optional
 MAX_DIAGNOSIS_CHARS = 400
 MAX_TECHNIQUE_CHARS = 400
 
+#: 相似度「变好」的最小幅度（连续量 ⇒ 给一点容差，避免浮点噪声触发循环）。
+#:
+#: ⚠ 第 85 批：这是**真跑一本书**时暴露出来的钱坑 ——
+#:   生产实跑第 8 章连续 3 次定向修文，相似度**始终 0.4167**
+#:   ⇒ 分数是「落在容差内的维度计数」（离散分桶）⇒ 重写后常落回同一批桶
+#:   ⇒ 后两次调用纯烧钱 ⇒ 「没变好就停」。
+#: ⇒ 放在**共用模块**里（两条改写链都要用 ⇒ 同一逻辑不许写两份）。
+VOICE_SIMILARITY_MIN_IMPROVEMENT = 0.001
+
+
+def voice_similarity_improved(before: Any, after: Any) -> bool:
+    """这一轮修文之后，相似度**变好了**吗？
+
+    ⚠ 任一侧缺失 / 解析不了 ⇒ 视为「没变好」
+      （宁可少改一次，也别空烧调用）。
+    """
+    try:
+        before_value = float(before)
+        after_value = float(after)
+    except (TypeError, ValueError):
+        return False
+    return after_value > before_value + VOICE_SIMILARITY_MIN_IMPROVEMENT
+
 
 @dataclass(frozen=True)
 class VoiceRewriteOutcome:

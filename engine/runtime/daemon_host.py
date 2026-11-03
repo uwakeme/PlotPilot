@@ -27,6 +27,7 @@ from application.engine.services.background_task_service import BackgroundTaskSe
 from application.workflows.auto_novel_generation_workflow import AutoNovelGenerationWorkflow
 from application.engine.services.chapter_aftermath_pipeline import ChapterAftermathPipeline
 from application.engine.services.style_constraint_builder import build_style_summary
+from application.engine.services.voice_rewrite_result import voice_similarity_improved
 from application.ai.llm_output_sanitize import strip_reasoning_artifacts
 from application.ai.prose_fragment_aggregator import aggregate_inline_prose_fragments
 from application.ai.llm_retry_policy import LLM_MAX_TOTAL_ATTEMPTS
@@ -1832,6 +1833,21 @@ class DaemonHostMixin:
                 current_result.get("similarity_score"),
                 current_result.get("drift_alert"),
             )
+            # ⚠ 第 85 批（真跑一本书时暴露）：**分数不动就别再改**。
+            #   实测：生产实跑里第 8 章连续 3 次定向修文，相似度**始终是 0.4167**
+            #   ⇒ 分数是「落在容差内的维度计数」（离散分桶）⇒ 重写后的风格向量
+            #     常常落回同一批桶 ⇒ 分数纹丝不动 ⇒ 后两次调用**纯烧钱**。
+            #   ⇒ 现在：分数没有**变好**就停（改了也没用 ⇒ 别再试）。
+            if not voice_similarity_improved(similarity, current_result.get("similarity_score")):
+                logger.warning(
+                    "[%s] 第 %d 次定向修文后相似度没有变好（%s -> %s）⇒ 停止继续修文"
+                    "（改了也没用，别再烧调用）",
+                    novel.novel_id,
+                    attempt,
+                    similarity,
+                    current_result.get("similarity_score"),
+                )
+                break
 
         return current_content, current_result
 
