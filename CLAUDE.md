@@ -148,11 +148,11 @@ ai_participation:
 
 `ai_participation_enabled(feature)` (`application/engine/services/ai_participation_settings.py`) is the gate; the 25 registered feature ids live in `AI_PARTICIPATION_FEATURES`, and every one of them has a **real short-circuit gate on the model-call path** (guards: `test_ai_participation_master_switch.py`, `test_ai_participation_master_switch_coverage.py`, `test_ai_participation_gate_dominance.py`).
 
-⚠ The master switch reads **config only** — no env level, no novel level. Two features (`plot_point_classifier`, `character_belief_check`) have **no code fallback**: with the gate closed their judgement simply does not exist (marked UNASSESSED, never faked).
+⚠ The master switch has **three levels** (config < env < novel), added in the 83rd batch (N-09): ① `config/performance.yaml` → `ai_participation.master_enabled` + `disabled_features`; ② env `PLOTPILOT_AI_MASTER_ENABLED` + `PLOTPILOT_AI_DISABLED_FEATURES`; ③ this book's `generation_prefs.ai_switches[<feature_id>] = False`. The novel level may only **turn things off**, never on (the master switch is a rollback path, not a feature toggle). Two features (`plot_point_classifier`, `character_belief_check`) have **no code fallback**: with the gate closed their judgement simply does not exist (marked UNASSESSED, never faked).
 
 **② The unified switch layer** (`application/engine/services/ai_switch_layer.py`) — priority `novel.generation_prefs.ai_switches` > `PLOTPILOT_AI_<KEY>` (name derived from the key) > default.
 
-⚠ It registers only **5 keys** and effectively serves **3 features** (D-01 / D-02 / F-04). The other 22 features have **no per-feature switch** — only the master switch. "Roll back per novel" is therefore **not available** for them.
+⚠ It registers only **5 keys** and effectively serves **3 features** (D-01 / D-02 / F-04). The other 22 features have **no per-feature switch** — only the master switch (which now *does* carry a novel level ⇒ "roll back per novel" is available for them **through the master switch**, just not through this layer).
 
 The per-capability config sections:
 
@@ -164,6 +164,7 @@ The per-capability config sections:
 | E-06 rhythm quota | `rhythm_quota:` | AI assigns the chapter's pacing quota (replaces the hardcoded golden-three-chapters table). | **ON** (grayscale) |
 | E-01b chapter plan shape | `chapter_plan_structure:` | AI may choose its own paragraph structure instead of the fixed seven-section script. | OFF |
 | F-04 voice drift | `analyst.voice_analysis.use_llm_mode` | LLM-based voice analysis instead of statistics. ~500 extra tokens per chapter. | **ON** (grayscale: default switched to LLM mode — the statistics mode has **no baseline** in the writing pipeline ⇒ nothing was ever actually evaluated; each book can still switch it off) |
+| F-04 voice drift **thresholds** | `analyst.voice_analysis.drift_alert_threshold` + `VOICE_REWRITE_THRESHOLD` | similarity = 1 − mean(deviation ÷ tolerance), tolerance = `max(0.1, std×1.5)` ⇒ a **healthy chapter's neutral point is ≈0.5, not 1.0** (measured over 12 healthy chapters of 2 books: min 0.468 / median 0.554 / max 0.671) ⇒ thresholds were **recalibrated** (86th batch): drift alert 0.75 → **0.50**, rewrite trigger 0.68 → **0.40**. Every threshold on this scale must move together (judgement layer / display layer / config / examples / constants) or the two sides give different answers. | **0.50 / 0.40** |
 
 ⚠ **Which channels are ON is a registry, not a memory** — `tests/unit/test_ai_participation_grayscale_state.py` pins the current state, because a grayscale switch that is silently flipped is the easiest thing to miss. Change the config **and** that table together.
 ⚠ When a channel is ON the behavior is **no longer** byte-identical to pre-switch; degradation is always "cannot decide ⇒ do not inject" (never a fallback value passed off as a decision). The dataclass baselines stay OFF — they are the fallback when a config section is missing.
