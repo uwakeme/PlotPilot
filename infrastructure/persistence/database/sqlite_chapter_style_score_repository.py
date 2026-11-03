@@ -17,7 +17,14 @@ class SqliteChapterStyleScoreRepository:
         avg_sentence_length: float,
         sentence_count: int,
         similarity_score: Optional[float],  # None 表示无指纹基准
+        style_vector_json: Optional[str] = None,  # 第 86 批 · N-18：LLM 风格向量
     ) -> str:
+        """写入（或更新）一章的文风评分。
+
+        ⚠ 第 86 批（N-18）：``style_vector_json`` 存的是**同量纲**的 LLM 风格向量
+          ⇒ 它是「LLM 模式基准」的唯一来源（基准必须与当前值同一把尺子）。
+          ⇒ 为 ``None`` 时**不覆盖**已有值（统计模式评分不该把 LLM 向量擦掉）。
+        """
         existing = self.get_by_chapter(novel_id, chapter_number)
         if existing:
             self.db.execute(
@@ -27,6 +34,7 @@ class SqliteChapterStyleScoreRepository:
                     avg_sentence_length = ?,
                     sentence_count = ?,
                     similarity_score = ?,
+                    style_vector_json = COALESCE(?, style_vector_json),
                     computed_at = CURRENT_TIMESTAMP
                 WHERE novel_id = ? AND chapter_number = ?
                 """,
@@ -35,6 +43,7 @@ class SqliteChapterStyleScoreRepository:
                     avg_sentence_length,
                     sentence_count,
                     similarity_score,
+                    style_vector_json,
                     novel_id,
                     chapter_number,
                 ),
@@ -46,8 +55,8 @@ class SqliteChapterStyleScoreRepository:
             """
             INSERT INTO chapter_style_scores
             (score_id, novel_id, chapter_number, adjective_density,
-             avg_sentence_length, sentence_count, similarity_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             avg_sentence_length, sentence_count, similarity_score, style_vector_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 score_id,
@@ -57,9 +66,30 @@ class SqliteChapterStyleScoreRepository:
                 avg_sentence_length,
                 sentence_count,
                 similarity_score,
+                style_vector_json,
             ),
         )
         return score_id
+
+    def upsert_style_vector(
+        self, novel_id: str, chapter_number: int, style_vector_json: str
+    ) -> None:
+        """**只**写风格向量，不碰该行的其它列（第 86 批 · N-18 的基准回填用）。
+
+        ⚠ 为什么要单独一个方法：回填时我们只想补齐「同量纲基准」的原料，
+          绝不能顺手改写那一章的相似度/统计指标（那是「重新评分」的语义）。
+        """
+        self.db.execute(
+            """
+            INSERT INTO chapter_style_scores
+            (score_id, novel_id, chapter_number, adjective_density,
+             avg_sentence_length, sentence_count, similarity_score, style_vector_json)
+            VALUES (?, ?, ?, 0.0, 0.0, 0, NULL, ?)
+            ON CONFLICT(novel_id, chapter_number)
+            DO UPDATE SET style_vector_json = excluded.style_vector_json
+            """,
+            (str(uuid4()), novel_id, chapter_number, style_vector_json),
+        )
 
     def get_by_chapter(
         self, novel_id: str, chapter_number: int
@@ -67,7 +97,8 @@ class SqliteChapterStyleScoreRepository:
         row = self.db.fetch_one(
             """
             SELECT score_id, novel_id, chapter_number, adjective_density,
-                   avg_sentence_length, sentence_count, similarity_score, computed_at
+                   avg_sentence_length, sentence_count, similarity_score,
+                   style_vector_json, computed_at
             FROM chapter_style_scores
             WHERE novel_id = ? AND chapter_number = ?
             """,
@@ -84,7 +115,8 @@ class SqliteChapterStyleScoreRepository:
         row = self.db.fetch_one(
             """
             SELECT score_id, novel_id, chapter_number, adjective_density,
-                   avg_sentence_length, sentence_count, similarity_score, computed_at
+                   avg_sentence_length, sentence_count, similarity_score,
+                   style_vector_json, computed_at
             FROM chapter_style_scores
             WHERE novel_id = ? AND similarity_score IS NOT NULL
             ORDER BY chapter_number DESC
@@ -100,7 +132,8 @@ class SqliteChapterStyleScoreRepository:
         rows = self.db.fetch_all(
             """
             SELECT score_id, novel_id, chapter_number, adjective_density,
-                   avg_sentence_length, sentence_count, similarity_score, computed_at
+                   avg_sentence_length, sentence_count, similarity_score,
+                   style_vector_json, computed_at
             FROM chapter_style_scores
             WHERE novel_id = ?
             ORDER BY chapter_number ASC
@@ -125,7 +158,8 @@ class SqliteChapterStyleScoreRepository:
         rows = self.db.fetch_all(
             """
             SELECT score_id, novel_id, chapter_number, adjective_density,
-                   avg_sentence_length, sentence_count, similarity_score, computed_at
+                   avg_sentence_length, sentence_count, similarity_score,
+                   style_vector_json, computed_at
             FROM chapter_style_scores
             WHERE novel_id = ?
               AND chapter_number IN (
@@ -140,3 +174,4 @@ class SqliteChapterStyleScoreRepository:
             (novel_id, novel_id, limit),
         )
         return [dict(r) for r in rows]
+

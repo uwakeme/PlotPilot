@@ -576,6 +576,10 @@ CREATE TABLE IF NOT EXISTS chapter_style_scores (
     --   （此前是 NOT NULL DEFAULT 0.0 ⇒ 「没评过」被压成 0.0，
     --     与「真·相似度 0.0」同形 ⇒ 下游把没评过当成「完全不像」⇒ 假漂移告警）
     similarity_score REAL DEFAULT 0.0,
+    -- ⚠ 第 86 批（N-18）：LLM 风格向量（JSON）——「同量纲基准」的原料
+    --   （此前基准是从统计口径的指标推的 ⇒ 与 LLM 的 0~1 量纲**错配**
+    --     ⇒ 该维永久饱和 ⇒ 相似度天花板被压到 0.75 ⇒ 几乎每章都误报偏离）
+    style_vector_json TEXT,
     computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
     UNIQUE(novel_id, chapter_number)

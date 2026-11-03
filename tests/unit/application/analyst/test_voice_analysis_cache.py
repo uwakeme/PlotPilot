@@ -61,12 +61,14 @@ def test_llm_voice_style_cache_can_be_disabled():
 
 class _ScoreRepo:
     def list_by_novel(self, novel_id: str, limit=None):
+        # ⚠ 第 86 批（N-18）：基准的原料改成**同量纲的 LLM 风格向量**
+        #   （此前是从统计指标推的 ⇒ 量纲错配 ⇒ 该维永久饱和）。
         return [
-            {"adjective_density": 0.1, "avg_sentence_length": 20},
-            {"adjective_density": 0.2, "avg_sentence_length": 25},
-            {"adjective_density": 0.3, "avg_sentence_length": 30},
-            {"adjective_density": 0.4, "avg_sentence_length": 35},
-            {"adjective_density": 0.5, "avg_sentence_length": 40},
+            {"style_vector_json": '{"description_depth": 0.4}'},
+            {"style_vector_json": '{"description_depth": 0.5}'},
+            {"style_vector_json": '{"description_depth": 0.6}'},
+            {"style_vector_json": '{"description_depth": 0.45}'},
+            {"style_vector_json": '{"description_depth": 0.55}'},
         ]
 
 
@@ -78,8 +80,23 @@ class _BaselineService:
     def _compute_simple_baseline(self, style_vectors):
         return {"baseline": {"description_depth": len(style_vectors)}, "tolerance": {}}
 
+    # ⚠ 第 86 批（N-18）：基准走这条新入口。
+    def build_baseline_from_vectors(self, style_vectors):
+        return self._compute_simple_baseline(style_vectors)
 
-def test_voice_drift_baseline_cache_reuses_loaded_baseline(monkeypatch):
+    @staticmethod
+    def vector_from_json(raw):
+        import json
+
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+@pytest.mark.asyncio
+async def test_voice_drift_baseline_cache_reuses_loaded_baseline(monkeypatch):
     service = VoiceDriftService(
         _ScoreRepo(),
         _FingerprintRepo(),
@@ -96,10 +113,11 @@ def test_voice_drift_baseline_cache_reuses_loaded_baseline(monkeypatch):
 
     monkeypatch.setattr(service.score_repo, "list_by_novel", list_by_novel)
 
-    first = service._get_or_init_baseline("n1")
-    second = service._get_or_init_baseline("n1")
+    first = await service._get_or_init_baseline("n1")
+    second = await service._get_or_init_baseline("n1")
 
     assert first is second
+    assert first is not None, "样本够却没建出基准"
     assert calls == 1
 
 

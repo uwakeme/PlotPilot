@@ -66,6 +66,35 @@ class _FakeLLMVoiceService:
     def _compute_simple_baseline(self, style_vectors):
         return {"adjective_density": 0.1, "avg_sentence_length": 20, "sentence_count": 5}
 
+    # ⚠ 第 86 批（N-18）：基准改成**同量纲**（用本书的风格向量建）
+    #   ⇒ LLM 服务多了这三个方法（真实现现在 ``llm_voice_analysis_service``）。
+
+    def build_baseline_from_vectors(self, style_vectors):
+        return self._compute_simple_baseline(style_vectors)
+
+    @staticmethod
+    def vector_to_json(style_vector):
+        import json
+
+        clean = {k: v for k, v in style_vector.items() if not k.startswith("_")}
+        return json.dumps(clean, ensure_ascii=False)
+
+    @staticmethod
+    def vector_from_json(raw):
+        import json
+
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            k: float(v)
+            for k, v in data.items()
+            if not k.startswith("_") and isinstance(v, (int, float))
+        }
+
 
 def _service(use_llm_mode=False, llm_service=None, factory=None) -> VoiceDriftService:
     return VoiceDriftService(

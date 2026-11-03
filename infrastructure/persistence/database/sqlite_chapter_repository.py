@@ -1,7 +1,7 @@
 """SQLite Chapter Repository 实现"""
 import logging
 import sqlite3
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from domain.novel.entities.chapter import Chapter
 from domain.novel.value_objects.chapter_id import ChapterId
@@ -88,10 +88,19 @@ class SqliteChapterRepository(ChapterRepository):
 
         return self._row_to_chapter(row)
 
-    def list_by_novel(self, novel_id: NovelId) -> List[Chapter]:
-        """列出小说的所有章节"""
+    def list_by_novel(self, novel_id: NovelId, limit: Optional[int] = None) -> List[Chapter]:
+        """列出小说的所有章节。
+
+        ⚠ 第 86 批（N-18）：``limit`` 给「只要最早几章」的调用方用
+          （文风基准回填只要前 5 章 ⇒ 不该把 600 章的正文全load进内存）。
+          ⚠ 默认 ``None`` = 全部（保持既有行为）。
+        """
         sql = "SELECT * FROM chapters WHERE novel_id = ? ORDER BY number ASC"
-        rows = self.db.fetch_all(sql, (novel_id.value,))
+        params: List[Any] = [novel_id.value]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = self.db.fetch_all(sql, tuple(params))
 
         return [self._row_to_chapter(row) for row in rows]
 

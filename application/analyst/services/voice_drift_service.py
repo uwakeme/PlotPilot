@@ -10,8 +10,9 @@ import re
 import logging
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from domain.novel.value_objects.novel_id import NovelId
 from application.analyst.services.voice_analysis_settings import (
     VoiceAnalysisRuntimeSettings,
     get_voice_analysis_runtime_settings,
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 # 连续低分章节数触发告警
 DRIFT_ALERT_CONSECUTIVE = 5
+# LLM 模式建基准所需的**最少同量纲样本**数（第 86 批 · N-18）。
+#
+# ⚠ 为什么单独一个常量：基准必须与「当前值」**同一把尺子**（都是 LLM 的 0~1 量纲）。
+#   旧实现用统计指标当基准 ⇒ 量纲错配 ⇒ 该维永久饱和 ⇒ 相似度天花板被压到 0.75
+#   ⇒ 修文阈值 0.68 几乎**每章都触发** ⇒ 白烧钱。
+LLM_BASELINE_MIN_SAMPLES = 5
 # 相似度告警阈值（**默认值**）。
 # 实际取值优先读 ``VoiceAnalysisRuntimeSettings.drift_alert_threshold``；
 # 保留本常量是为了不破坏 daemon_host._similarity_below_warning_threshold 的导入。
@@ -56,6 +63,7 @@ class VoiceDriftService:
         use_llm_mode: bool = False,
         runtime_settings: VoiceAnalysisRuntimeSettings | None = None,
         llm_service_factory: Optional[Callable[[], Any]] = None,
+        chapter_repo: Optional[Any] = None,
     ):
         """
         Args:
@@ -65,6 +73,10 @@ class VoiceDriftService:
             use_llm_mode: LLM 模式的**默认级**（默认 False = 统计模式）
             llm_service_factory: 懒创建 LLM 文风服务时用的「取 LLM 服务」工厂
                 （⚠ 给工厂而不是实例 ⇒ 统计模式下**启动时什么都不建**）
+            chapter_repo: 章节仓储（可选）
+                ⚠ 第 86 批（N-18）：只用于**基准回填**——
+                  给「早于 LLM 模式开启就已写完」的书补齐同量纲基准的原料。
+                  没有它 ⇒ 那类书的基准只能等新章节慢慢攒（相似度先记「未评估」）。
         """
         self.score_repo = score_repo
         self.fingerprint_repo = fingerprint_repo
@@ -74,6 +86,12 @@ class VoiceDriftService:
         #: 懒创建 LLM 文风服务用的工厂（可选）。
         self._llm_service_factory = llm_service_factory
         self._runtime_settings = runtime_settings or get_voice_analysis_runtime_settings()
+        #: 章节仓储（可选，N-18 的基准回填用）。
+        self._chapter_repo = chapter_repo
+        #: 已经试过回填的书（第 86 批 · N-18）。
+        #: ⚠ 必须记：回填要**调模型**，失败时若不记，每章都会重试一次
+        #:   ⇒ 一本书能把调用次数翻好几倍（正是本批要治的「白烧钱」）。
+        self._backfill_attempted: set[str] = set()
 
         self._baseline_cache: "OrderedDict[str, dict]" = OrderedDict()
         self._baseline_cache_loaded_at: dict[str, float] = {}
@@ -209,14 +227,17 @@ class VoiceDriftService:
         """LLM 模式：使用 LLM 分析章节风格
 
         自动建立基准：前 5 章用于建立基准，之后开始检测漂移。
+
+        ⚠ 第 86 批（N-18）：基准改成**同量纲**（本书自己的 LLM 风格向量），
+          详见 ``_build_baseline_from_store``。
         """
         # 1. 分析当前章节风格
         style_vector = await self.llm_voice_service.analyze_chapter_style(
             novel_id, chapter_number, content
         )
 
-        # 2. 获取或建立基准
-        baseline = self._get_or_init_baseline(novel_id)
+        # 2. 获取或建立基准（⚠ 第 86 批：可能触发**回填**，要调模型 ⇒ async）
+        baseline = await self._get_or_init_baseline(novel_id)
 
         # 3. 计算相似度
         if baseline and chapter_number > 5:
@@ -230,11 +251,13 @@ class VoiceDriftService:
             await self._update_baseline(novel_id)
 
         # 5. 持久化（兼容现有表结构）
-        metrics = {
-            "adjective_density": style_vector.get("description_depth", 0.5),
-            "avg_sentence_length": style_vector.get("pacing", 0.5) * 50,  # 映射到合理范围
-            "sentence_count": content.count("。") + content.count("！") + content.count("？"),
-        }
+        # ⚠ 第 86 批（N-18）：统计列**保持统计口径**（**一列一义**）。
+        #   此前这里写的是 LLM 派生值（description_depth ⇒ adjective_density、
+        #   pacing*50 ⇒ avg_sentence_length）⇒ 同一列在不同章上是**两套量纲**
+        #   （生产实测：ch1~7 是统计值 0.0245/15.13，ch8+ 是 LLM 值 0.6/35.0）
+        #   ⇒ 谁读这一列都说不清它是什么。
+        #   ⇒ 现在两列都写**统计口径**的值；LLM 的判断另存 ``style_vector_json``。
+        metrics = self._compute_metrics(content)
 
         self.score_repo.upsert(
             novel_id=novel_id,
@@ -244,6 +267,8 @@ class VoiceDriftService:
             sentence_count=metrics["sentence_count"],
             # ⚠ 第 82 批（N-05）：**没有基准 ⇒ 这一章没评过** ⇒ 存 None（可空列）
             similarity_score=similarity,
+            # ⚠ 第 86 批（N-18）：风格向量落库 ⇒ 它是「同量纲基准」的原料
+            style_vector_json=self.llm_voice_service.vector_to_json(style_vector),
         )
 
         drift_alert = self._check_drift_alert(novel_id)
@@ -261,49 +286,144 @@ class VoiceDriftService:
             "mode": "llm",
         }
 
-    def _get_or_init_baseline(self, novel_id: str) -> Optional[dict]:
-        """获取或初始化基准风格"""
+    async def _get_or_init_baseline(self, novel_id: str) -> Optional[dict]:
+        """获取或初始化基准风格（第 86 批 · N-18：改成**同量纲**）。
+
+        ⚠ 病根：旧实现从**统计口径**的指标推基准
+          （``adjective_density`` 当作 ``description_depth``、
+          ``avg_sentence_length/50`` 当作 ``pacing``），
+          而「当前值」是 LLM 给的 0~1 ⇒ **两把尺子量同一个东西**。
+          ⇒ 生产实测：基准 description_depth = **0.0239** vs 当前值 ≈ 0.5
+            ⇒ rel_diff = **4.761** ⇒ 该维**永久饱和**
+            ⇒ 硬截断口径下相似度天花板恰好 **0.75**，而修文阈值是 **0.68**
+            ⇒ **几乎每章都判成「严重偏离」⇒ 每次都触发 3 轮定向修文 ⇒ 白烧钱**。
+
+        ⇒ 现在基准用**本书自己的 LLM 风格向量**建（同一把尺子）。
+        ⇒ 凑不够样本 ⇒ 返回 ``None`` ⇒ 上游记「**未评估**」
+          （宁可没数字，也不用错量纲的数字凑一个「看起来评过了」的分数）。
+        """
         cached = self._get_cached_baseline(novel_id)
         if cached is not None:
             return cached
 
-        # 从数据库加载历史评分，计算基准
-        scores = self.score_repo.list_by_novel(novel_id, limit=10)
-        if len(scores) >= 5:
-            # 有足够数据，计算简单基准
-            style_vectors = []
-            for s in scores[:5]:
-                vec = {
-                    "description_depth": s.get("adjective_density", 0.5),
-                    "pacing": (s.get("avg_sentence_length", 25) / 50),  # 反向映射
-                }
-                style_vectors.append(vec)
+        baseline = await self._build_baseline_from_store(novel_id)
+        if baseline is None:
+            return None
 
-            baseline = self.llm_voice_service._compute_simple_baseline(style_vectors)
-            self._remember_baseline(novel_id, baseline)
-            return baseline
+        self._remember_baseline(novel_id, baseline)
+        return baseline
 
-        return None
+    async def _build_baseline_from_store(self, novel_id: str) -> Optional[dict]:
+        """用**已落库的同量纲风格向量**建基准（第 86 批 · N-18）。"""
+        llm = self.llm_voice_service
+        if llm is None:
+            return None
+
+        vectors = self._load_baseline_vectors(novel_id)
+        if len(vectors) < LLM_BASELINE_MIN_SAMPLES:
+            vectors = await self._backfill_baseline_vectors(novel_id)
+        if len(vectors) < LLM_BASELINE_MIN_SAMPLES:
+            logger.info(
+                "文风基准样本不足（需要 %d，现有 %d）novel=%s ⇒ 相似度记为未评估",
+                LLM_BASELINE_MIN_SAMPLES,
+                len(vectors),
+                novel_id,
+            )
+            return None
+
+        return llm.build_baseline_from_vectors(vectors)
+
+    def _load_baseline_vectors(self, novel_id: str) -> List[Dict[str, float]]:
+        """取本书**最早**的若干条 LLM 风格向量（同一把尺子）。
+
+        ⚠ 按章号升序取 ⇒ 基准是「这本书**开头**的样子」
+          ⇒ 后面章节相对它的偏移就是「漂移」（而不是「最近 5 章的样子」，
+          后者会让每一章都拿身边邻居当镜子 ⇒ 漂移永远看不出来）。
+        """
+        llm = self.llm_voice_service
+        if llm is None:
+            return []
+        try:
+            rows = self.score_repo.list_by_novel(
+                novel_id, limit=LLM_BASELINE_MIN_SAMPLES * 10
+            )
+        except Exception as exc:  # noqa: BLE001 —— 读不到就当没基准，不许崩
+            logger.warning("文风基准：读风格向量失败 novel=%s: %s", novel_id, exc)
+            return []
+
+        vectors: List[Dict[str, float]] = []
+        for row in rows:
+            raw = row.get("style_vector_json")
+            if not raw:
+                continue
+            vector = llm.vector_from_json(raw)
+            if not vector:
+                continue
+            vectors.append(vector)
+            if len(vectors) >= LLM_BASELINE_MIN_SAMPLES:
+                break
+        return vectors
+
+    async def _backfill_baseline_vectors(self, novel_id: str) -> List[Dict[str, float]]:
+        """补齐基准原料：分析本书**最早的几章**，把风格向量落库。
+
+        ⚠ 为什么需要：LLM 模式的基准要「本书前 5 章」的自建风格，
+          但**早于 LLM 模式开启就写完**的书，那些章**没有**风格向量
+          ⇒ 不补的话，这本书的漂移检测永远是「未评估」（诚实，但没保护）。
+        ⇒ 补一次即可（向量落库 ⇒ 跨进程/重启都在）。
+
+        ⚠ **每本书只试一次**（``_backfill_attempted``）：回填要调模型，
+          失败时若每章都重试 ⇒ 一本书能把调用次数翻好几倍
+          ⇒ 那正是本批要治的「白烧钱」。
+        """
+        if novel_id in self._backfill_attempted:
+            return []
+        self._backfill_attempted.add(novel_id)
+
+        llm = self.llm_voice_service
+        if llm is None or self._chapter_repo is None:
+            return []
+
+        try:
+            chapters = self._chapter_repo.list_by_novel(
+                NovelId(novel_id), limit=LLM_BASELINE_MIN_SAMPLES
+            )
+        except Exception as exc:  # noqa: BLE001 —— 回填失败不影响主流程
+            logger.warning("文风基准回填：取章节失败 novel=%s: %s", novel_id, exc)
+            return []
+
+        for chapter in chapters:
+            content = (getattr(chapter, "content", "") or "").strip()
+            number = getattr(chapter, "number", None)
+            if not content or number is None:
+                continue
+            try:
+                vector = await llm.analyze_chapter_style(novel_id, int(number), content)
+                self.score_repo.upsert_style_vector(
+                    novel_id, int(number), llm.vector_to_json(vector)
+                )
+            except Exception as exc:  # noqa: BLE001 —— 单章失败不拖垮整本
+                logger.warning(
+                    "文风基准回填：分析失败 novel=%s ch=%s: %s", novel_id, number, exc
+                )
+
+        return self._load_baseline_vectors(novel_id)
 
     async def _update_baseline(self, novel_id: str) -> None:
-        """更新基准风格（每 5 章调用一次）"""
+        """更新基准风格（每 5 章调用一次）。
+
+        ⚠ 第 86 批（N-18）：口径换成**同量纲**（本书自己的 LLM 风格向量）。
+          基准的样本是「**最早**被分析过的那几章」⇒ 稳定不变；
+          这个刷新只是把「后来补齐的向量」并进来（回填）并续上缓存 TTL。
+        """
         if not self.llm_voice_service:
             return
 
-        scores = self.score_repo.list_by_novel(novel_id, limit=10)
-        if len(scores) >= 5:
-            # 重新计算基准
-            style_vectors = []
-            for s in scores:
-                vec = {
-                    "description_depth": s.get("adjective_density", 0.5),
-                    "pacing": (s.get("avg_sentence_length", 25) / 50),
-                }
-                style_vectors.append(vec)
-
-            baseline = await self.llm_voice_service.compute_baseline(novel_id, style_vectors)
-            self._remember_baseline(novel_id, baseline)
-            logger.info("基准风格已更新 novel=%s", novel_id)
+        baseline = await self._build_baseline_from_store(novel_id)
+        if baseline is None:
+            return
+        self._remember_baseline(novel_id, baseline)
+        logger.info("基准风格已更新 novel=%s", novel_id)
 
     def _baseline_cache_enabled(self) -> bool:
         return (

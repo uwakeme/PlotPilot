@@ -10,8 +10,10 @@
 
 成本：约 500 token/章（300 输入 + 200 输出）
 """
+import hashlib
 import json
 import logging
+import math
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List
@@ -30,6 +32,20 @@ from infrastructure.ai.prompt_gateway import get_prompt_gateway
 from application.ai.trace_context import ensure_trace
 
 logger = logging.getLogger(__name__)
+
+#: 送给模型的正文上限（超出的部分本来就不进模型 ⇒ 不该让缓存失效）
+STYLE_SNIPPET_LIMIT = 2000
+
+
+def content_fingerprint(text: str) -> str:
+    """内容指纹（缓存键用）。
+
+    ⚠ 算在**实际送进模型的那段文本**上（正文前 2000 字），不是整篇正文
+      ⇒ 正文后半段的改动**不会**让缓存失效（那部分本来就没进模型，
+      重算也是同一个结果 ⇒ 重算纯属白花 token）。
+    """
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
 
 # 风格维度定义
 STYLE_DIMENSIONS = [
@@ -73,13 +89,25 @@ class LLMVoiceAnalysisService:
         Returns:
             风格向量字典，包含各维度分数和元数据
         """
-        cache_key = f"{novel_id}:{chapter_number}"
+        # ⚠ 第 86 批（N-16）：缓存键必须含**内容身份**。
+        #
+        #   此前是 ``f"{novel_id}:{chapter_number}"`` ⇒ **同一章改写之后重评，
+        #   仍然命中改写前那次的缓存** ⇒ 拿回来的风格向量一字未变
+        #   ⇒ 相似度**纹丝不动**。
+        #
+        #   ⇒ 生产实测（第 85 批真跑一本书）：第 8 章连续 3 次定向修文，
+        #     相似度**始终 0.4167**；日志里每次「修文后重评」**都没有新的
+        #     模型请求**（只有修文本身那一次）⇒ 证实重评吃的是缓存。
+        #     ⇒ 循环因此**不可能收敛** ⇒ 后两次调用纯烧钱。
+        #
+        #   ⇒ 现在把「实际送进模型的那段文本」的指纹并进键里：
+        #     * 内容改了 ⇒ 键变了 ⇒ 重新分析（相似度才可能动）；
+        #     * 内容没改 ⇒ 键不变 ⇒ 仍然命中（不白花 token）。
+        snippet = content[:STYLE_SNIPPET_LIMIT] if len(content) > STYLE_SNIPPET_LIMIT else content
+        cache_key = f"{novel_id}:{chapter_number}:{content_fingerprint(snippet)}"
         cached = self._get_cached_style(cache_key)
         if cached is not None:
             return cached
-
-        # 截取内容（最多 2000 字，节省 token）
-        snippet = content[:2000] if len(content) > 2000 else content
 
         try:
             prompt = get_prompt_gateway().render(
@@ -243,8 +271,27 @@ class LLMVoiceAnalysisService:
             else:
                 rel_diff = abs(current_val - base_val)
 
-            # 归一化到 0-1
-            normalized_diff = min(1.0, rel_diff)
+            # ⚠ 第 86 批（N-17）：单维偏差改用**软饱和**，不再硬截断在 1.0。
+            #
+            #   此前是 ``min(1.0, rel_diff)`` ⇒ **每个维度**的偏差被截断在 1.0
+            #   ⇒ 「差 1 个容差」与「差 5 个容差」在该维**完全同分**
+            #   ⇒ 已饱和的那一维**怎么改都没反应**（分数不动 ⇒ 循环无从收敛）。
+            #
+            #   ⚠ 别把它说成「总分被量化成 1/N 的整数倍」——**那是不对的**：
+            #     截断发生在**单维**上；只要各维偏差都还不到 1 个容差，
+            #     总分仍然是连续的（0.4167 这类值就是这么来的）。
+            #     真正的病灶是「**有几维已经饱和** ⇒ 那一维的改进被吃掉」。
+            #
+            #   ⇒ 现在用指数软饱和 ``1 - e^(-x)``：
+            #     * **严格单调** ⇒ 任何一维动了一点，分数就动（可收敛）；
+            #     * 仍落在 0..1；
+            #     * 阈值口径**略微放宽**（越靠近 0 越接近原值）：
+            #       相似度 0.75 ⇔ 平均偏差 0.288 个容差（线性口径是 0.25，约 +15%）
+            #       相似度 0.68 ⇔ 平均偏差 0.386 个容差（线性口径是 0.32，约 +21%）
+            #       ⇒ 方向是「**少误报**」，与「几乎每章都被误报严重偏离」这个
+            #         要解决的问题方向一致；两个阈值**不用重标定**
+            #         （含义是「相似度低于 X = 偏离」，这个含义没变）。
+            normalized_diff = 1.0 - math.exp(-rel_diff)
             total_diff += normalized_diff
             dimensions += 1
 
@@ -256,6 +303,53 @@ class LLMVoiceAnalysisService:
         similarity = max(0.0, 1.0 - avg_diff)
 
         return round(similarity, 4)
+
+    def build_baseline_from_vectors(
+        self, style_vectors: List[Dict[str, float]]
+    ) -> Dict[str, Any]:
+        """用**同量纲**的风格向量建基准（第 86 批 · N-18）。
+
+        ⚠ 基准与「当前值」必须**同一个量纲**，否则那一维会**永久饱和**
+          （偏差恒 ≫ 1 个容差 ⇒ 那一维的改进永远看不见）。
+          ⇒ 生产实测（N-18）：旧基准的 ``description_depth`` 是 **0.0239**
+            （形容词密度口径），而当前值是 LLM 的 0~1 ⇒ rel_diff = **4.761**
+            ⇒ 硬截断口径下相似度天花板恰好 **0.75**，而修文阈值是 **0.68**
+            ⇒ **几乎每章都触发 3 轮定向修文**。
+        """
+        return self._compute_simple_baseline(style_vectors)
+
+    @staticmethod
+    def vector_to_json(style_vector: Dict[str, Any]) -> str:
+        """风格向量 → JSON（落库用）。
+
+        ⚠ 去掉 ``_meta``（那是本次分析的元信息，不是风格维度）。
+        """
+        clean = {k: v for k, v in style_vector.items() if not k.startswith("_")}
+        return json.dumps(clean, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def vector_from_json(raw: Any) -> Dict[str, float]:
+        """JSON → 风格向量（读库用）。
+
+        ⚠ 坏数据一律返回**空字典**（当「没有这一维」处理）
+          ⇒ 宁可少比一维，也不拿半个向量去算分。
+        """
+        if not raw or not isinstance(raw, str):
+            return {}
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: Dict[str, float] = {}
+        for key, value in data.items():
+            if key.startswith("_"):
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            out[key] = float(value)
+        return out
 
     def _parse_style_json(self, raw: str) -> Dict[str, float]:
         """解析风格 JSON"""

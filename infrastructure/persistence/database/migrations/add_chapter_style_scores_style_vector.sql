@@ -1,0 +1,20 @@
+-- 第 86 批（N-18）：给 `chapter_style_scores` 加一列 **LLM 风格向量**
+--
+-- ⚠ 病根：LLM 模式的「基准」是从**统计口径**的指标推出来的
+--   （`adjective_density` ⇒ 当作 `description_depth`，`avg_sentence_length/50` ⇒ 当作 `pacing`），
+--   而「当前值」是 LLM 给的 0~1 量纲 ⇒ **两把尺子量同一个东西**。
+--
+--   ⇒ 生产实测（novel-1792047827087）：
+--     基准 description_depth = **0.0239**（形容词密度口径）
+--     当前值 description_depth ≈ 0.5（LLM 口径）
+--     ⇒ rel_diff = 4.761 ⇒ 该维**永久饱和**
+--     ⇒ `pacing` 同样饱和（rel_diff = 1.875）
+--     ⇒ 硬截断口径下相似度天花板恰好 **0.75**，而修文阈值是 **0.68**
+--     ⇒ **几乎每章都被判成「严重偏离」⇒ 每次都触发 3 轮定向修文 ⇒ 白烧钱**。
+--
+-- ⇒ 修法：基准必须用**同一把尺子**（本书自己的 LLM 风格向量）来建。
+--   ⇒ 所以要把每章的 LLM 风格向量**存下来**（之前只存了两个派生指标，6 个维度直接丢了）。
+--
+-- ⚠ 列约束：`TEXT`，可空（NULL = 这一章没跑过 LLM 风格分析）。
+--   ⇒ 「没存」与「存了但为空」都表示**没有同量纲的基准** ⇒ 上游记「未评估」，不编数字。
+ALTER TABLE chapter_style_scores ADD COLUMN style_vector_json TEXT;

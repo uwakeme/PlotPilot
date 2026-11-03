@@ -2140,8 +2140,14 @@ class BaseStoryPipeline(ABC):
 
         ⚠ 第 85 批（真跑一本书时暴露）：**分数不动就别再改** ——
         实测生产实跑第 8 章连续 3 次定向修文，相似度**始终 0.4167**
-        ⇒ 分数是「落在容差内的维度计数」（离散分桶）⇒ 重写后常落回同一批桶
         ⇒ 后两次调用**纯烧钱** ⇒ 现在「没变好就停」（与 daemon 那条链同口径）。
+
+        ⚠ 第 86 批订正：第 85 批把原因写成「分数是离散分桶」——**那是错的**
+          （截断只发生在**单维**上，总分不是 1/N 的整数倍）。
+          真因：① **风格缓存键不含内容身份** ⇒ 改写后重评命中旧缓存
+          （日志铁证：重评时**没有新的模型请求**）；
+          ② **单维硬截断** ⇒ 已饱和的那一维改了也看不出来。
+          第 86 批把这两条都修了（N-16 / N-17）。
         """
         from application.engine.services.style_constraint_builder import build_style_summary
         from application.engine.services.voice_rewrite_result import (

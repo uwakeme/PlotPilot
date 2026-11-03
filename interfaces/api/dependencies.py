@@ -1088,6 +1088,9 @@ def get_voice_drift_service() -> VoiceDriftService:
         llm_service_factory=lambda: get_llm_service(),
         use_llm_mode=settings.use_llm_mode,
         runtime_settings=settings,
+        # ⚠ 第 86 批（N-18）：章节仓储 ⇒ 「基准回填」能把**早于 LLM 模式开启**
+        #   就写完的书补出同量纲基准（否则那类书的漂移检测永远是「未评估」）。
+        chapter_repo=get_chapter_repository(),
     )
 
 

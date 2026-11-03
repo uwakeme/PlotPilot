@@ -336,6 +336,8 @@ CREATE TABLE IF NOT EXISTS chapter_style_scores (
     avg_sentence_length REAL NOT NULL DEFAULT 0.0,
     sentence_count INTEGER NOT NULL DEFAULT 0,
     similarity_score REAL DEFAULT 0.0,
+    -- ⚠ 第 86 批（N-18）：LLM 风格向量（同一把尺子的基准原料）
+    style_vector_json TEXT,
     computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
     UNIQUE(novel_id, chapter_number)
@@ -375,8 +377,13 @@ def _apply_chapter_style_scores_nullable_similarity(conn: sqlite3.Connection) ->
 
     try:
         conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute(
-            "CREATE TABLE chapter_style_scores_new (\n"
+        # ⚠ 第 86 批（N-18）：``style_vector_json`` 是后加的列
+        #   ⇒ **源表未必有**（全新安装时，这个代码级补丁跑在 .sql 迁移**之前**）
+        #   ⇒ 直接写 ``s.style_vector_json`` 会让整条 INSERT 报错
+        #   ⇒ 重建失败 ⇒ 表保持 NOT NULL similarity_score ⇒ 第 82 批那条修复白做。
+        #   ⇒ 现在按源表**实际**有没有这一列动态拼 SQL。
+        has_style_vector = "style_vector_json" in cols
+        new_table_cols = (
             "    score_id TEXT PRIMARY KEY,\n"
             "    novel_id TEXT NOT NULL,\n"
             "    chapter_number INTEGER NOT NULL,\n"
@@ -384,7 +391,22 @@ def _apply_chapter_style_scores_nullable_similarity(conn: sqlite3.Connection) ->
             "    avg_sentence_length REAL NOT NULL DEFAULT 0.0,\n"
             "    sentence_count INTEGER NOT NULL DEFAULT 0,\n"
             "    similarity_score REAL DEFAULT 0.0,\n"
-            "    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n"
+        )
+        insert_cols = (
+            "score_id, novel_id, chapter_number, adjective_density,\n"
+            "                 avg_sentence_length, sentence_count, similarity_score"
+        )
+        select_expr = (
+            "s.style_vector_json" if has_style_vector else "NULL"
+        )
+        if has_style_vector:
+            new_table_cols += "    style_vector_json TEXT,\n"
+            insert_cols += ",\n                 style_vector_json"
+
+        conn.execute(
+            "CREATE TABLE chapter_style_scores_new (\n"
+            + new_table_cols
+            + "    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n"
             "    FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,\n"
             "    UNIQUE(novel_id, chapter_number)\n"
             ")"
@@ -393,8 +415,10 @@ def _apply_chapter_style_scores_nullable_similarity(conn: sqlite3.Connection) ->
         conn.execute(
             """
             INSERT INTO chapter_style_scores_new
-                (score_id, novel_id, chapter_number, adjective_density,
-                 avg_sentence_length, sentence_count, similarity_score, computed_at)
+                ("""
+            + insert_cols
+            + """,
+                 computed_at)
             SELECT s.score_id, s.novel_id, s.chapter_number, s.adjective_density,
                    s.avg_sentence_length, s.sentence_count,
                    CASE WHEN EXISTS (
@@ -402,6 +426,9 @@ def _apply_chapter_style_scores_nullable_similarity(conn: sqlite3.Connection) ->
                          WHERE f.novel_id = s.novel_id
                            AND COALESCE(f.sample_count, 0) >= 10
                    ) THEN s.similarity_score ELSE NULL END,
+                   """
+            + select_expr
+            + """,
                    s.computed_at
               FROM chapter_style_scores s
             """
