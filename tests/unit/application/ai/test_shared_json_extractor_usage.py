@@ -39,6 +39,9 @@ FORBIDDEN_PATTERNS = [
     re.compile(r"json\.loads\(\(raw_text"),
     re.compile(r"json\.loads\(raw_text"),
     re.compile(r"json\.loads\(\(raw\b"),
+    re.compile(r"json\.loads\(\(result\.content"),
+    re.compile(r"json\.loads\(result\.content"),
+    re.compile(r"json\.loads\(response_text\)"),
     re.compile(r"json\.loads\(content\)"),   # 部分服务把模型输出叫 content
 ]
 
@@ -47,6 +50,12 @@ EXEMPTED: dict[str, str] = {
     "application/world/services/worldbuilding_stream_parser.py": (
         "流式解析器：自带**三段降级链**（注入式 repair 回调 + 大括号截取 + "
         "缓冲快照兜底），换共享抽取器会改它的语义 ⇒ 属另一类实现，**不改**。"
+    ),
+    "application/blueprint/services/beat_sheet_service.py": (
+        "节拍表：这里**已手工剥围栏**（能用）⇒ 只是**重复实现**，待收敛到共享抽取器。"
+    ),
+    "application/audit/services/setting_drift_audit.py": (
+        "设定漂移审计：这里**已手工剥围栏**（能用）⇒ 只是**重复实现**，待收敛。"
     ),
     "application/engine/dag/nodes/anti_ai_nodes.py": (
         "DAG 是**展示层**（生产写作走 StoryPipeline）⇒ 节点的降级形态是"

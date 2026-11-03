@@ -52,8 +52,14 @@ class LlmExtractor:
                 GenerationConfig(max_tokens=600, temperature=0.1),
             )
             raw = result.content if hasattr(result, "content") else str(result)
-            items: List[Dict[str, Any]] = json.loads(raw)
-            if not isinstance(items, list):
+            # ⚠ 第 89 批（N-25）：走**共享**的 JSON 抽取器（剥 ```json 围栏 + 清洗 + 修复）
+            # ⚠ 这里要的是**列表**（事件的根就是数组）⇒ 用 `parse_llm_json_to_any`
+            #   （`parse_llm_json_to_dict` 会把列表取首项 ⇒ 用错就永远空）。
+            from application.ai.llm_json_extract import parse_llm_json_to_any
+
+            parsed, _parse_errors = parse_llm_json_to_any(raw)
+            items = parsed if isinstance(parsed, list) else []
+            if not isinstance(parsed, list):
                 return []
         except Exception as e:
             logger.warning("[LlmExtractor] 提取失败: %s", e)

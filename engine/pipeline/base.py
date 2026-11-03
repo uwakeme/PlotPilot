@@ -528,6 +528,16 @@ class BaseStoryPipeline(ABC):
         ctx.needs_buffer = bool(decision["needs_buffer"])
         ctx.buffer_reason = str(decision.get("reason") or "")
 
+        if not ctx.needs_buffer:
+            # ⚠ 第 89 批：判定为「常规推进」**也要留痕** ——
+            #   此前只有「余韵章」与「未判定」有日志 ⇒ 生产日志里
+            #   **看不出这个通道到底判没判成功**（判成功了反而是静默的）。
+            logger.info(
+                "[%s] 判定为常规推进 ch=%s reason=%s",
+                ctx.novel_id, ctx.chapter_number, ctx.buffer_reason,
+            )
+            return
+
         if ctx.needs_buffer:
             if not settings.apply:
                 logger.info(

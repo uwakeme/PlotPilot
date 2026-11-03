@@ -92,13 +92,15 @@ async def build_macro_calibration(
         logger.warning("叙事校准指令生成失败（不注入任何校准）: %s", exc)
         return ""
 
-    try:
-        data = json.loads((result.content or "").strip())
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("叙事校准指令返回非 JSON（不注入）: %s", exc)
-        return ""
-    if not isinstance(data, dict):
-        logger.warning("叙事校准指令返回的 JSON 不是对象（不注入）")
+    # ⚠ 第 89 批（N-25）：走**共享**的 JSON 抽取器（剥 ```json 围栏 + 清洗 + 修复）。
+    from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+    data, _parse_errors = parse_llm_json_to_dict(result.content)
+    if data is None:
+        logger.warning(
+            "叙事校准指令返回非 JSON（不注入）: %s",
+            "; ".join(_parse_errors) if _parse_errors else "解析失败",
+        )
         return ""
 
     try:

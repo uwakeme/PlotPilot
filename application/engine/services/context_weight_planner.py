@@ -160,19 +160,17 @@ class ContextWeightPlanner:
         ``output_schema=ContextWeightsLlmPayload``，手写解析等于让它形同虚设：
         契约改字段时手写解析不会跟着变。
         """
-        text = (raw_text or "").strip()
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError) as exc:
+        # ⚠ 第 89 批（N-25）：走**共享**的 JSON 抽取器（剥 ```json 围栏 + 清洗 + 修复）。
+        #   自造 ``json.loads`` ⇒ 模型把 JSON 包在围栏里时**必然失败**
+        #   ⇒ D-02 通道静默降级成「未评估」（生产实测：char 0）。
+        from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+        data, _parse_errors = parse_llm_json_to_dict(raw_text)
+        if data is None:
             logger.warning(
                 "上下文权重返回非 JSON，按未评估处理 novel=%s ch=%s: %s",
-                novel_id, chapter_number, exc,
-            )
-            return None
-        if not isinstance(data, dict):
-            logger.warning(
-                "上下文权重返回的 JSON 不是对象，按未评估处理 novel=%s ch=%s",
                 novel_id, chapter_number,
+                "; ".join(_parse_errors) if _parse_errors else "解析失败",
             )
             return None
         try:
