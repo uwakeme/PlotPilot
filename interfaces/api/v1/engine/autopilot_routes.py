@@ -1439,7 +1439,6 @@ class StartRequest(BaseModel):
     )
 
 
-@router.post("/{novel_id}/start")
 def _resolve_start_target_chapters(*, body_target: int | None, db_target: int) -> int:
     """start 路由的**目标章数**解析（第 18 批 · I）。
 
@@ -1448,6 +1447,12 @@ def _resolve_start_target_chapters(*, body_target: int | None, db_target: int) -
     （生产实测：PUT 4 → start ⇒ 又变回 3）。
 
     ⇒ 权威来源是 **DB**；请求体里显式传的值优先级最高（前端「启动」弹窗就是这么传的）。
+
+    ⚠ 第 85 批：这个装饰器**曾经挂在本函数上**（2026-10-27 的 `14619a06` 把本函数
+      插在了装饰器与真正的路由函数之间）⇒ FastAPI 把**辅助函数**注册成了路由
+      ⇒ 真正的 ``start_autopilot`` **没有路由** ⇒ 前端「启动托管」一直 422
+      （它要的 ``body_target`` / ``db_target`` 是必填查询参数）。
+      ⇒ 装饰器已移回 ``start_autopilot``；并加了守卫防这一族。
     """
     if body_target is not None:
         return _clamp_autopilot_target_chapters(body_target)
@@ -1484,6 +1489,7 @@ async def _read_target_chapters_from_db(
         raise HTTPException(503, "数据库繁忙，请稍后重试")
 
 
+@router.post("/{novel_id}/start")
 async def start_autopilot(novel_id: str, body: StartRequest = StartRequest()):
     """启动自动驾驶（共享内存先行；目标章数字数原子落库后再发 IPC，避免与 PUT 竞态）。
 
