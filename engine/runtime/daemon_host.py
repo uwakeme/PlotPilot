@@ -1588,7 +1588,16 @@ class DaemonHostMixin:
 
 
     def _should_attempt_voice_rewrite(self, drift_result: Dict[str, Any]) -> bool:
-        """自动修文阈值：严格，仅对明显偏离的当前章触发。"""
+        """要不要为这一章做定向修文。
+
+        ⚠ 第 89 批（N-24）：优先用服务层给的**书内相对**判定
+          （「比本书近期的常态低多少」⇒ 长书不会每章都触发）。
+          ⇒ 服务没给判定时（老路径 / 统计模式）才回落到绝对阈值。
+        """
+        assessment = drift_result.get("drift_assessment")
+        if isinstance(assessment, dict) and assessment.get("rewrite") is not None:
+            return bool(assessment.get("rewrite"))
+
         similarity = drift_result.get("similarity_score")
         if similarity is None:
             return False

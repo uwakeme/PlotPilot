@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from domain.novel.value_objects.novel_id import NovelId
 from application.analyst.services.voice_analysis_settings import (
     VoiceAnalysisRuntimeSettings,
+    VOICE_REWRITE_THRESHOLD_DEFAULT,
     get_voice_analysis_runtime_settings,
+)
+from application.analyst.services.voice_drift_assessment import (
+    RECENT_MEDIAN_WINDOW,
+    assess,
+    recent_similarity_median,
 )
 from application.engine.services.ai_participation_settings import (
     ai_participation_enabled,
@@ -221,6 +227,8 @@ class VoiceDriftService:
             "metrics": metrics,
             "similarity_score": similarity,
             "drift_alert": drift_alert,
+            # ⚠ 第 89 批（N-24）：统计模式没有「同量纲基准」⇒ 判定回落绝对口径
+            "drift_assessment": self.assess_chapter(novel_id, similarity, chapter_number),
             "mode": "statistics",
         }
 
@@ -279,9 +287,22 @@ class VoiceDriftService:
 
         drift_alert = self._check_drift_alert(novel_id)
 
+        # ⚠ 第 89 批（N-24）：**书内相对**的判定（告警/修文/面板三处共用这一份）
+        assessment = self.assess_chapter(novel_id, similarity, chapter_number)
+
         logger.debug(
-            "LLM 文风评分完成 novel=%s ch=%d similarity=%s drift=%s",
-            novel_id, chapter_number, similarity, drift_alert
+            "LLM 文风评分完成 novel=%s ch=%d similarity=%s drift=%s basis=%s drop=%s",
+            novel_id, chapter_number, similarity, drift_alert,
+            assessment.get("basis"), assessment.get("relative_drop"),
+        )
+        # ⚠ 第 89 批（N-24）：相对判定的结果**提到 INFO** ——
+        #   生产日志里要能看见「这一章比本书近期常态低多少」
+        #   （否则这套新判定等于黑箱，出问题没法查）。
+        logger.info(
+            "[%s] 第 %d 章文风：similarity=%s 常态=%s 相对跌幅=%s 判据=%s 建议改写=%s",
+            novel_id, chapter_number, similarity,
+            assessment.get("book_median"), assessment.get("relative_drop"),
+            assessment.get("basis"), assessment.get("rewrite"),
         )
 
         return {
@@ -289,6 +310,7 @@ class VoiceDriftService:
             "style_vector": style_vector,
             "similarity_score": similarity,
             "drift_alert": drift_alert,
+            "drift_assessment": assessment,
             "mode": "llm",
         }
 
@@ -538,26 +560,117 @@ class VoiceDriftService:
         return round((adj_sim + len_sim) / 2, 4)
 
     def _check_drift_alert(self, novel_id: str) -> bool:
-        """检查最近 N 章是否连续低于阈值。
+        """检查最近 N 章是否**连续**异常。
 
-        跳过 similarity_score 为 None 的章节（无指纹基准 ⇒ **没评过**）。
+        跳过 similarity_score 为 None 的章节（没评过 ⇒ 不是「没偏离」）。
 
         ⚠ 第 82 批（N-04）：窗口必须是**最近** N 章。
           此前用的是 ``list_by_novel``，而它是 ``ORDER BY chapter_number ASC LIMIT ?``
           ⇒ 拿到的是**最早**的 N 章 ⇒ 超过 N 章的书，告警永远反映第 1~N 章。
           ⇒ 现在改用 ``list_recent_by_novel``（**倒序取最近、正序返回**）。
+
+        ⚠ 第 89 批（N-24）：判定改**书内相对** ——
+          「最近 N 章都低于阈值」在长书上**恒真**（常态本身就在 0.5 附近）
+          ⇒ 改成「最近 N 章都**明显低于本书近期的常态**」。
         """
-        scores = self.score_repo.list_recent_by_novel(
-            novel_id, limit=DRIFT_ALERT_CONSECUTIVE * 2
+        rows = self.score_repo.list_recent_by_novel(
+            novel_id, limit=RECENT_MEDIAN_WINDOW + DRIFT_ALERT_CONSECUTIVE
         )
-        # 过滤掉 None 值（无指纹基准 = 没评过的章节）
-        valid_scores = [s for s in scores if s.get("similarity_score") is not None]
+        valid_scores = [s for s in rows if s.get("similarity_score") is not None]
 
         if len(valid_scores) < DRIFT_ALERT_CONSECUTIVE:
             return False
 
         recent = valid_scores[-DRIFT_ALERT_CONSECUTIVE:]
-        threshold = float(
+        # ⚠ 第 89 批：常态必须取**窗口之前**的历史 ——
+        #   若把被怀疑的这 5 章也算进中位数 ⇒ 离群值会把常态一起拽低
+        #   ⇒ 每一章相对常态的跌幅都被压缩 ⇒ 「连续 5 章都偏低」反而**测不出来**。
+        history = valid_scores[:-DRIFT_ALERT_CONSECUTIVE]
+        median = recent_similarity_median(
+            [s["similarity_score"] for s in history]
+        )
+        alert_threshold = float(
             getattr(self._runtime_settings, "drift_alert_threshold", DRIFT_ALERT_THRESHOLD)
         )
-        return all(s["similarity_score"] < threshold for s in recent)
+        rewrite_threshold = float(
+            getattr(
+                self._runtime_settings,
+                "voice_rewrite_threshold",
+                VOICE_REWRITE_THRESHOLD_DEFAULT,
+            )
+        )
+        relative_alert_drop = float(
+            getattr(self._runtime_settings, "drift_relative_drop_alert", 0.15)
+        )
+        relative_rewrite_drop = float(
+            getattr(self._runtime_settings, "voice_rewrite_relative_drop", 0.25)
+        )
+        return all(
+            assess(
+                s["similarity_score"],
+                median,
+                alert_threshold,
+                rewrite_threshold,
+                relative_alert_drop=relative_alert_drop,
+                relative_rewrite_drop=relative_rewrite_drop,
+            )["alert"]
+            for s in recent
+        )
+
+    # ── 第 89 批（N-24）：书内相对判定 ──────────────────────────────────
+
+    def _recent_similarity_median(
+        self, novel_id: str, exclude_chapter_number: Optional[int] = None
+    ) -> Optional[float]:
+        """本书**近期常态** = 最近 N 章相似度的中位数。
+
+        ⚠ 判「当前章」时必须**把自己排除掉** ⇒ 否则一个异常低值会把自己的
+          中位数拉下来 ⇒ 把自己「洗白」。
+        """
+        rows = self.score_repo.list_recent_by_novel(
+            novel_id, limit=RECENT_MEDIAN_WINDOW + 2
+        )
+        return recent_similarity_median(
+            [r.get("similarity_score") for r in rows],
+            exclude_chapter_number=exclude_chapter_number,
+            chapters=[r.get("chapter_number") for r in rows],
+        )
+
+    def assess_chapter(
+        self,
+        novel_id: str,
+        similarity: Optional[float],
+        chapter_number: Optional[int] = None,
+    ) -> dict:
+        """判定一章的相似度：**相对优先，历史不足时回落绝对**（第 89 批 · N-24）。
+
+        ⚠ 这是**唯一**的判定入口 ⇒ 告警、修文、面板三处都用它
+          （同一逻辑不许写两份）。
+        """
+        median = self._recent_similarity_median(
+            novel_id, exclude_chapter_number=chapter_number
+        )
+        return assess(
+            similarity,
+            median,
+            absolute_alert_threshold=float(
+                getattr(
+                    self._runtime_settings,
+                    "drift_alert_threshold",
+                    DRIFT_ALERT_THRESHOLD,
+                )
+            ),
+            absolute_rewrite_threshold=float(
+                getattr(
+                    self._runtime_settings,
+                    "voice_rewrite_threshold",
+                    VOICE_REWRITE_THRESHOLD_DEFAULT,
+                )
+            ),
+            relative_alert_drop=float(
+                getattr(self._runtime_settings, "drift_relative_drop_alert", 0.15)
+            ),
+            relative_rewrite_drop=float(
+                getattr(self._runtime_settings, "voice_rewrite_relative_drop", 0.25)
+            ),
+        )

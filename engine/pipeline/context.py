@@ -126,6 +126,9 @@ class PipelineContext(_ValidationStateContract):
     drift_alert: bool = False
     similarity_score: Optional[float] = None
     voice_mode: str = "statistics"               # statistics / llm
+    # ⚠ 第 89 批（N-24）：**书内相对**判定给出的「值不值得花钱定向改写」。
+    #   True/False/None（None = 服务没给判定 ⇒ 调用方回落到绝对阈值）。
+    drift_rewrite_recommended: Optional[bool] = None
     rewrite_applied: bool = False                # 是否触发了定向改写
     rewrite_attempts: int = 0                    # 定向改写尝试次数
 

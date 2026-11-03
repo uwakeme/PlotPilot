@@ -85,7 +85,16 @@ def test_settings_default_disabled_and_not_apply():
 
 
 def test_settings_reader_never_enables_by_accident():
-    assert get_chapter_mode_runtime_settings().enabled is False
+    """⚠ 第 89 批：用户拍板**打开** D-01 ⇒ 运行时默认应跟着配置走（enabled + apply）。
+
+    ⚠ 原先这条钉的是「运行时默认仍是关」⇒ 打开开关后**必须**同步改写
+      （否则守卫与生产行为对不上 ⇒ 形同虚设）。
+    ⚠ **dataclass 基线仍然全关**（``test_settings_default_disabled_and_not_apply``
+      守着）⇒ 配置段缺失时仍然回到改造前行为 ✓。
+    """
+    settings = get_chapter_mode_runtime_settings()
+    assert settings.enabled is True
+    assert settings.apply is True
 
 
 def test_chapter_mode_switch_is_independent_of_context_weights():

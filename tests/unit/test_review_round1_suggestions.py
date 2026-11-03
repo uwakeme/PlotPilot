@@ -711,9 +711,11 @@ def test_evaluated_voice_drift_carries_the_real_computed_at(monkeypatch):
     monkeypatch.setattr(
         "interfaces.api.v1.workbench.monitor.SqliteChapterStyleScoreRepository",
         lambda _db: type("R", (), {
+            # ⚠ 第 89 批（N-24）：监控端也要算「本书近期常态」⇒ 需要最近若干章
+            "list_recent_by_novel": staticmethod(lambda _n, limit=50: []),
             "get_latest_by_novel": staticmethod(lambda _n: {
                 "chapter_number": 7,
-                "similarity_score": 0.45,       # drift = 0.55 → warning（第 86 批口径：warning 阈值 = 1 - 0.50）
+                "similarity_score": 0.45,       # drift = 0.55 → warning（无常态 ⇒ 回落绝对口径）
                 "computed_at": "2026-10-18T09:30:00",
             }),
         })(),

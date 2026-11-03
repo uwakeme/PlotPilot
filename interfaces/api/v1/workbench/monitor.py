@@ -173,6 +173,13 @@ class VoiceDriftResponse(BaseModel):
     #: 那是 0-10 刻度的另一套数，与后端判定不一致，且展示的是假信息。
     warning_threshold: float = DRIFT_WARNING
     critical_threshold: float = DRIFT_CRITICAL
+    #: ⚠ 第 89 批（N-24）：**书内相对**判定的依据与数字。
+    #: ``basis`` = ``"relative"``（有本书近期常态可比）/ ``"absolute"``（回落绝对阈值）；
+    #: ``relative_drop`` = 比近期常态低了多少（0.15 = 低 15%）；
+    #: ``book_median`` = 本书近期的相似度常态（**长期偏移**就体现在这里）。
+    basis: str = "absolute"
+    relative_drop: Optional[float] = None
+    book_median: Optional[float] = None
     reason: str = ""  # 未评估原因；已评估时为空
 
 
@@ -262,15 +269,63 @@ def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
 
         sample_count = LLM_BASELINE_MIN_SAMPLES
 
-    # 2. similarity 越高越像基准 ⇒ 漂移 = 1 - similarity。
+    # 2. similarity 越高越像基准 ⇒ 漂移 = 1 - similarity（**绝对刻度**：
+    #    它回答的是「这本书离自己的**开局风格**有多远」）。
     similarity = float(latest["similarity_score"])
     drift = round(max(0.0, min(1.0, 1.0 - similarity)), 4)
-    if drift >= DRIFT_CRITICAL:
+
+    # ⚠ 第 89 批（N-24）：**状态**用**书内相对**判定（与服务层同一份）——
+    #   否则面板说「warning」而后台说不偏离 ⇒ 两边各说各话。
+    from application.analyst.services.voice_drift_assessment import (
+        RECENT_MEDIAN_WINDOW,
+        assess,
+        recent_similarity_median,
+    )
+    from application.analyst.services.voice_analysis_settings import (
+        get_voice_analysis_runtime_settings,
+    )
+
+    settings = get_voice_analysis_runtime_settings()
+    recent_rows = SqliteChapterStyleScoreRepository(get_database()).list_recent_by_novel(
+        novel_id, limit=RECENT_MEDIAN_WINDOW + 2
+    )
+    median = recent_similarity_median(
+        [r.get("similarity_score") for r in recent_rows],
+        exclude_chapter_number=latest.get("chapter_number"),
+        chapters=[r.get("chapter_number") for r in recent_rows],
+    )
+    judgment = assess(
+        similarity,
+        median,
+        absolute_alert_threshold=float(settings.drift_alert_threshold),
+        absolute_rewrite_threshold=float(settings.voice_rewrite_threshold),
+        relative_alert_drop=float(settings.drift_relative_drop_alert),
+        relative_rewrite_drop=float(settings.voice_rewrite_relative_drop),
+    )
+
+    if judgment["basis"] == "relative":
+        # 相对判据：低于本书近期常态 15% ⇒ 警告；低于 25% ⇒ 严重（与修文同一条线）
+        drop = float(judgment.get("relative_drop") or 0.0)
+        if drop > float(settings.voice_rewrite_relative_drop):
+            status = "critical"
+        elif drop > float(settings.drift_relative_drop_alert):
+            status = "warning"
+        else:
+            status = "normal"
+    elif drift >= DRIFT_CRITICAL:
         status = "critical"
     elif drift >= DRIFT_WARNING:
         status = "warning"
     else:
         status = "normal"
+
+    reason = ""
+    if judgment["basis"] == "relative":
+        reason = (
+            "低于本书近期常态 %.0f%%（常态 %.3f）"
+            % (float(judgment.get("relative_drop") or 0.0) * 100,
+               float(judgment.get("book_median") or 0.0))
+        )
 
     return VoiceDriftResponse(
         novel_id=novel_id,
@@ -280,7 +335,10 @@ def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
         sample_count=sample_count,
         last_scored_chapter=int(latest["chapter_number"]),
         computed_at=latest.get("computed_at"),
-        reason="",
+        basis=str(judgment.get("basis") or "absolute"),
+        relative_drop=judgment.get("relative_drop"),
+        book_median=judgment.get("book_median"),
+        reason=reason,
     )
 
 
@@ -289,9 +347,12 @@ async def get_voice_drift(novel_id: str):
     """
     获取文风漂移检测结果（**漂移度，0-1，越高越糟**）
 
-    ⚠ 第 86 批：阈值是 **0.5 为警告 / 0.6 为严重**（= 1 − 相似度 0.50 / 0.40）
-      ⇒ 相似度低于 0.50 才是警告、低于 0.40 才是严重
-      （此前写的 0.3 是照着**旧口径**的相似度定的 ⇒ 每个健康章节都会被显示成异常）。
+    ⚠ 第 86 批：``drift_score`` 是**绝对刻度**（= 1 − 相似度）⇒ 它回答的是
+      「这本书离自己的**开局风格**有多远」⇒ 绝对阈值 0.5 / 0.6 只在
+      **拿不到本书近期常态**时用来兜底。
+    ⚠ 第 89 批（N-24）：``status`` 改用**书内相对**判定（与服务层同一份）——
+      「比本书近期的常态低多少」⇒ 长书不会因为常态本身偏低而一直报异常。
+      相对数字在 ``relative_drop`` / ``book_median`` / ``basis`` 里。
 
     没有基准或没有评分记录时返回 ``evaluated=False`` + ``drift_score=None``，
     而不是编一个看起来正常的数字。

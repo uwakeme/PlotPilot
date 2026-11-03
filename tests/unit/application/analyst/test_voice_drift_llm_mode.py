@@ -170,17 +170,24 @@ def test_threshold_can_be_overridden_via_settings():
 
 @pytest.mark.asyncio
 async def test_overridden_threshold_actually_changes_alert(monkeypatch):
-    """阈值必须真的影响判定，不只是被读进来。"""
+    """阈值必须真的影响判定，不只是被读进来。
+
+    ⚠ 第 89 批（N-24）：判定改**书内相对**后，绝对阈值只在
+      「**历史不足**、拿不到本书近期常态」时兜底
+      ⇒ 这里用**刚好 5 章**（告警窗口的最小值 < 常态所需的 6 个样本）
+      ⇒ 走绝对兜底 ⇒ 阈值覆盖依然可验。
+      ⇒ 相对判据本身由 ``test_voice_drift_assessment.py`` 单独钉。
+    """
     svc = _svc(runtime_settings=VoiceAnalysisRuntimeSettings(drift_alert_threshold=0.95))
     svc.score_repo.rows = [
-        {"chapter_number": i, "similarity_score": 0.8} for i in range(1, 7)
+        {"chapter_number": i, "similarity_score": 0.8} for i in range(1, 6)
     ]
-    # 相似度 0.8：低于 0.95 → 告警；高于 0.75 → 不告警
+    # 相似度 0.8：低于 0.95 → 告警；高于 0.50 → 不告警
     assert svc._check_drift_alert("n1") is True
 
     svc2 = _svc(runtime_settings=VoiceAnalysisRuntimeSettings(drift_alert_threshold=0.70))
     svc2.score_repo.rows = [
-        {"chapter_number": i, "similarity_score": 0.8} for i in range(1, 7)
+        {"chapter_number": i, "similarity_score": 0.8} for i in range(1, 6)
     ]
     assert svc2._check_drift_alert("n1") is False
 

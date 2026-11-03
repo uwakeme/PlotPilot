@@ -107,10 +107,14 @@ def _render_template(path: pathlib.Path, **variables) -> str:
 # =====================================================================
 
 
-def test_the_switch_defaults_to_off():
-    """结构开关**默认关闭** ⇒ 行为与改造前逐位一致。"""
-    assert chapter_plan_structure_enabled() is False
-    assert plan_structure_prompt_flag() == ""
+def test_the_switch_is_on_and_the_prompt_flag_is_rendered():
+    """⚠ 第 89 批：用户拍板**打开**结构开关 ⇒ 提示词标志必须真的渲染出来。
+
+    ⚠ 原先这条钉的是「默认关闭」⇒ 打开开关后**必须**同步改它
+      （否则守卫与生产行为对不上 ⇒ 形同虚设）。
+    """
+    assert chapter_plan_structure_enabled() is True
+    assert plan_structure_prompt_flag() != "", "开关开了但提示词标志是空的 ⇒ 开关没生效"
 
 
 def test_the_switch_lives_in_performance_yaml():
@@ -120,8 +124,8 @@ def test_the_switch_lives_in_performance_yaml():
     ).read_bytes().decode("utf-8")
 
     assert re.search(
-        r"chapter_plan_structure:\s*\n\s*enabled:\s*false", text
-    ), "结构开关的默认值必须是 false（关）"
+        r"chapter_plan_structure:\s*\n\s*enabled:\s*(true|false)", text
+    ), "结构开关不在 performance.yaml 里"
 
 
 # =====================================================================

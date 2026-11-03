@@ -72,7 +72,7 @@ def test_endpoint_returns_explicit_unevaluated_without_a_fingerprint(monkeypatch
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: None})())
     monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
-        "R", (), {"get_latest_by_novel": lambda self, nid: None})())
+        "R", (), {"list_recent_by_novel": lambda self, nid, limit=50: [], "get_latest_by_novel": lambda self, nid: None})())
     monkeypatch.setattr(mon, "get_database", lambda: object())
 
     res = mon._get_voice_drift_sync("n1")
@@ -95,7 +95,7 @@ def test_a_real_score_counts_even_without_the_author_fingerprint(monkeypatch):
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: None})())
     monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
-        "R", (), {"get_latest_by_novel": lambda self, nid: {
+        "R", (), {"list_recent_by_novel": lambda self, nid, limit=50: [], "get_latest_by_novel": lambda self, nid: {
             "chapter_number": 9, "similarity_score": 0.5247}})())
     monkeypatch.setattr(mon, "get_database", lambda: object())
 
@@ -142,7 +142,7 @@ def test_drift_is_computed_as_one_minus_similarity(monkeypatch):
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: {"sample_count": 12}})())
     monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
-        "R", (), {"get_latest_by_novel": lambda self, nid: {
+        "R", (), {"list_recent_by_novel": lambda self, nid, limit=50: [], "get_latest_by_novel": lambda self, nid: {
             "chapter_number": 7, "similarity_score": 0.9}})())
     monkeypatch.setattr(mon, "get_database", lambda: object())
 
@@ -169,7 +169,7 @@ def test_high_similarity_can_never_produce_critical(monkeypatch):
     # warning 带是 drift ∈ [0.5, 0.6)，对应 similarity ∈ (0.4, 0.5]。
     for similarity, expected in [(0.95, "normal"), (0.45, "warning"), (0.2, "critical")]:
         monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
-            "R", (), {"get_latest_by_novel": lambda self, nid: {
+            "R", (), {"list_recent_by_novel": lambda self, nid, limit=50: [], "get_latest_by_novel": lambda self, nid: {
                 "chapter_number": 3, "similarity_score": similarity}})())
         monkeypatch.setattr(mon, "get_database", lambda: object())
         res = mon._get_voice_drift_sync("n1")
@@ -187,7 +187,7 @@ def test_no_score_row_even_with_baseline_is_unevaluated(monkeypatch):
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: {"sample_count": 20}})())
     monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
-        "R", (), {"get_latest_by_novel": lambda self, nid: None})())
+        "R", (), {"list_recent_by_novel": lambda self, nid, limit=50: [], "get_latest_by_novel": lambda self, nid: None})())
     monkeypatch.setattr(mon, "get_database", lambda: object())
 
     res = mon._get_voice_drift_sync("n1")

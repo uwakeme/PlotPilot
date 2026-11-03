@@ -20,6 +20,15 @@ from application.core.config.runtime_settings_utils import (
 #: ⚠ 第 86 批：0.75 → **0.50**（口径重标定，理由见 ``voice_drift_service`` 同名常量）。
 DRIFT_ALERT_THRESHOLD_DEFAULT = 0.50
 
+#: 定向修文触发阈值默认值。
+#: ⚠ 第 89 批（N-24）：这个阈值**只有一个出处**（本设置 + 配置）——
+#:   服务层用它算出「这一章值不值得花钱改写」，engine 层的两个常量只是**兜底**
+#:   （服务给不出判定时用）⇒ 一致性由 ``test_voice_threshold_calibration`` 钉住。
+#:
+#: ⚠ 第 86 批：0.68 → **0.40**（口径重标定：健康章节的相似度在 0.5 附近，
+#:   0.68 对健康章节命中率 100% ⇒ 每章都触发修文 ⇒ 白烧钱）。
+VOICE_REWRITE_THRESHOLD_DEFAULT = 0.40
+
 
 @dataclass(frozen=True)
 class VoiceAnalysisRuntimeSettings:
@@ -34,6 +43,14 @@ class VoiceAnalysisRuntimeSettings:
     #: 相似度告警阈值。模块常量 ``DRIFT_ALERT_THRESHOLD`` 作为默认值保留，
     #: 保留它是为了不破坏 ``daemon_host._similarity_below_warning_threshold``。
     drift_alert_threshold: float = DRIFT_ALERT_THRESHOLD_DEFAULT
+    #: 定向修文触发阈值（第 89 批 · N-24：判定改**书内相对**后，
+    #: 这个绝对阈值只在「历史不足、拿不到本书近期常态」时兜底）。
+    voice_rewrite_threshold: float = VOICE_REWRITE_THRESHOLD_DEFAULT
+    #: ⚠ 第 89 批（N-24）：**书内相对**判据 —— 低于本书近期常态多少算异常。
+    #: 绝对阈值对长书「几乎每章都命中」（常态本身就在 0.5 附近）⇒ 改相对。
+    drift_relative_drop_alert: float = 0.15
+    #: 低于本书近期常态多少 ⇒ 值得花钱做定向修文（比告警更严，因为它要**烧调用**）。
+    voice_rewrite_relative_drop: float = 0.25
 
 
 def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
@@ -85,5 +102,27 @@ def get_voice_analysis_runtime_settings() -> VoiceAnalysisRuntimeSettings:
                 section, "drift_alert_threshold", defaults.drift_alert_threshold
             ),
             defaults.drift_alert_threshold,
+        ),
+        voice_rewrite_threshold=non_negative_float(
+            section_value(
+                section, "voice_rewrite_threshold", defaults.voice_rewrite_threshold
+            ),
+            defaults.voice_rewrite_threshold,
+        ),
+        drift_relative_drop_alert=non_negative_float(
+            section_value(
+                section,
+                "drift_relative_drop_alert",
+                defaults.drift_relative_drop_alert,
+            ),
+            defaults.drift_relative_drop_alert,
+        ),
+        voice_rewrite_relative_drop=non_negative_float(
+            section_value(
+                section,
+                "voice_rewrite_relative_drop",
+                defaults.voice_rewrite_relative_drop,
+            ),
+            defaults.voice_rewrite_relative_drop,
         ),
     )

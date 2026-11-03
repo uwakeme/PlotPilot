@@ -1421,10 +1421,17 @@ class BaseStoryPipeline(ABC):
                 ctx.similarity_score = vr.get("similarity_score")
                 ctx.drift_alert = bool(vr.get("drift_alert", False))
                 ctx.voice_mode = vr.get("mode", "statistics")
+                # ⚠ 第 89 批（N-24）：**书内相对**的「值不值得花钱改写」判定
+                assessment = vr.get("drift_assessment")
+                ctx.drift_rewrite_recommended = (
+                    bool(assessment.get("rewrite"))
+                    if isinstance(assessment, dict) and assessment.get("rewrite") is not None
+                    else None
+                )
 
                 # 定向改写循环
                 if ctx.drift_alert and ctx.similarity_score is not None:
-                    if ctx.similarity_score < self.VOICE_REWRITE_THRESHOLD:
+                    if self._should_rewrite_voice(ctx):
                         await self._apply_voice_rewrite_loop(ctx)
             except Exception as e:
                 logger.warning(f"文风审计失败: {e}")
@@ -2236,9 +2243,26 @@ class BaseStoryPipeline(ABC):
                 break
             if not (
                 ctx.drift_alert
-                and (ctx.similarity_score or 0) < self.VOICE_REWRITE_THRESHOLD
+                and self._should_rewrite_voice(ctx)
             ):
                 break
+
+    def _should_rewrite_voice(self, ctx: PipelineContext) -> bool:
+        """要不要为这一章做定向修文（第 89 批 · N-24）。
+
+        ⚠ 优先用服务层给的**书内相对**判定
+          （「比本书近期的常态低多少」⇒ 长书不会每章都触发改写）。
+          ⇒ 服务没给判定时（老路径 / 统计模式）才回落到绝对阈值。
+        """
+        if ctx.drift_rewrite_recommended is not None:
+            return bool(ctx.drift_rewrite_recommended)
+        similarity = ctx.similarity_score
+        if similarity is None:
+            return False
+        try:
+            return float(similarity) < self.VOICE_REWRITE_THRESHOLD
+        except Exception:
+            return False
 
     async def _invoke_voice_rewrite(
         self, ctx: PipelineContext, variables: dict

@@ -128,7 +128,9 @@ def test_the_chapter_mode_settings_honor_the_novel_level():
         get_chapter_mode_runtime_settings,
     )
 
-    assert get_chapter_mode_runtime_settings().enabled is False, "默认必须仍是关闭"
+    assert get_chapter_mode_runtime_settings().enabled is True, (
+        "第 89 批：用户拍板打开 D-01 ⇒ 运行时默认应跟着配置走"
+    )
 
     settings = get_chapter_mode_runtime_settings(
         novel_switches={"chapter_mode.enabled": True, "chapter_mode.apply": True}

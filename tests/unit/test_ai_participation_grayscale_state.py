@@ -30,10 +30,11 @@ GRAYSCALE_STATE = {
     "chapter_target": {"enabled": True},
     # E-06 每章节奏配额：送进正文提示词（≤600 字符）
     "rhythm_quota": {"enabled": True},
-    # D-01 余韵章判定：**只判定不施加**（apply 仍关 ⇒ 正文提示词不变）
-    "chapter_mode": {"enabled": False, "apply": False},
-    # E-01b 章前剧本结构：改了会变**细纲形状** ⇒ 风险最大，保持关
-    "chapter_plan_structure": {"enabled": False},
+    # ⚠ 第 89 批：用户拍板**打开** D-01（原先只判定不施加 ⇒ 正文提示词不变）。
+    #   enabled = AI 判定「是不是余韵章」；apply = 把节奏指令**注入正文提示词**。
+    "chapter_mode": {"enabled": True, "apply": True},
+    # ⚠ 第 89 批：用户拍板**打开** E-01b（会改**细纲形状** ⇒ 原先风险最大、一直保持关）。
+    "chapter_plan_structure": {"enabled": True},
     # ⚠ 第 84 批（F-04 / N-05）：文风漂移**默认切 LLM 模式**
     #   （登记表 F-04 的「该谁定」列写的就是这一句）
     #   ⇒ 统计模式在写作链路上**没有基准**（voice_vault 0 行）⇒ 一章都没真评过
