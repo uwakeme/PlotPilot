@@ -123,9 +123,9 @@ def test_high_similarity_can_never_produce_critical(monkeypatch):
     monkeypatch.setattr(mon, "get_voice_fingerprint_repository", lambda: type(
         "R", (), {"get_by_novel": lambda self, nid, pov: {"sample_count": 50}})())
 
-    # 边界说明：drift >= 0.5 即 critical，所以 similarity=0.5 → drift=0.5 → critical。
-    # warning 带是 drift ∈ [0.3, 0.5)，对应 similarity ∈ (0.5, 0.7]。
-    for similarity, expected in [(0.95, "normal"), (0.6, "warning"), (0.2, "critical")]:
+    # 边界说明（第 86 批口径重标定）：drift >= 0.6 即 critical，所以 similarity=0.4 → drift=0.6 → critical。
+    # warning 带是 drift ∈ [0.5, 0.6)，对应 similarity ∈ (0.4, 0.5]。
+    for similarity, expected in [(0.95, "normal"), (0.45, "warning"), (0.2, "critical")]:
         monkeypatch.setattr(mon, "SqliteChapterStyleScoreRepository", lambda db: type(
             "R", (), {"get_latest_by_novel": lambda self, nid: {
                 "chapter_number": 3, "similarity_score": similarity}})())

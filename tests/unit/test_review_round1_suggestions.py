@@ -67,8 +67,8 @@ def test_voice_drift_response_carries_the_real_threshold_and_time():
         computed_at="2026-10-18T00:00:00",
     )
     assert r.computed_at == "2026-10-18T00:00:00"
-    assert r.warning_threshold == 0.3
-    assert r.critical_threshold == 0.5
+    assert r.warning_threshold == 0.5
+    assert r.critical_threshold == 0.6
 
     unevaluated = VoiceDriftResponse(
         novel_id="n1",
@@ -713,7 +713,7 @@ def test_evaluated_voice_drift_carries_the_real_computed_at(monkeypatch):
         lambda _db: type("R", (), {
             "get_latest_by_novel": staticmethod(lambda _n: {
                 "chapter_number": 7,
-                "similarity_score": 0.55,       # drift = 0.45 → warning
+                "similarity_score": 0.45,       # drift = 0.55 → warning（第 86 批口径：warning 阈值 = 1 - 0.50）
                 "computed_at": "2026-10-18T09:30:00",
             }),
         })(),

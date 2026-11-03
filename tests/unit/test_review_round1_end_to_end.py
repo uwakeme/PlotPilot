@@ -589,9 +589,9 @@ def test_daemon_threshold_follows_the_configured_override(monkeypatch):
     host = object.__new__(dh.DaemonHostMixin)
     fn = dh.DaemonHostMixin._similarity_below_warning_threshold
 
-    # 默认阈值 0.75
-    assert fn(host, 0.8) is False
-    assert fn(host, 0.7) is True
+    # 默认阈值 0.50（第 86 批口径重标定：0.75 → 0.50）
+    assert fn(host, 0.6) is False
+    assert fn(host, 0.4) is True
 
     # 覆盖成 0.95：0.8 现在应当**低于**阈值
     monkeypatch.setattr(

@@ -54,8 +54,14 @@ def _coerce_word_count_to_int(wc: Any) -> int:
 
 
 VOICE_REWRITE_MAX_ATTEMPTS = LLM_MAX_TOTAL_ATTEMPTS
-VOICE_REWRITE_THRESHOLD = 0.68
-VOICE_WARNING_DEFAULT_THRESHOLD = 0.75
+# ⚠ 第 86 批：0.68 → **0.40**（口径重标定）。
+#   相似度 = 1 - 平均「偏差 ÷ 容差」，而容差 = max(0.1, 标准差×1.5)
+#   ⇒ 健康章节的典型得分**天然在 0.5 附近**（实测两本书 12 个健康章：min 0.468 / 中位 0.554）
+#   ⇒ 0.68 对健康章节**命中率 100%** ⇒ 每章都触发 3 轮定向修文 ⇒ 白烧钱。
+#   ⇒ 0.40 低于全部健康样本 ⇒ 健康书**零**误触发。
+VOICE_REWRITE_THRESHOLD = 0.40
+# ⚠ 第 86 批：0.75 → **0.50**（与 DRIFT_ALERT_THRESHOLD 同口径）。
+VOICE_WARNING_DEFAULT_THRESHOLD = 0.50
 
 
 def init_daemon_dependencies(

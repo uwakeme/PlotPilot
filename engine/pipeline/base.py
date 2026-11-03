@@ -206,11 +206,14 @@ class BaseStoryPipeline(ABC):
 
     # ─── 可覆写的类属性（调参） ───
     DEFAULT_TARGET_WORDS: int = 2500
-    VOICE_REWRITE_THRESHOLD: float = 0.68
+    # ⚠ 第 86 批：0.68 → **0.40**（口径重标定：相似度的健康区间在 0.5 附近
+    #   ⇒ 0.68 对健康章节命中率 100% ⇒ 每章都触发定向修文 ⇒ 白烧钱）。
+    VOICE_REWRITE_THRESHOLD: float = 0.40
     # 章节落库效果确认的轮询预算（秒）；测试可覆盖为小值
     CHAPTER_PERSIST_WAIT_SECONDS: float = 5.0
     VOICE_REWRITE_MAX_ATTEMPTS: int = 3
-    VOICE_WARNING_DEFAULT_THRESHOLD: float = 0.75
+    # ⚠ 第 86 批：0.75 → **0.50**（与 DRIFT_ALERT_THRESHOLD 同口径）。
+    VOICE_WARNING_DEFAULT_THRESHOLD: float = 0.50
     MIN_PASS_SCORE: float = 0.6
     BATCH_WRITE_INTERVAL: int = 3
     STREAM_PUSH_INTERVAL: float = 0.15

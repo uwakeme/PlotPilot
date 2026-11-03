@@ -116,8 +116,14 @@ def test_default_constructed_service_is_statistics_mode():
 
 
 def test_module_default_threshold_unchanged():
-    """模块常量保留 0.75 —— daemon_host 还直接 import 它。"""
-    assert DRIFT_ALERT_THRESHOLD == 0.75
+    """模块常量保留 0.50 —— daemon_host 还直接 import 它。
+
+    ⚠ 第 86 批：0.75 → **0.50**（口径重标定）。
+      相似度 = 1 - 平均「偏差 ÷ 容差」，容差 = max(0.1, 标准差×1.5)
+      ⇒ 健康章节的典型得分**天然在 0.5 附近**
+      ⇒ 0.75 对健康章节命中率 100%（实测两本书 12 个健康章：min 0.468 / 中位 0.554）。
+    """
+    assert DRIFT_ALERT_THRESHOLD == 0.50
 
 
 def test_default_threshold_matches_module_constant():

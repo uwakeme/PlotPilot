@@ -16,7 +16,9 @@ from application.core.config.runtime_settings_utils import (
 #: 字面量** —— 反向 import 会造成循环依赖（voice_drift_service 已 import 本模块）。
 #: 一致性由 ``test_voice_drift_llm_mode.test_default_threshold_matches_module_constant``
 #: 钉住；一旦两边漂移，那条测试会红。
-DRIFT_ALERT_THRESHOLD_DEFAULT = 0.75
+#:
+#: ⚠ 第 86 批：0.75 → **0.50**（口径重标定，理由见 ``voice_drift_service`` 同名常量）。
+DRIFT_ALERT_THRESHOLD_DEFAULT = 0.50
 
 
 @dataclass(frozen=True)

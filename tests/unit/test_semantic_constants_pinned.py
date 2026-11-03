@@ -57,7 +57,7 @@ EXEMPTED: dict[tuple[str, str], str] = {
 #:
 #: ⚠ 这里的值是**字面量**（不是 import 回来的）⇒ 改生产常量 ⇒ 这条立刻红。
 PINNED: tuple[tuple[str, str, object, str], ...] = (
-("application.analyst.services.voice_drift_service", "DRIFT_ALERT_THRESHOLD", 0.75, "（语义常量：值变了必须显式改本表）"),
+("application.analyst.services.voice_drift_service", "DRIFT_ALERT_THRESHOLD", 0.50, "（语义常量：值变了必须显式改本表；第 86 批口径重标定 0.75→0.50）"),
     ("application.audit.dtos.macro_refactor_dto", "SOURCE_NONE", '', "「未评估」的**三态语义标记**（空/标记串被换掉 ⇒ 下游把未评估当成真实来源）"),
     ("application.audit.services.anti_ai_pattern_induction_schema", "SOURCE_NONE", '', "「未评估」的**三态语义标记**（空/标记串被换掉 ⇒ 下游把未评估当成真实来源）"),
     ("application.audit.services.anti_ai_thresholds", "ASSESSMENT_THRESHOLDS", [(4.0, '严重'), (2.0, '中等'), (0.8, '轻微'), (0.0, '纯净')], "反 AI 评级档位（4.0/2.0/0.8/0.0）"),

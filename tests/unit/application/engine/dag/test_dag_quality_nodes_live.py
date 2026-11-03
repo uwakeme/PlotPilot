@@ -288,7 +288,35 @@ class TestStyleNodeReportsRealScoresWhenItRuns:
         assert result.status is NodeStatus.SUCCESS
 
     async def test_threshold_breach_raises_alert(self, monkeypatch):
-        """造一个超过 drift_warning 的分数，断言警报真的响了。"""
+        """造一个**漂移量**超过 drift_warning 的分数，断言警报真的响了。
+
+        ⚠ 第 86 批：阈值判定此前**方向反了** —— 拿**相似度**去比「漂移阈值」
+          （``similarity > drift_warning`` ⇒ 越像基准越判偏离）。
+          ⇒ 现在按**漂移量**（``1 - 相似度``）比，阈值也是漂移刻度。
+        """
+        service = StubVoiceDriftService(
+            payload={"similarity_score": 0.2, "drift_alert": False}
+        )
+        _patch_voice_drift(monkeypatch, lambda: service)
+        node = StyleNode(NodeConfig(thresholds={"drift_warning": 0.5}))
+
+        result = await node.execute(
+            {"content": CONTENT}, {"novel_id": "n1", "chapter_number": 3}
+        )
+
+        assert result.outputs.get("drift_score") == pytest.approx(0.2)
+        assert result.outputs.get("drift_alert") is True, (
+            "漂移量 0.8 > drift_warning(0.5) 必须触发警报——这个节点以前从未响过"
+        )
+        assert result.status is NodeStatus.WARNING
+        assert result.outputs.get("state") is AssessmentState.DECIDED
+
+    async def test_a_high_similarity_does_not_raise_an_alert(self, monkeypatch):
+        """⚠ 回归：相似度**高** ⇒ **不该**判偏离（第 86 批修的就是这个反方向）。
+
+        ⚠ 旧指标下相似度恒低（0.42 < 0.5）⇒ 方向反了也没发作；
+          指标修好之后（健康章节 0.55~0.67）它会**每章误报**。
+        """
         service = StubVoiceDriftService(
             payload={"similarity_score": 0.95, "drift_alert": False}
         )
@@ -299,12 +327,10 @@ class TestStyleNodeReportsRealScoresWhenItRuns:
             {"content": CONTENT}, {"novel_id": "n1", "chapter_number": 3}
         )
 
-        assert result.outputs.get("drift_score") == pytest.approx(0.95)
-        assert result.outputs.get("drift_alert") is True, (
-            "0.95 > drift_warning(0.5) 必须触发警报——这个节点以前从未响过"
+        assert result.outputs.get("drift_alert") is False, (
+            "相似度 0.95（漂移只有 0.05）被判成偏离 ⇒ 比较方向反了"
         )
-        assert result.status is NodeStatus.WARNING
-        assert result.outputs.get("state") is AssessmentState.DECIDED
+        assert result.status is NodeStatus.SUCCESS
 
     async def test_zero_similarity_is_decided_not_unassessed(self, monkeypatch):
         """反向钉死：真值 0 必须如实表达为 0 + DECIDED，不得被当成「没评估」。"""
@@ -324,8 +350,10 @@ class TestStyleNodeReportsRealScoresWhenItRuns:
         assert result.outputs.get("state") is AssessmentState.DECIDED, (
             "0 与「没评估」必须被区分：跑成了就是 DECIDED"
         )
-        assert result.outputs.get("drift_alert") is False
-        assert result.status is NodeStatus.SUCCESS
+        # ⚠ 第 86 批：相似度 0 ⇒ 漂移量 1.0 ⇒ **必须**报警报
+        #   （此前比较方向反了 ⇒ 0.0 不触发、0.95 反而触发）。
+        assert result.outputs.get("drift_alert") is True
+        assert result.status is NodeStatus.WARNING
 
 
 # ─── F-15：anti_ai_audit / ChapterAuditNode ───

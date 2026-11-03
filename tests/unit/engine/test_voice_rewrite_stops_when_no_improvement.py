@@ -80,12 +80,14 @@ async def test_the_pipeline_stops_when_the_score_does_not_improve(monkeypatch):
     ctx = PipelineContext(
         novel_id="n-1", chapter_number=7, chapter_content="原始正文" * 20, outline="大纲"
     )
-    ctx.similarity_score = 0.4167
+    ctx.similarity_score = 0.30
     ctx.drift_alert = True
     voice = MagicMock()
     voice.fingerprint_repo = None
-    # ⚠ 复评**一直**是同一个分数（真实场景：离散分桶 ⇒ 落回同一批桶）
-    voice.score_chapter.return_value = {"similarity_score": 0.4167, "drift_alert": True}
+    # ⚠ 复评**一直**是同一个分数
+    # ⚠ 第 86 批：真因是**缓存键不含内容身份**（改写后重评命中旧缓存），
+    #   不是「离散分桶」；取值也按新口径下调（修文阈值 0.40 ⇒ 取值必须低于它）。
+    voice.score_chapter.return_value = {"similarity_score": 0.30, "drift_alert": True}
     ctx.voice_drift_service = voice
     ctx.llm_service = MagicMock()
 
@@ -123,14 +125,14 @@ async def test_the_pipeline_keeps_going_while_the_score_improves(monkeypatch):
     ctx = PipelineContext(
         novel_id="n-1", chapter_number=7, chapter_content="原始正文" * 20, outline="大纲"
     )
-    ctx.similarity_score = 0.4
+    ctx.similarity_score = 0.30
     ctx.drift_alert = True
     voice = MagicMock()
     voice.fingerprint_repo = None
     voice.score_chapter.side_effect = [
+        {"similarity_score": 0.35, "drift_alert": True},
+        {"similarity_score": 0.40, "drift_alert": True},
         {"similarity_score": 0.45, "drift_alert": True},
-        {"similarity_score": 0.5, "drift_alert": True},
-        {"similarity_score": 0.55, "drift_alert": True},
     ]
     ctx.voice_drift_service = voice
     ctx.llm_service = MagicMock()
@@ -168,15 +170,15 @@ async def test_the_daemon_chain_stops_when_the_score_does_not_improve(monkeypatc
             return None
 
         async def _score_voice_only(self, novel_id, number, content):
-            # ⚠ 复评**一直**是同一个分数（离散分桶的真实后果）
-            return {"similarity_score": 0.4167, "drift_alert": False}
+            # ⚠ 复评**一直**是同一个分数（第 86 批：真因是缓存键不含内容身份）
+            return {"similarity_score": 0.30, "drift_alert": False}
 
     host = _Host()
     novel = SimpleNamespace(novel_id=SimpleNamespace(value="n-1"))
     chapter = SimpleNamespace(number=8)
 
     _content, _result = await host._apply_voice_rewrite_loop(
-        novel, chapter, "原始正文", {"drift_alert": True, "similarity_score": 0.4167}
+        novel, chapter, "原始正文", {"drift_alert": True, "similarity_score": 0.30}
     )
 
     assert len(rewrites) == 1, (

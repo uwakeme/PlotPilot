@@ -143,7 +143,15 @@ class StyleNode(BaseNode):
 
             drift_score = float(result["similarity_score"])
             drift_alert = bool(result.get("drift_alert", False))
-            if drift_score > warning_threshold:
+            # ⚠ 第 86 批：**比较方向修对了**。
+            #   此前是 ``if drift_score > warning_threshold: drift_alert = True``
+            #   而 ``drift_score`` 里装的是**相似度**（越大越像基准）
+            #   ⇒ 「相似度**高于**漂移阈值」被判成偏离 ⇒ **方向反了**。
+            #   ⚠ 旧指标下相似度恒低（0.42 < 0.5）⇒ 这个洞一直没发作；
+            #     指标修好之后（健康章节 0.55~0.67）它会**每章误报** ⇒ 必须一起修。
+            #   ⇒ 现在按**漂移量**（1 - 相似度）比，阈值也是漂移刻度。
+            drift = 1.0 - drift_score
+            if drift > warning_threshold:
                 drift_alert = True
             state = AssessmentState.DECIDED
         except Exception as e:

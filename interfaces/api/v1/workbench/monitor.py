@@ -139,8 +139,14 @@ def _get_tension_curve_sync(novel_id: str) -> TensionCurveResponse:
 
 
 # 文风漂移告警阈值（drift = 1 - similarity，越高越糟）
-DRIFT_WARNING = 0.3
-DRIFT_CRITICAL = 0.5
+#
+# ⚠ 第 86 批：0.3 / 0.5 → **0.5 / 0.6**（口径重标定）。
+#   相似度的健康区间是 0.468~0.671 ⇒ **drift 的健康区间是 0.33~0.53**
+#   ⇒ 旧的 DRIFT_WARNING=0.3 ⇒ **每个健康章节都显示「警告」**（假告警）。
+#   ⇒ 新的 0.5 ⇔ similarity < 0.50（= 漂移告警阈值，两边同一口径）
+#   ⇒ 新的 0.6 ⇔ similarity < 0.40（= 定向修文阈值）
+DRIFT_WARNING = 0.5
+DRIFT_CRITICAL = 0.6
 
 # 基准样本门槛，与写入侧保持一致（voice_drift_service.py:108）
 FINGERPRINT_MIN_SAMPLES = 10
@@ -259,7 +265,11 @@ def _get_voice_drift_sync(novel_id: str) -> Optional[VoiceDriftResponse]:
 @router.get("/{novel_id}/monitor/voice-drift", response_model=VoiceDriftResponse)
 async def get_voice_drift(novel_id: str):
     """
-    获取文风漂移检测结果（**漂移度，0-1，越高越糟**，超过 0.3 为异常）
+    获取文风漂移检测结果（**漂移度，0-1，越高越糟**）
+
+    ⚠ 第 86 批：阈值是 **0.5 为警告 / 0.6 为严重**（= 1 − 相似度 0.50 / 0.40）
+      ⇒ 相似度低于 0.50 才是警告、低于 0.40 才是严重
+      （此前写的 0.3 是照着**旧口径**的相似度定的 ⇒ 每个健康章节都会被显示成异常）。
 
     没有基准或没有评分记录时返回 ``evaluated=False`` + ``drift_score=None``，
     而不是编一个看起来正常的数字。

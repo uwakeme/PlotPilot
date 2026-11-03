@@ -30,7 +30,7 @@ class ShortDramaPipeline(BaseStoryPipeline):
 
     # ─── 调参（覆盖基类属性） ───
     DEFAULT_TARGET_WORDS = 1500
-    VOICE_REWRITE_THRESHOLD = 0.5      # 短剧对声线更宽容
+    VOICE_REWRITE_THRESHOLD = 0.30     # 短剧对声线更宽容（第 86 批口径重标定后）
     VOICE_REWRITE_MAX_ATTEMPTS = 1     # 改写轮数少（快）
     MIN_PASS_SCORE = 0.5               # 短剧质量门槛更低
     BATCH_WRITE_INTERVAL = 2           # 更频繁地写库

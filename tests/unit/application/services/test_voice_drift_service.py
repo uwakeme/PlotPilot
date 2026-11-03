@@ -54,13 +54,14 @@ def test_no_alert_when_insufficient_history():
 
 
 def test_alert_when_consecutive_low_scores():
-    low = [{"similarity_score": 0.5}] * DRIFT_ALERT_CONSECUTIVE
+    # ⚠ 第 86 批：漂移阈值 0.75 → **0.50**（口径重标定）⇒ 「低分」取值要跟着下调
+    low = [{"similarity_score": 0.45}] * DRIFT_ALERT_CONSECUTIVE
     svc = _make_service(scores=low)
     assert svc._check_drift_alert("novel-1")
 
 
 def test_no_alert_when_one_high_score():
-    mixed = [{"similarity_score": 0.5}] * (DRIFT_ALERT_CONSECUTIVE - 1)
+    mixed = [{"similarity_score": 0.45}] * (DRIFT_ALERT_CONSECUTIVE - 1)
     mixed.append({"similarity_score": 0.9})
     svc = _make_service(scores=mixed)
     assert not svc._check_drift_alert("novel-1")

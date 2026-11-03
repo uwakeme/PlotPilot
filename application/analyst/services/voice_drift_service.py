@@ -37,7 +37,13 @@ LLM_BASELINE_MIN_SAMPLES = 5
 # 相似度告警阈值（**默认值**）。
 # 实际取值优先读 ``VoiceAnalysisRuntimeSettings.drift_alert_threshold``；
 # 保留本常量是为了不破坏 daemon_host._similarity_below_warning_threshold 的导入。
-DRIFT_ALERT_THRESHOLD = 0.75
+#
+# ⚠ 第 86 批：0.75 → **0.50**（口径重标定）。
+#   相似度是「偏差 ÷ 容差」，容差 = ``max(0.1, 标准差×1.5)``
+#   ⇒ **健康章节的典型得分天然落在 0.5 附近**（差 1 个标准差是常态）。
+#   实测（两本书 12 个健康章节，真模型跑出来的）：min 0.468 / 中位 0.554 / 均值 0.569 / max 0.671
+#   ⇒ 0.75 对健康章节**命中率 100%** ⇒ 每章都误报偏离 ⇒ 白烧钱。
+DRIFT_ALERT_THRESHOLD = 0.50
 
 # 常见形容词集合（与 VoiceFingerprintService 保持一致）
 _COMMON_ADJECTIVES = set(

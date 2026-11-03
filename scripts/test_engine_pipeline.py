@@ -42,7 +42,7 @@ print('PASS')
 print('\n=== Test 7: ShortDramaPipeline ===')
 short = ShortDramaPipeline()
 assert short.DEFAULT_TARGET_WORDS == 1500
-assert short.VOICE_REWRITE_THRESHOLD == 0.5
+assert short.VOICE_REWRITE_THRESHOLD == 0.30
 print(f'PASS: target={short.DEFAULT_TARGET_WORDS}')
 
 # Test 8: WuxiaPipeline
