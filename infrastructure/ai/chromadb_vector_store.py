@@ -10,7 +10,7 @@
 使用 FAISS 进行向量检索，使用 JSON 文件管理元数据。
 命名保持 ChromaDB 以兼容现有代码。
 """
-from typing import List
+from typing import List, Optional
 import asyncio
 import json
 import os
@@ -154,6 +154,10 @@ class ChromaDBVectorStore(VectorStore):
         #（千章积累下索引 MB 级），改为脏标记 + 阈值触发 + 退出兜底
         self._dirty: dict = {}          # {collection: pending_writes}
         self._last_flush_at: dict = {}  # {collection: monotonic}
+        # ⚠ 第 88 批（N-23）：**落盘目录是跨进程共享的**（API 进程与守护进程
+        #   各持一份实例，但写同一个目录）⇒ 必须记住「我们上次见到磁盘时」
+        #   的状态，才能发现「另一个进程在我们之后写过」并做合并。
+        self._disk_state: dict = {}     # {collection: (mtime, size)}
         self._op_lock = asyncio.Lock()
         self._load_collections()
         import atexit
@@ -181,21 +185,137 @@ class ChromaDBVectorStore(VectorStore):
                         "index": index,
                         "metadata": metadata
                     }
+                    self._disk_state[collection_name] = self._current_disk_state(
+                        collection_name
+                    )
+
+    # ── 磁盘真相（跨进程共享 ⇒ 内存只是缓存）──────────────────────────
+
+    def _current_disk_state(self, collection: str) -> Optional[tuple]:
+        """磁盘上该集合索引文件的 ``(mtime, size)``；不在磁盘上则 ``None``。
+
+        ⚠ 第 88 批（N-23）：落盘目录被**多个进程共用**
+        ⇒ 「我们见到磁盘的样子」必须能被记录与比较，
+          否则无法判断「另一个进程在我们之后改过它」。
+        """
+        index_path = self.persist_directory / collection / "index.faiss"
+        try:
+            stat = index_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime, stat.st_size)
+
+    def _read_disk_collection(self, collection: str) -> Optional[dict]:
+        """从磁盘读一个集合（``index`` + ``metadata``）；读不到/坏了 ⇒ ``None``。"""
+        index_backend = _get_vector_index_backend()
+        collection_dir = self.persist_directory / collection
+        index_path = collection_dir / "index.faiss"
+        metadata_path = collection_dir / "metadata.json"
+        if not (index_path.exists() and metadata_path.exists()):
+            return None
+        try:
+            index = index_backend.read_index(str(index_path))
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+        except Exception as exc:  # noqa: BLE001 —— 坏文件当「没有」，别拖垮流程
+            logging.getLogger(__name__).warning(
+                "向量集合磁盘文件读取失败（当作不存在）collection=%s err=%s", collection, exc
+            )
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        return {"index": index, "metadata": metadata}
+
+    def _load_collection_from_disk(self, collection: str) -> bool:
+        """把磁盘上的集合载入**本进程内存**（成功 ⇒ True）。
+
+        ⚠ 第 88 批（N-23）：这是「**别把别人的数据清空**」的关键 ——
+          集合可能不在本进程内存里（另一个进程创建的），
+          但**在磁盘上是有数据的** ⇒ 此时若新建空索引并覆盖磁盘，
+          另一个进程写进去的向量就**全丢了**。
+          ⇒ 生产实测：600 章那本书的向量索引被清成了「本次跑的 5 章」的量。
+        """
+        disk = self._read_disk_collection(collection)
+        if disk is None:
+            return False
+        self.collections[collection] = disk
+        self._disk_state[collection] = self._current_disk_state(collection)
+        logging.getLogger(__name__).info(
+            "从磁盘载入已有向量集合 collection=%s vectors=%d",
+            collection, disk["index"].ntotal,
+        )
+        return True
+
+    def _merge_disk_vectors(self, collection: str) -> int:
+        """把磁盘上「**我们没有**」的向量并进来（多进程 ⇒ 防后写覆盖先写）。
+
+        ⇒ 返回并入的条数。
+        ⚠ 只并入**维度相同**的向量：维度不同意味着「换了嵌入模型」
+          ⇒ 那是另一个语义（该重建，不该合并）。
+        """
+        disk = self._read_disk_collection(collection)
+        if disk is None:
+            return 0
+        coll = self.collections.get(collection)
+        if coll is None:
+            return 0
+
+        disk_meta = disk["metadata"]
+        disk_index = disk["index"]
+        dimension = coll["index"].d
+        pending = []
+        for vid, entry in disk_meta.items():
+            if vid in coll["metadata"]:
+                continue
+            try:
+                vector = disk_index.reconstruct(int(entry["idx"]))
+            except Exception:  # noqa: BLE001 —— 单条坏数据跳过即可
+                continue
+            if len(vector) != dimension:
+                continue
+            pending.append((vid, vector, entry.get("payload") or {}))
+
+        if not pending:
+            return 0
+
+        base = coll["index"].ntotal
+        coll["index"].add(_as_vector_batch([v for _, v, _ in pending]))
+        for offset, (vid, _vector, payload) in enumerate(pending):
+            coll["metadata"][vid] = {"idx": base + offset, "payload": payload}
+        return len(pending)
 
     def _save_collection(self, collection: str):
         """保存集合到磁盘"""
         index_backend = _get_vector_index_backend()
 
+        coll = self.collections[collection]
+
+        # ⚠ 第 88 批（N-23）：落盘目录**跨进程共享** ⇒ 我们写之前，
+        #   先看「磁盘是不是被另一个进程改过」⇒ 是的话**先把它的向量并进来**
+        #   ⇒ 否则「后写覆盖先写」⇒ 另一个进程刚写的向量全丢。
+        known = self._disk_state.get(collection)
+        current = self._current_disk_state(collection)
+        if known is not None and current is not None and current != known:
+            merged = self._merge_disk_vectors(collection)
+            if merged:
+                logging.getLogger(__name__).warning(
+                    "检测到其他进程写过同一集合，已并入其向量 collection=%s merged=%d",
+                    collection, merged,
+                )
+                coll = self.collections[collection]
+
         collection_dir = self.persist_directory / collection
         collection_dir.mkdir(parents=True, exist_ok=True)
 
-        coll = self.collections[collection]
         index_path = collection_dir / "index.faiss"
         metadata_path = collection_dir / "metadata.json"
 
         index_backend.write_index(coll["index"], str(index_path))
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(coll["metadata"], f, ensure_ascii=False, indent=2)
+
+        # 记住我们刚写下的磁盘状态 ⇒ 下次只有「别人又改了」才会再合并
+        self._disk_state[collection] = self._current_disk_state(collection)
 
     async def insert(
         self,
@@ -215,7 +335,10 @@ class ChromaDBVectorStore(VectorStore):
         """批量插入向量：一次矩阵 add + 一次脏标记，供章级/三元组批量索引用。"""
         try:
             if collection not in self.collections:
-                raise Exception(f"Collection {collection} does not exist")
+                # ⚠ 第 88 批（N-23）：集合可能只是**不在本进程内存**（另一个进程建的）
+                #   ⇒ 先试着从磁盘载入，而不是直接报错。
+                if not self._load_collection_from_disk(collection):
+                    raise Exception(f"Collection {collection} does not exist")
 
             async with self._op_lock:
                 coll = self.collections[collection]
@@ -380,6 +503,23 @@ class ChromaDBVectorStore(VectorStore):
                     collection, existing_dim, dimension
                 )
                 await self._delete_collection_locked(collection)
+            elif not self._load_collection_from_disk(collection):
+                # ⚠ 第 88 批（N-23）：集合不在本进程内存里、磁盘上也没有
+                #   ⇒ 才是真正的「新建」。
+                #   （不在内存但**磁盘上有**的情况已由上面的
+                #     ``_load_collection_from_disk`` 处理 ⇒ **不许覆盖磁盘**）
+                pass
+            else:
+                # 磁盘上有 ⇒ 载入完成 ⇒ 维度一致就直接用；不一致才重建
+                existing_dim = self.collections[collection]["index"].d
+                if dimension == 0 or existing_dim == dimension:
+                    return
+                import logging
+                logging.getLogger(__name__).warning(
+                    "向量集合维度不匹配，重建索引 collection=%s old_dim=%d new_dim=%d",
+                    collection, existing_dim, dimension
+                )
+                await self._delete_collection_locked(collection)
 
             # 创建 FAISS 索引（使用 L2 距离）
             index = index_backend.IndexFlatL2(dimension)
@@ -410,6 +550,7 @@ class ChromaDBVectorStore(VectorStore):
             if collection in self.collections:
                 del self.collections[collection]
             self._dirty.pop(collection, None)
+            self._disk_state.pop(collection, None)
 
             # 删除磁盘文件
             collection_dir = self.persist_directory / collection
@@ -487,9 +628,23 @@ class ChromaDBVectorStore(VectorStore):
         return count
 
     async def list_collections(self) -> List[str]:
-        """列出所有集合"""
+        """列出所有集合。
+
+        ⚠ 第 88 批（N-23）：返回**内存 ∪ 磁盘**。
+          落盘目录是**跨进程共享**的 ⇒ 另一个进程建的集合不在本进程内存里
+          ⇒ 只列内存 ⇒ 调用方会误判「集合不存在」⇒ 触发 ``create_collection``
+          ⇒ 而旧的 ``create_collection`` 会**新建空索引覆盖磁盘** ⇒ 数据全丢。
+          ⇒ 这里以**磁盘真相**为准。
+        """
         try:
-            return list(self.collections.keys())
+            names = set(self.collections.keys())
+            try:
+                for entry in self.persist_directory.iterdir():
+                    if entry.is_dir():
+                        names.add(entry.name)
+            except OSError:
+                pass
+            return sorted(names)
         except Exception as e:
             raise Exception(f"Failed to list collections: {str(e)}")
 
