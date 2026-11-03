@@ -58,17 +58,14 @@ EXEMPTED: dict[str, str] = {
         "设定漂移审计：这里**已手工剥围栏**（能用）⇒ 只是**重复实现**，待收敛。"
     ),
     "application/engine/dag/nodes/anti_ai_nodes.py": (
-        "DAG 是**展示层**（生产写作走 StoryPipeline）⇒ 这些节点**不进生产链路**，"
-        "解析失败只影响画布显示 ⇒ **已登记未修**（N-25 残余，低优先）。"
-    ),
-    "application/engine/dag/nodes/ext_supplement_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
-    ),
-    "application/engine/dag/nodes/planning_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
+        "DAG 是**展示层**（生产写作走 StoryPipeline）⇒ 不进生产链路；"
+        "且此处解析与后续处理写在**同一个 try 里**（else 分支很长）"
+        "⇒ 换抽取器要重排大段代码 ⇒ 退化形态（面板显示 raw_text）**无害**"
+        "⇒ **已登记不做**（N-25 残余，收益低于改动风险）。"
     ),
     "application/engine/dag/nodes/review_nodes.py": (
-        "同上：DAG 展示层节点 ⇒ **已登记未修**（N-25 残余，低优先）。"
+        "同上：解析与后续处理**同在一个 try 里** ⇒ 换抽取器要重排大段代码；"
+        "且是**展示层**（不进生产写作链路）⇒ 退化形态无害 ⇒ **已登记不做**。"
     ),
 }
 

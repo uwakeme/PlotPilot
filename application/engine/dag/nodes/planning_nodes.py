@@ -100,10 +100,13 @@ class BeatSheetNode(BaseNode):
                 result = await llm.generate(prompt, config)
                 raw_text = result.text if hasattr(result, 'text') else str(result)
 
-                import json
-                try:
-                    beat_sheet_json = json.loads(raw_text)
-                except (json.JSONDecodeError, TypeError):
+                # ⚠ 第 91 批（N-25 残余）：走**共享**的 JSON 抽取器
+                #   （剥 markdown 围栏 + 清洗 + 修复）—— 自造 ``json.loads``
+                #   ⇒ 模型把 JSON 包在围栏里时**必然失败** ⇒ 面板只能显示原始文本。
+                from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+                beat_sheet_json, _parse_errors = parse_llm_json_to_dict(raw_text)
+                if not isinstance(beat_sheet_json, dict):
                     beat_sheet_json = {"raw_text": raw_text}
 
             except Exception as e:
@@ -184,10 +187,13 @@ class QuickMacroNode(BaseNode):
                 result = await llm.generate(prompt, config)
                 raw_text = result.text if hasattr(result, 'text') else str(result)
 
-                import json
-                try:
-                    macro_plan_json = json.loads(raw_text)
-                except (json.JSONDecodeError, TypeError):
+                # ⚠ 第 91 批（N-25 残余）：走**共享**的 JSON 抽取器
+                #   （剥 markdown 围栏 + 清洗 + 修复）—— 自造 ``json.loads``
+                #   ⇒ 模型把 JSON 包在围栏里时**必然失败** ⇒ 面板只能显示原始文本。
+                from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+                macro_plan_json, _parse_errors = parse_llm_json_to_dict(raw_text)
+                if not isinstance(macro_plan_json, dict):
                     macro_plan_json = {"raw_text": raw_text}
 
             except Exception as e:
@@ -264,10 +270,13 @@ class ActPlanningNode(BaseNode):
                 result = await llm.generate(prompt, config)
                 raw_text = result.text if hasattr(result, 'text') else str(result)
 
-                import json
-                try:
-                    act_chapters_json = json.loads(raw_text)
-                except (json.JSONDecodeError, TypeError):
+                # ⚠ 第 91 批（N-25 残余）：走**共享**的 JSON 抽取器
+                #   （剥 markdown 围栏 + 清洗 + 修复）—— 自造 ``json.loads``
+                #   ⇒ 模型把 JSON 包在围栏里时**必然失败** ⇒ 面板只能显示原始文本。
+                from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+                act_chapters_json, _parse_errors = parse_llm_json_to_dict(raw_text)
+                if not isinstance(act_chapters_json, dict):
                     act_chapters_json = {"raw_text": raw_text}
 
             except Exception as e:
