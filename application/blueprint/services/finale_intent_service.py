@@ -102,13 +102,17 @@ class FinaleIntentService:
         ``is_finale_act`` 是 ``Optional[bool]`` —— 模型给字符串 "true" 会被
         契约判为不合规（lax 强转会把含糊读成明确结论）。
         """
-        try:
-            data = json.loads((raw_text or "").strip())
-        except (json.JSONDecodeError, TypeError) as exc:
-            logger.warning("终局意图判定返回非 JSON，按未判定处理: %s", exc)
-            return None
-        if not isinstance(data, dict):
-            logger.warning("终局意图判定返回的 JSON 不是对象，按未判定处理")
+        # ⚠ 第 89 批（N-25）：走**共享**的 JSON 抽取器
+        #   （剥 ```json 围栏 + 清洗 + 修复）—— 自造 ``json.loads``
+        #   ⇒ 模型把 JSON 包在围栏里时**必然失败** ⇒ 通道静默失效
+        #   ⇒ 生产实测：D-01 与 E-06 都栽在这（char 0）。
+        from application.ai.llm_json_extract import parse_llm_json_to_dict
+
+        data, _parse_errors = parse_llm_json_to_dict(raw_text)
+        if data is None:
+            logger.warning(
+                "终局意图判定返回非 JSON，按未判定处理: %s", "; ".join(_parse_errors) if _parse_errors else "解析失败"
+            )
             return None
         try:
             validated = get_prompt_gateway().validate_output(

@@ -33,6 +33,39 @@ from infrastructure.ai.prompt_contracts.chapter_mode import CHAPTER_MODE_CONTRAC
 from infrastructure.ai.prompt_keys import PLANNING_CHAPTER_MODE
 
 
+# ── 解析：模型把 JSON 包在 ```json 围栏里（生产实测） ─────────────────────
+
+
+def test_the_parser_handles_a_fenced_json_response():
+    """⚠ 第 89 批：**模型经常把 JSON 包在 ```json 围栏里** ⇒ 解析器必须剥围栏。
+
+    ⚠ 生产实测（真实模型，GLM-5.3-flash）：D-01 判定的原始响应就是
+      ```` ```json {...} ``` ```` ⇒ 此前这里自己 ``json.loads`` ⇒ 必然在 char 0 失败
+      ⇒ 通道**永远**「未判定」⇒ **开了通道也等于没开**（每章白烧一次调用）。
+    ⇒ 现在走共享抽取器（``parse_llm_json_to_dict`` ⇒ 剥围栏 + 清洗 + 修复）。
+    """
+    planner = ChapterModePlanner.__new__(ChapterModePlanner)
+    fenced = (
+        "```json\n"
+        '{\n  "needs_buffer": false,\n'
+        '  "reason": "本章大纲本身是爆点，插入余韵会削弱它",\n'
+        '  "signals": ["上章张力 72", "本章为爆点"]\n'
+        "}\n"
+        "```"
+    )
+    parsed = planner._parse(fenced)
+    assert parsed is not None, "围栏包裹的 JSON 解析失败 ⇒ 通道等于没开"
+    assert parsed["needs_buffer"] is False
+    assert parsed["signals"], "signals 丢了"
+
+
+def test_the_parser_still_rejects_garbage():
+    """⚠ 反向：真的不是 JSON ⇒ 仍是「未判定」（不许瞎猜）。"""
+    planner = ChapterModePlanner.__new__(ChapterModePlanner)
+    assert planner._parse("这不是 JSON，只是一段解释。") is None
+    assert planner._parse("") is None
+
+
 # ── 契约完整性 ──────────────────────────────────────────────────────────
 
 def test_node_key_registered_and_contract_wired():

@@ -23,6 +23,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from application.ai.llm_json_extract import parse_llm_json_to_dict
 from domain.ai.services.llm_service import LLMService
 from infrastructure.ai.generation_profiles import generation_config_from_profile
 from infrastructure.ai.prompt_contracts.chapter_mode import CHAPTER_MODE_CONTRACT
@@ -105,12 +106,21 @@ class ChapterModePlanner:
         「没给出明确结论」，而不是在这里手写分支。
         """
         try:
-            data = json.loads((raw_text or "").strip())
-        except (json.JSONDecodeError, TypeError) as exc:
-            logger.warning("章节节奏判定返回非 JSON，按未判定处理: %s", exc)
+            # ⚠ 第 89 批：走**共享**的 JSON 抽取器
+            #   （``parse_llm_json_to_dict`` ⇒ 剥 ```json 围栏 + 清洗 + 修复）。
+            #   ⚠ 此前这里自己 ``json.loads`` ⇒ 模型把 JSON 包在围栏里时
+            #     **必然解析失败** ⇒ 通道永远「未判定」
+            #     ⇒ 生产实测：模型返回的是 ```json {...} ``` ⇒ 日志「char 0」⇒
+            #       **开了通道也等于没开**（每章白烧一次调用）。
+            data, errors = parse_llm_json_to_dict(raw_text)
+        except Exception as exc:  # noqa: BLE001 —— 抽取器自身炸了也算未判定
+            logger.warning("章节节奏判定解析异常，按未判定处理: %s", exc)
             return None
-        if not isinstance(data, dict):
-            logger.warning("章节节奏判定返回的 JSON 不是对象，按未判定处理")
+        if data is None:
+            logger.warning(
+                "章节节奏判定返回非 JSON，按未判定处理: %s",
+                "; ".join(errors) if errors else "解析失败",
+            )
             return None
         try:
             validated = get_prompt_gateway().validate_output(
