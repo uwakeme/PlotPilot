@@ -1,6 +1,29 @@
 import { apiRoutes } from './endpoints'
 import { fetchJson, fetchOk, fetchUrl, HttpError, type FetchJsonOptions } from './http'
 
+/**
+ * 章后审计结论（设定漂移 A1 / 记忆状态回写）。
+ *
+ * ⚠ 第 93 批：此前这里声明的是 `{ severity: string; message: string }`
+ *   ⇒ 但后端**从不发** `message`（生产库实测：条目的键是
+ *   type / severity / category / description / suggestion）
+ *   ⇒ 面板渲染 `issue.message` ⇒ **渲染成空白**（而数量还在显示
+ *   「还有 N 条问题...」）⇒ 用户看到「有问题」却看不到问题是什么。
+ *   ⇒ 类型要照**后端真实形状**写，不许替后端撒谎。
+ */
+export interface AutopilotAuditIssue {
+  /** 条目类型：`setting_drift` / `setting_drift_unassessed` / `memory_update` / … */
+  type?: string
+  /** ⚠ 后端用的是 `critical`（不是 `error`）—— 判色时别漏 */
+  severity: string
+  /** fact | rule | location | ability | memory */
+  category?: string
+  /** 人可读的问题描述（**这才是要显示的内容**） */
+  description: string
+  /** 最小修正建议（可空） */
+  suggestion?: string
+}
+
 /** 章后审计快照（守护进程 audit 阶段写入，前端面板消费） */
 export interface AutopilotChapterAudit {
   chapter_number: number
@@ -20,7 +43,7 @@ export interface AutopilotChapterAudit {
   evolution_snapshot_ok?: boolean
   character_reconcile_ok?: boolean
   quality_scores?: Record<string, number>
-  issues?: Array<{ severity: string; message: string }>
+  issues?: AutopilotAuditIssue[]
   at: string | null
 }
 

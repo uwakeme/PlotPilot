@@ -164,10 +164,18 @@
               <n-alert
                 v-for="(issue, i) in autopilotChapterReview.issues.slice(0, 3)"
                 :key="i"
-                :type="issue.severity === 'error' ? 'error' : issue.severity === 'warning' ? 'warning' : 'info'"
+                :type="issueSeverityType(issue.severity)"
                 size="small"
               >
-                {{ issue.message }}
+                <!-- ⚠ 第 93 批：后端产出的字段是 `description`（不是 `message`）
+                     ⇒ 此前渲染 `issue.message` ⇒ **渲染成空白**（数量却还在显示） -->
+                <div>{{ issue.description }}</div>
+                <div
+                  v-if="issue.suggestion"
+                  style="margin-top: 2px; font-size: 12px; opacity: 0.85"
+                >
+                  建议：{{ issue.suggestion }}
+                </div>
               </n-alert>
               <n-text v-if="autopilotChapterReview.issues.length > 3" depth="3" style="font-size: 11px">
                 还有 {{ autopilotChapterReview.issues.length - 3 }} 条问题...
@@ -378,6 +386,20 @@ function pacingLabel(p: string) {
 
 function qualityLabel(key: string): string {
   return getChapterQualityLabel(key)
+}
+
+/**
+ * 审计条目的告警色。
+ *
+ * ⚠ 第 93 批：后端的严重级别是 `critical | warning | info`
+ *   ⇒ 此前这里只认 `error` ⇒ **`critical` 落进兜底的 info 档**
+ *   ⇒ 「世界观规则崩坏」这种最严重的一类，在面板上是**蓝色 info 卡片**。
+ */
+function issueSeverityType(severity: string): 'error' | 'warning' | 'info' {
+  const s = (severity || '').toLowerCase()
+  if (s === 'critical' || s === 'error') return 'error'
+  if (s === 'warning' || s === 'warn') return 'warning'
+  return 'info'
 }
 
 function formatTime(t: string) {

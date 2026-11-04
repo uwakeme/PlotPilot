@@ -237,3 +237,42 @@ def test_a_prompt_change_always_bumps_the_bundle_version():
         + "\n".join("  - %s" % c for c in offenders[:20])
         + "\n修法：同一笔提交里改 bundle_meta.yaml 的 version（并写 changelog）"
     )
+
+
+# ── ⑤ 推导不许**静默丢掉**最新的节点改动（第 93 批）─────────────────────
+
+
+def test_the_derivation_does_not_drop_the_newest_unbumped_commits(monkeypatch):
+    """⚠ 第 93 批：推导脚本是「新 → 旧」扫描 ⇒ 遇到**第一个**改过 bundle_meta
+    的提交之前 ``current_version`` 是 None ⇒ 那几笔提交改过的节点包**整段被丢掉**
+    ⇒ 而脚本自己的契约是「没 bump 的改动会落到它当时所在的版本，而不是凭空消失」
+    ⇒ **正好相反** ⇒ 台账看着对，其实少了一条。
+
+    ⚠ 用**假的 git 输出**测（不动真历史）⇒ 真提交会留痕，真历史不该被测试改。
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import derive_bundle_version_nodes as d
+
+    fake_history = (
+        "@@@" + "a" * 40 + "\n"
+        "infrastructure/ai/prompt_packages/nodes/some-node/system.md\n"
+        "@@@" + "b" * 40 + "\n"
+        "infrastructure/ai/prompt_packages/bundle_meta.yaml\n"
+    )
+
+    def fake_git(*args):
+        if args[0] == "log" and "--name-only" in args:
+            return fake_history
+        if args[0] == "log":                       # meta 提交列表
+            return ""                             # ⇒ 一笔 meta 提交都没有
+        if args[0] == "show" and args[1].startswith("HEAD:"):
+            return "version: 5.99.0-test\n"
+        return ""
+
+    monkeypatch.setattr(d, "git", fake_git)
+
+    buckets = d.derive()
+    assert "some-node" in buckets.get("5.99.0", []), (
+        "最新那笔（没 bump 的）提交的节点改动被**静默丢掉**了（%r）"
+        "⇒ 台账会少一条而不报警" % buckets
+    )

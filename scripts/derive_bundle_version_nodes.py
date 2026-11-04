@@ -65,6 +65,23 @@ def base_version(version: str) -> str:
     return version.split("-")[0].split("+")[0]
 
 
+def _tip_version() -> str | None:
+    """**HEAD 生效的版本** —— 给「比最后一次 bump 更新的那些提交」当归属版本。
+
+    ⚠ 为什么需要（第 93 批）：推导是「新 → 旧」扫描
+    ⇒ 在遇到**第一个**改过 bundle_meta 的提交之前，``current_version`` 是 None
+    ⇒ 那几笔提交改过的节点包会被**整段静默丢掉**
+    ⇒ 而「没 bump 的改动会落到它当时所在的版本」正是这个脚本的契约
+    ⇒ ⇒ 用 HEAD 的版本兜底 ⇒ 不再丢。
+
+    ⚠ 为什么取 **HEAD** 而不是工作区文件：脚本要能从**历史**重算
+    （守卫 ``--check`` 跑的就是它）⇒ 口径必须只依赖 git 历史。
+    """
+    meta = git("show", "HEAD:%s" % META_REL)
+    match = VERSION_RE.search(meta or "")
+    return base_version(match.group(1)) if match else None
+
+
 def derive() -> dict[str, list[str]]:
     """从 git 历史推导「版本 → 该版本期间改动的节点包」。
 
@@ -78,7 +95,9 @@ def derive() -> dict[str, list[str]]:
     history = git("log", "--format=@@@%H", "--name-only")
 
     buckets: dict[str, list[str]] = {}
-    current_version: str | None = None
+    # ⚠ 第 93 批：**先种下 HEAD 的版本** ⇒ 最新那几笔（还没 bump 的）提交
+    #   改过的节点包**不会**因为「还没遇到 meta 提交」而被整段丢掉。
+    current_version: str | None = _tip_version()
     commit: str | None = None
     touched: set[str] = set()
 
