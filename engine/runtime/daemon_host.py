@@ -876,6 +876,11 @@ class DaemonHostMixin:
         审计侧要拿**同一份**去比对正文 ⇒ 两边不同源的话，
         审计比的与生成时被锁的不是一回事。
 
+        ⚠ 第 92 批：白名单**不再只认 Bible 角色表** ⇒ 口径是
+        「**本书从没出现过**」（Bible ∪ 记忆引擎已登记的角色）。
+        生产实证：556 章的书 Bible 只登记 5 个角色，而正文里实际有 40+ 个
+        ⇒ 只认 Bible 时，引擎会一边禁止使用本章主角、一边把它判成越界。
+
         ⚠ 取不到（没有 Bible / 取失败）⇒ 返回**空串**
         ⇒ 审计提示词据此**跳过**「越界角色」这一类（不许臆测）。
         """
@@ -885,16 +890,16 @@ class DaemonHostMixin:
                 SqliteBibleRepository,
             )
 
-            from application.engine.services.memory_engine import (
-                FactLockBuilder,
-                character_names,
+            from application.engine.services.memory_engine import FactLockBuilder
+            from application.engine.services.registered_character_names import (
+                registered_character_names,
             )
 
             builder = FactLockBuilder(SqliteBibleRepository(get_database()))
             bible = builder.bible_repository.get_by_novel_id(NovelId(novel_id))
             if not bible:
                 return ""
-            return ", ".join(character_names(bible))
+            return ", ".join(registered_character_names(novel_id, bible))
         except Exception as exc:  # noqa: BLE001 —— 取不到就当「没有白名单」，不许臆测
             logger.debug("取角色白名单失败（审计将跳过越界角色检查）novel=%s: %s", novel_id, exc)
             return ""

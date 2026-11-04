@@ -79,8 +79,16 @@ def _code_channel_risk_flags(novel_id: str, chapter_number: int) -> list[dict[st
 def _whitelist_variants(novel_id: str) -> list[str]:
     """取该书的**角色白名单变体**（K 类核对的依据）。
 
-    ⚠ 与生成侧 / 提示词侧**同源**：白名单来自 ``memory_engine.character_names``
-    （Bible 的角色名单）⇒ 不会「审计用的白名单」与「生成时锁的白名单」分叉。
+    ⚠ 与生成侧 / 提示词侧**同源**：白名单来自
+      ``application.engine.services.registered_character_names``（第 92 批）
+      ⇒ **Bible ∪ 记忆引擎已登记的角色**
+      ⇒ 口径是「**本书从没出现过**」，不是「没登记进 Bible」。
+    ⇒ 不会「审计用的白名单」与「生成时锁的白名单」分叉。
+
+    ⚠ 第 92 批的生产依据：556 章的书 Bible 只登记 5 个角色，
+      而正文里实际有 40+ 个（记忆引擎早已登记）⇒ 只认 Bible 时
+      「谢迟」被连报 4 章 critical 越界，还被机检盖上「已确认」。
+
     ⚠ 取不到 ⇒ 返回空 ⇒ 核对**不下结论**（保守：宁可留着让人看）。
     """
     if not novel_id:
@@ -92,17 +100,16 @@ def _whitelist_variants(novel_id: str) -> list[str]:
             SqliteBibleRepository,
         )
 
-        from application.audit.services.character_whitelist_check import expand_whitelist
-        from application.engine.services.memory_engine import (
-            FactLockBuilder,
-            character_names,
+        from application.engine.services.memory_engine import FactLockBuilder
+        from application.engine.services.registered_character_names import (
+            registered_character_whitelist_variants,
         )
 
         builder = FactLockBuilder(SqliteBibleRepository(get_database()))
         bible = builder.bible_repository.get_by_novel_id(NovelId(novel_id))
         if not bible:
             return []
-        return sorted(expand_whitelist(character_names(bible)))
+        return list(registered_character_whitelist_variants(novel_id, bible))
     except Exception as exc:  # noqa: BLE001 —— 取不到就当没有白名单，不许臆测
         logger.debug("取角色白名单变体失败（K 类核对将不下结论）novel=%s: %s", novel_id, exc)
         return []

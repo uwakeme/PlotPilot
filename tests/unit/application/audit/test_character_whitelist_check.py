@@ -196,3 +196,34 @@ def test_the_name_text_is_stripped_of_punctuation():
     assert normalize_name_text("「柳三娘」") == "柳三娘"
     assert normalize_name_text("  柳三娘， ") == "柳三娘"
     assert normalize_name_text("") == ""
+
+
+# ── 7) 第 92 批：命中原文**带上下文**时也要驳回（生产实测） ────────────────
+#
+# ⚠ 生产库《灰引书》4 条 K 类命中有 3 条是这种形态：
+#   「谢迟掌中托过的墨」「谢迟（如"谢迟掌心摊开"」
+# ⇒ 模型给的是**带上下文的片段**，不是裸名
+# ⇒ 旧口径（「只允许多出两三个字」）⇒ 判成 confirmed ⇒ **误报**，
+#   且被机检盖上「已确认」⇒ 看起来很权威。
+
+_PRODUCTION_VARIANTS = expand_whitelist(["谢迟", "陆深", "宋扬", "沈夜", "林姐", "周队"])
+
+
+def test_a_hit_carrying_surrounding_context_is_rejected():
+    """「谢迟掌中托过的墨」⇒ 驳回（它讲的就是白名单内的谢迟）。"""
+    verdict, name = classify_rogue_character_hit("谢迟掌中托过的墨", _PRODUCTION_VARIANTS)
+    assert verdict == REJECTED, "带上下文的命中被判成越界了 ⇒ 误报"
+    assert name == "谢迟掌中托过的墨"
+
+
+def test_a_hit_with_quotes_and_context_is_rejected():
+    """生产库里的原样：「谢迟（如"谢迟掌心摊开"」⇒ 驳回。"""
+    verdict, _ = classify_rogue_character_hit("谢迟（如\"谢迟掌心摊开\"", _PRODUCTION_VARIANTS)
+    assert verdict == REJECTED
+
+
+def test_a_brand_new_character_is_still_confirmed_among_the_production_shape():
+    """⚠ 放宽不许变成放水：真·新角色仍要判越界。"""
+    verdict, name = classify_rogue_character_hit("钱多多", _PRODUCTION_VARIANTS)
+    assert verdict == CONFIRMED
+    assert name == "钱多多"

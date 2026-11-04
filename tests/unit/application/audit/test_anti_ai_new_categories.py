@@ -158,6 +158,18 @@ def test_the_user_template_renders_the_whitelist():
     assert "{content}" in user, "user.md 里的 {content} 不见了"
 
 
+def test_the_rogue_category_asks_for_the_bare_name():
+    """⚠ 第 92 批（生产实测）：模型给的「名字」有时是**带上下文的片段**
+    （「谢迟掌中托过的墨」）⇒ 机检核对认不出 ⇒ 判成 confirmed（**误报**）。
+
+    ⇒ 提示词要明确：``pattern`` 里**只填名字本身**，上下文放进 ``position``。
+    """
+    system = _system()
+    assert "只填那个名字本身" in system, (
+        "K 类的提示词没有要求「只填名字本身」⇒ 模型继续给带上下文的片段"
+    )
+
+
 # ── 5) bundle 版本 ───────────────────────────────────────────────────────
 
 

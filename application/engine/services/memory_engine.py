@@ -275,7 +275,15 @@ def _truncate_with_mark(text: str, limit: int) -> str:
 
 
 def character_names(bible) -> List[str]:
-    """Bible 里的**有名字的角色**名单（白名单）。
+    """Bible 里的**有名字的角色**名单。
+
+    ⚠ 这只是白名单的**第一半**（Bible 那一半）。
+    ⇒ **白名单的权威源是**
+      :func:`application.engine.services.registered_character_names.registered_character_names`
+      （Bible ∪ 记忆引擎已登记的角色）——
+      第 92 批的生产实证：Bible 只登记 5 个角色，而正文里实际有 40+ 个
+      ⇒ 只认 Bible ⇒ 引擎自己两条链路打架（生成侧禁止使用本章主角，
+      审计侧把它判成 critical 越界并盖上「已确认」）。
 
     ⚠ 生成侧（``_build_from_bible``）与审计侧（``_facts_from_bible``）
     **必须用同一个来源** —— 否则「正文被锁住的」与「审计拿来比对的」不是一回事。
@@ -369,7 +377,7 @@ class FactLockBuilder:
             bible = self.bible_repository.get_by_novel_id(novel_id_obj)
             if not bible:
                 return ""
-            return self._build_from_bible(bible, current_chapter)
+            return self._build_from_bible(bible, current_chapter, novel_id)
         except Exception as e:
             logger.warning(f"FactLock 构建失败: {e}")
             return ""
@@ -389,18 +397,42 @@ class FactLockBuilder:
             bible = self.bible_repository.get_by_novel_id(NovelId(novel_id))
             if not bible:
                 return []
-            return self._facts_from_bible(bible, current_chapter)
+            return self._facts_from_bible(bible, current_chapter, novel_id)
         except Exception as e:
             logger.warning(f"FactLock 事实清单构建失败: {e}")
             return []
 
-    def _facts_from_bible(self, bible, current_chapter: int) -> List[str]:
+    def _whitelist_names(self, novel_id: str, bible) -> List[str]:
+        """角色白名单（**唯一权威源**：Bible ∪ 记忆引擎已登记的角色）。
+
+        ⚠ 第 92 批：此前只认 Bible 角色表 ⇒ 生产实证（556 章的书）：
+          Bible 登记 5 个角色，正文里实际有 40+ 个
+          ⇒ 生成侧禁止使用本章主角、审计侧判成 critical 越界并盖「已确认」。
+        ⇒ 现在口径是「**本书从没出现过**」。
+
+        ⚠ ``novel_id`` 为空 ⇒ 只用 Bible 那一半（**不查库**）
+          ⇒ 单测里直接调 ``_build_from_bible(bible, current_chapter=1)`` 的路径不变。
+        """
+        if not novel_id:
+            return character_names(bible)
+        try:
+            from application.engine.services.registered_character_names import (
+                registered_character_names,
+            )
+
+            names = registered_character_names(novel_id, bible)
+        except Exception as exc:  # noqa: BLE001 —— 取不到就退回 Bible 那一半
+            logger.warning("取角色白名单失败（退回 Bible 那一半）novel=%s: %s", novel_id, exc)
+            return character_names(bible)
+        return names or character_names(bible)
+
+    def _facts_from_bible(self, bible, current_chapter: int, novel_id: str = "") -> List[str]:
         """把 ``_build_from_bible`` 的那几组推导，逐条摊成清单。"""
         facts: List[str] = []
         characters = bible.characters
 
         # 角色白名单：与生成侧**同一份**（``whitelist_lines``）⇒ 两边不会分叉
-        wl_lines = whitelist_lines(character_names(bible))
+        wl_lines = whitelist_lines(self._whitelist_names(novel_id, bible))
         if wl_lines:
             facts.append("\n".join(wl_lines))
 
@@ -432,13 +464,13 @@ class FactLockBuilder:
 
         return facts
 
-    def _build_from_bible(self, bible, current_chapter: int) -> str:
+    def _build_from_bible(self, bible, current_chapter: int, novel_id: str = "") -> str:
         """从 Bible 实体构建 FACT_LOCK"""
         lines = ["【绝对事实边界（一旦违背即为废稿）】\n"]
 
         # ── 1. 角色白名单（与审计侧同一份：``whitelist_lines``）──
         characters = bible.characters
-        names = character_names(bible)
+        names = self._whitelist_names(novel_id, bible)
         if names:
             lines.extend(whitelist_lines(names))
             lines.append("")

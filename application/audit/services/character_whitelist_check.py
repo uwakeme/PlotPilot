@@ -27,6 +27,9 @@ K 类（越界角色）此前**只由 LLM 判**，没有任何机器口径 ⇒
   · 别名里的角色前缀要剥掉（「艺名玉惊鸿」→「玉惊鸿」「市井称闻聋子」→「闻聋子」）
   · 名部分（3 字名的后两字：「沈砚青」→「砚青」；**长度 < 2 不用** —— 太短会乱匹配）
 - 命中名字落在变体集合里 ⇒ **驳回**（这是白名单内角色，LLM 误报）
+- 命中名字**含**变体（模型给的是带上下文的片段，如「谢迟掌中托过的墨」）⇒ **驳回**
+  ⚠ 第 92 批：生产库里 4 条 K 类命中有 3 条是这种形态 ⇒ 旧口径会把它们判成
+    confirmed（**误报**，还被机检盖上「已确认」）
 - 名字不在集合里 ⇒ **确认**（白名单外角色）
 - 白名单为空 / 名字解析不出来 / 形态像称谓 ⇒ **不下结论**（保守：保留原样，让人看）
 
@@ -147,10 +150,17 @@ def classify_rogue_character_hit(
         return UNDECIDED, name
     if name in variants:
         return REJECTED, name
-    # 名字里含白名单名（只允许多出两三个字：「沈砚青妹」算白名单内）
-    for variant in variants:
-        if variant in name and len(name) - len(variant) <= 2:
-            return REJECTED, name
+    # ⚠ 第 92 批（生产实测）：命中原文**带上下文**时，精确匹配不中。
+    #   生产库里 4 条 K 类命中有 3 条是这种形态：
+    #   「谢迟掌中托过的墨」「谢迟（如"谢迟掌心摊开"」
+    #   ⇒ 模型给的是**带上下文的片段**，不是裸名
+    #   ⇒ 而旧的「只允许多出两三个字」口径 ⇒ 反而判成 confirmed
+    #      （**误报**，而且被机检盖上「已确认」⇒ 看起来很权威）。
+    # ⇒ 现在：命中里**含**白名单名 ⇒ 这一条讲的就是白名单内的角色 ⇒ 驳回。
+    #   ⚠ 驳回**不是静默丢**（会以「越界角色·机检驳回」单独一条留着）⇒
+    #     真有问题时用户仍看得见「模型报过这一条」。
+    if any(variant in name for variant in variants):
+        return REJECTED, name
     # 末尾是称谓/职衔 ⇒ 判不了（郑探长 既可能是别名也可能是新角色）
     if any(name.endswith(suffix) for suffix in TITLE_SUFFIXES):
         return UNDECIDED, name
