@@ -37,6 +37,15 @@ AI_DELTA_FLUSH_INTERVAL_S = 0.1
 AI_STREAM_DEFAULT_DRAIN_LIMIT = 200
 """单次 drain 最多取多少条。"""
 
+AI_STREAM_DROP_LOG_EVERY = 100
+"""丢弃告警的**日志限流**：第一次必打，之后每 N 条打一次。
+
+⚠ 为什么需要（第 94 批，生产实测）：没人连 SSE 时队列**只进不出** ⇒ 会灌满
+⇒ 每次 publish 都被丢 ⇒ 实测 **25 分钟丢了 10633 条**
+⇒ 单条告警占了整个日志的 **75.5%**（10MB 的日志 3/4 是同一句）
+⇒ 项目最主要的诊断日志被一条告警淹没 ⇒ **真告警被埋掉**。
+"""
+
 _ai_stream_queue: Optional[mp.Queue] = None
 _queue_lock = threading.Lock()
 
@@ -63,6 +72,9 @@ def get_ai_stream_queue() -> Optional[mp.Queue]:
 
 
 class AiStreamBus:
+    #: 累计丢弃计数（**类属性** ⇒ 绕过 ``__init__`` 构造的实例也能用）
+    _drop_count = 0
+
     def __init__(self, queue: Optional[mp.Queue] = None) -> None:
         if queue is not None:
             inject_ai_stream_queue(queue)
@@ -73,6 +85,37 @@ class AiStreamBus:
 
     # ── 内部 ──────────────────────────────────────────────
 
+    def _handle_full_queue(self, queue: Any, message: Dict[str, Any]) -> None:
+        """队列满 ⇒ **丢掉最旧的一条**，把这条**新的**放进去。
+
+        ⚠ 为什么丢最旧而不是丢最新（第 94 批）：
+        · 「历史」由 **DB 快照回填**（``ai_stream_routes`` 的 ``list_recent_ai_spans``）
+          ⇒ 队列里攒着的**旧事件根本没人要**；
+        · 没人连 SSE 时队列只进不出 ⇒ 会灌满 ⇒ 若丢的是**最新**的，
+          等有人连上来时先收到的是**几百章前的旧章**
+          ⇒ 实时流反而**看不到当前章**；
+        · 改成丢最旧 ⇒ 队列里始终是**最新**的事件 ⇒ 连上来就能看当前章。
+
+        ⚠ 拿不到最旧那条（消费者刚取走 / 队列瞬时空）⇒ 放弃这条 ⇒ 不阻塞、不抛。
+        """
+        self._drop_count += 1
+        try:
+            queue.get_nowait()
+        except Exception:  # noqa: BLE001 —— 空队列/被抢走 ⇒ 放弃这条
+            pass
+        try:
+            queue.put_nowait(message)
+        except Exception:  # noqa: BLE001 —— 还是满 ⇒ 放弃这条，不阻塞
+            pass
+        if self._drop_count == 1 or self._drop_count % AI_STREAM_DROP_LOG_EVERY == 0:
+            logger.warning(
+                "[AiStreamBus] 队列满：已丢弃**最旧**的一条以放入最新事件（累计丢弃 %s 条）"
+                "kind=%s span=%s",
+                self._drop_count,
+                message.get("kind"),
+                message.get("span_id"),
+            )
+
     def _emit(self, message: Dict[str, Any]) -> None:
         """写入队列。任何失败都只记日志，绝不向上抛。"""
         queue = get_ai_stream_queue()
@@ -82,11 +125,7 @@ class AiStreamBus:
         try:
             queue.put_nowait(message)
         except Full:
-            logger.warning(
-                "[AiStreamBus] 队列满，丢弃事件 kind=%s span=%s",
-                message.get("kind"),
-                message.get("span_id"),
-            )
+            self._handle_full_queue(queue, message)
         except Exception as exc:  # pragma: no cover - 防御性
             logger.debug("[AiStreamBus] 发布失败（忽略）: %s", exc)
 

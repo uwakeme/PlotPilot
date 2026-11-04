@@ -9,6 +9,7 @@ from queue import Empty, Full
 from application.engine.services import ai_stream_bus as module_under_test
 from application.engine.services.ai_stream_bus import (
     AI_DELTA_FLUSH_CHARS,
+    AI_STREAM_DROP_LOG_EVERY,
     AI_STREAM_QUEUE_MAX_SIZE,
     AiStreamBus,
 )
@@ -163,6 +164,59 @@ def test_publish_drops_event_when_queue_full():
     bus = AiStreamBus(queue=q)
     bus.publish_start(novel_id="n1", trace_id="t1", span_id="s1")
     assert q.items == []  # 不抛异常、不阻塞
+
+
+# ── 第 94 批：队列满时**丢最旧**（保最新）+ 丢弃告警**限流** ──────────────
+#
+# ⚠ 病灶（生产实测）：没人连 SSE 时队列**只进不出** ⇒ 灌满 ⇒ 每次 publish 都丢
+#   ⇒ 实测 **25 分钟丢了 10633 条** ⇒ 单条告警占了整个日志的 **75.5%**
+#   ⇒ 项目最主要的诊断日志被一条告警淹没 ⇒ 真告警被埋掉。
+#
+# ⚠ 为什么丢**最旧**而不是丢最新：「历史」由 DB 快照回填 ⇒ 队列里的旧事件没人要；
+#   而丢最新的话，等有人连上来时先收到的是**几百章前的旧章** ⇒ 实时流看不到当前章。
+
+
+def test_a_full_queue_keeps_the_newest_event():
+    """队列满 ⇒ 丢**最旧**的一条，把新的放进去（队列里始终是最新事件）。"""
+    q = _FakeQueue(maxsize=2)
+    bus = AiStreamBus(queue=q)
+    bus.publish_start(novel_id="n1", trace_id="t1", span_id="s1")
+    bus.publish_start(novel_id="n1", trace_id="t1", span_id="s2")
+    assert [m["span_id"] for m in q.items] == ["s1", "s2"]
+
+    bus.publish_start(novel_id="n1", trace_id="t1", span_id="s3")  # ⇒ 满了
+    assert [m["span_id"] for m in q.items] == ["s2", "s3"], (
+        "队列满时应当丢掉**最旧**的 s1、保留最新的 s3（现在=%r）"
+        % [m["span_id"] for m in q.items]
+    )
+
+
+def test_the_drop_warning_is_rate_limited(caplog):
+    """丢弃告警**限流** ⇒ 300 次丢弃只打 4 条日志（第一次 + 每 100 条一次）。
+
+    ⚠ 不限流的话，一条告警就能占掉整个日志（实测 75.5%）⇒ 真告警被埋掉。
+    """
+    import logging
+
+    q = _FakeQueue(maxsize=0)  # 永远满 ⇒ 每次都走「丢最旧」分支
+    bus = AiStreamBus(queue=q)
+    bus._drop_count = 0
+    with caplog.at_level(logging.WARNING, logger=module_under_test.logger.name):
+        for i in range(AI_STREAM_DROP_LOG_EVERY * 3):
+            bus.publish_start(novel_id="n1", trace_id="t", span_id="s%d" % i)
+
+    drop_logs = [r for r in caplog.records if "队列满" in r.getMessage()]
+    assert len(drop_logs) == 4, (
+        "丢弃告警没有被限流（300 次丢弃打了 %s 条日志）" % len(drop_logs)
+    )
+    # ⚠ 必须断言**数字**（不是只断言「累计丢弃」这几个字）——
+    #   否则把计数换成占位符也照样绿（本批变异 M03 就是这么溜过去的）。
+    assert "累计丢弃 1 条" in drop_logs[0].getMessage(), (
+        "告警里要带**累计丢弃数**（现在=%r）" % drop_logs[0].getMessage()
+    )
+    assert "累计丢弃 100 条" in drop_logs[1].getMessage(), (
+        "第二条告警应是第 100 次丢弃（现在=%r）" % drop_logs[1].getMessage()
+    )
 
 
 def test_drain_returns_only_matching_novel():
