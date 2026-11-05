@@ -1017,6 +1017,80 @@ class DaemonHostMixin:
                 "coverage": "none",
             }
 
+    async def _run_unregistered_character_scan(
+        self, novel_id: str, chapter_number: int, outline: str
+    ) -> Dict[str, Any]:
+        """🔍 找「本章新出现、且不在 Bible 角色表」的角色（第 95 批）。
+
+        ⚠ **为什么只报新面孔**：记忆引擎早已登记了 40+ 个**非 Bible** 角色
+        （值班员 / 老郑 / 记录员 …）⇒ 全报出来 = 每章一条长名单 = 纯噪音。
+        ⇒ 只报「本章**首次**出现、且 Bible 里没有」的角色 ⇒ 每个新角色只提示一次。
+
+        ⚠ **为什么用 AI（``CharacterNerService``）而不是代码正则**：
+        第 22 批实测「姓 + 动词」口径召回接近 0、误报不可控（中文具名实体
+        没有分词就抽不准）⇒ 复用现成的 G-05 通道（带**证据校验**：
+        模型给的名字必须在章纲里真出现过）。
+
+        ⚠ **为什么不自动写 Bible**：Bible 是**设定真源** ⇒ 让模型改它，
+        错了就污染事实锁与审计基准 ⇒ 只**提示**，登记由作者做。
+
+        ⚠ 失败 / 无章纲 / 没扫出来 ⇒ 返回 ``assessed=False`` + 原因
+        （**不许**假装「没有新角色」⇒ 上游会写一条「未评估」条目）。
+        """
+        try:
+            from application.character.services.character_ner import CharacterNerService
+            from application.engine.services.memory_engine import (
+                bible_character_names,
+                location_names,
+            )
+            from infrastructure.persistence.database.connection import get_database
+            from infrastructure.persistence.database.sqlite_bible_repository import (
+                SqliteBibleRepository,
+            )
+
+            outline_text = (outline or "").strip()
+            if not outline_text:
+                return {"assessed": False, "reason": "本章没有章纲", "names": []}
+
+            db = get_database()
+            bible = SqliteBibleRepository(db).get_by_novel_id(NovelId(novel_id))
+            if not bible:
+                return {"assessed": False, "reason": "没有 Bible 角色表", "names": []}
+
+            result = await CharacterNerService(self.llm_service).extract(
+                novel_id=novel_id,
+                outline=outline_text,
+                # ⚠ 已知名单 = **Bible 角色表**（不是第 92 批那个放宽后的白名单）
+                #   ⇒ 否则「已登记但不在 Bible」的角色会被当成新角色报出来。
+                known_names=bible_character_names(bible),
+                location_names=location_names(bible),
+            )
+            if not result.is_assessed:
+                return {"assessed": False, "reason": "角色识别未评估", "names": []}
+
+            # 记忆引擎**此前**就登记过的（本章之前就出场了）⇒ 不是新面孔 ⇒ 不报。
+            # ⚠ 用 `last_updated_chapter < 本章` 过滤 ⇒ **与调用顺序无关**
+            #   （本章的记忆回写可能已经把它们写进去了）。
+            rows = db.fetch_all(
+                "SELECT character_id FROM character_states WHERE novel_id = ? "
+                "AND (last_updated_chapter IS NULL OR last_updated_chapter < ?)",
+                (novel_id, int(chapter_number)),
+            )
+            known_before = {
+                str((row or {}).get("character_id") or "").strip() for row in rows or []
+            }
+            names = [n for n in (result.names or []) if n not in known_before]
+            return {
+                "assessed": True,
+                "names": names,
+                "rejected": list(result.rejected or []),
+            }
+        except Exception as exc:  # noqa: BLE001 —— 扫描失败不许把整章流程带崩
+            logger.warning(
+                "[%s] 未登记角色扫描异常 ch=%s: %s", novel_id, chapter_number, exc
+            )
+            return {"assessed": False, "reason": str(exc)[:120], "names": []}
+
     async def _run_anti_ai_audit(
         self,
         novel_id: str,

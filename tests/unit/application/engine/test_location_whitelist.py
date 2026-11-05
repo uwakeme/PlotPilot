@@ -24,7 +24,7 @@ from application.engine.services.memory_engine import (
     FACT_LOCK_HEADER_LOCATION_WHITELIST,
     FACT_LOCK_SECTION_HEADERS,
     FactLockBuilder,
-    character_names,
+    bible_character_names,
     location_names,
     location_whitelist_lines,
     whitelist_lines,
@@ -142,7 +142,7 @@ def test_the_whitelist_helpers_are_shared():
     assert lines[0] == FACT_LOCK_HEADER_LOCATION_WHITELIST
     assert all(name in lines[1] for name in LOCATION_NAMES)
     # 角色白名单同构（防止只给地点写、角色没有）
-    assert whitelist_lines(character_names(bible))[0].startswith("角色白名单")
+    assert whitelist_lines(bible_character_names(bible))[0].startswith("角色白名单")
 
 
 # ── ③ 没有地点时**不许**造空节 ─────────────────────────────────────────

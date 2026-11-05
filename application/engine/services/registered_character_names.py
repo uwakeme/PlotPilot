@@ -75,11 +75,17 @@ def looks_like_character_name(name: str) -> bool:
 
 
 def _bible_character_names(bible: Any) -> List[str]:
-    """Bible 角色表里的名字（**白名单的第一半**）。"""
+    """Bible 角色表里的名字（**白名单的第一半**）。
+
+    ⚠ 单一实现：在 :mod:`application.engine.services.memory_engine` 里
+      （``bible_character_names``）⇒ 这里只做转发，不复制一份逻辑
+      ⇒ 复制逻辑 = 将来两边会悄悄漂。
+    """
     if bible is None:
         return []
-    characters = getattr(bible, "characters", None) or []
-    return [str(c.name) for c in characters if getattr(c, "name", "")]
+    from application.engine.services.memory_engine import bible_character_names
+
+    return list(bible_character_names(bible))
 
 
 def _bible_location_names(bible: Any) -> List[str]:

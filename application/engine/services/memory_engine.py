@@ -274,7 +274,7 @@ def _truncate_with_mark(text: str, limit: int) -> str:
 
 
 
-def character_names(bible) -> List[str]:
+def bible_character_names(bible) -> List[str]:
     """Bible 里的**有名字的角色**名单。
 
     ⚠ 这只是白名单的**第一半**（Bible 那一半）。
@@ -308,7 +308,7 @@ def whitelist_lines(names: List[str]) -> List[str]:
 
 
 def location_names(bible) -> List[str]:
-    """Bible 里的**地点**名单（白名单）—— 与 :func:`character_names` 同构。
+    """Bible 里的**地点**名单（白名单）—— 与 :func:`bible_character_names` 同构。
 
     ⚠ 为什么需要（第 31 批）：审计侧拿地点当基准，生成侧却**只给本场地点**的描述
       ⇒ 模型压根不知道「有名字的地点」全集 ⇒ 可能**自造**地点
@@ -414,7 +414,7 @@ class FactLockBuilder:
           ⇒ 单测里直接调 ``_build_from_bible(bible, current_chapter=1)`` 的路径不变。
         """
         if not novel_id:
-            return character_names(bible)
+            return bible_character_names(bible)
         try:
             from application.engine.services.registered_character_names import (
                 registered_character_names,
@@ -423,8 +423,8 @@ class FactLockBuilder:
             names = registered_character_names(novel_id, bible)
         except Exception as exc:  # noqa: BLE001 —— 取不到就退回 Bible 那一半
             logger.warning("取角色白名单失败（退回 Bible 那一半）novel=%s: %s", novel_id, exc)
-            return character_names(bible)
-        return names or character_names(bible)
+            return bible_character_names(bible)
+        return names or bible_character_names(bible)
 
     def _facts_from_bible(self, bible, current_chapter: int, novel_id: str = "") -> List[str]:
         """把 ``_build_from_bible`` 的那几组推导，逐条摊成清单。"""

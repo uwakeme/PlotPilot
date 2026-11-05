@@ -77,6 +77,18 @@ class DaemonHostProtocol(Protocol):
         content: str,
         outline: str = "",
     ) -> Dict[str, Any]: ...
+    async def _run_unregistered_character_scan(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str,
+    ) -> Dict[str, Any]:
+        """🔍 找「本章新出现、且不在 Bible 角色表」的角色（第 95 批）。
+
+        ⚠ 宿主能力面的一部分 ⇒ **替身（fake host）也要实现它**，
+        否则章后流程一走到这里就 AttributeError。
+        """
+        ...
 
     # ── 注入的服务（属性）──
     planning_service: Any

@@ -26,8 +26,8 @@ C. 常量
 """
 from __future__ import annotations
 
+import ast
 import pathlib
-import re
 
 import pytest
 
@@ -45,16 +45,16 @@ from application.engine.services.registered_character_names import (
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 
-#: 「拿模型原始输出直接 json.loads」……（此处是白名单的唯一实现守卫）
-#: 只匹配**裸**调用（前面不是 `_` / `.`）⇒ ``known_character_names(``、
-#: ``_get_character_names(``、``registered_character_names(`` 都不算。
-_CALL = re.compile(r"(?<![\w.])character_names\(")
+#: ⚠ 第 95 批：``memory_engine.character_names`` 已**改名**为
+#: ``bible_character_names``（把「Bible 那一半」与「白名单权威源」在名字上分开）
+#: ⇒ 下面这条守卫**不再需要任何例外文件**（允许清单为空）。
+#: ⇒ 以前叫 ``character_names(...)`` 的调用点，一眼就能看出它拿的是哪一半。
+#:
+#: ⚠ 扫描用 **AST**（找真实调用），不是文本扫描 —— 文本扫描会被
+#: **文档字符串/注释里提到这个名字**误伤（第 93、95 批各踩一次）。
 
-#: 允许出现「Bible 那一半」的两个文件（**定义处**）
-_ALLOWED_FILES = {
-    "application/engine/services/memory_engine.py",
-    "application/engine/services/registered_character_names.py",
-}
+#: 允许出现「Bible 那一半」的文件（**现在是空的** —— 改名之后不需要例外了）
+_ALLOWED_FILES: set[str] = set()
 
 #: 三个白名单消费点（生成侧 / 审计侧提示词 / 审计侧机检）
 _CONSUMERS = (
@@ -257,10 +257,40 @@ def test_without_a_novel_id_only_the_bible_half_is_used():
 # ======================================================================
 
 
+def _bare_character_names_calls(path: pathlib.Path) -> list[int]:
+    """这个文件里**真实调用** ``character_names(...)`` 的行号。"""
+    return _calls_to(path, "character_names")
+
+
+def _calls_to(path: pathlib.Path, func_name: str) -> list[int]:
+    """这个文件里**真实调用** ``func_name(...)`` 的行号（只认裸调用）。
+
+    ⚠ 用 **AST** 找真实的 Call（不是文本扫描）——
+    文本扫描会被**文档字符串/注释里提到这个名字**误伤
+    （第 93 批踩过：守卫扫全文 ⇒ 修复说明里写了那个 token ⇒ 自己把自己骗红了；
+     第 95 批又踩一次：模块 docstring 里提了一句 ⇒ 守卫误报）。
+    ⇒ AST 只认「真的调了这个函数」⇒ 散文里提到它不算。
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    except SyntaxError:
+        return []
+    hits: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # 只认**裸调用**（``character_names(...)``）⇒ ``x.character_names(...)`` 不算
+        if isinstance(func, ast.Name) and func.id == func_name:
+            hits.append(node.lineno)
+    return hits
+
+
 def test_no_second_whitelist_implementation_exists():
     """生产代码里**不许**有第二处白名单实现。
 
     ⚠ 只认 Bible 的那一版一旦被人抄走，口径就分叉 ⇒ 引擎自己打架。
+    ⇒ 第 95 批起那个函数已改名 ``bible_character_names`` ⇒ 这里连例外都不需要了。
     """
     offenders: list[str] = []
     for base in ("application", "engine", "interfaces", "infrastructure", "domain"):
@@ -268,9 +298,8 @@ def test_no_second_whitelist_implementation_exists():
             rel = path.relative_to(ROOT).as_posix()
             if rel in _ALLOWED_FILES:
                 continue
-            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                if _CALL.search(line):
-                    offenders.append("%s:%d  %s" % (rel, lineno, line.strip()[:80]))
+            for lineno in _bare_character_names_calls(path):
+                offenders.append("%s:%d" % (rel, lineno))
     assert not offenders, (
         "这些地方还在用「只认 Bible」的白名单 ⇒ 口径与权威源分叉：\n  "
         + "\n  ".join(offenders)
@@ -284,6 +313,36 @@ def test_every_whitelist_consumer_goes_through_the_single_source():
         assert "registered_character_names" in text, (
             "%s 没有走 registered_character_names ⇒ 白名单口径与权威源分叉" % rel
         )
+
+
+#: 允许调 ``bible_character_names(...)`` 的地方 —— 那是「Bible 那一半」，
+#: **不是**白名单（第 95 批改名后两者在名字上就分开了）。
+_BIBLE_HALF_CALLERS = {
+    "application/engine/services/memory_engine.py": "定义处 + 降级回落",
+    "application/engine/services/registered_character_names.py": "转发（单一实现）",
+    "engine/runtime/daemon_host.py": "角色识别的「已知名单」（要的就是 Bible 那一半）",
+}
+
+
+def test_the_bible_half_is_only_read_where_it_is_meaningful():
+    """⚠ 「Bible 那一半」只能在三处被读 ⇒ 别的调用点都是「误以为 Bible 就是全部」。
+
+    ⚠ 这条比「有没有第二个实现」更贴切：放宽白名单之后，
+    **想拿 Bible 那一半**（如角色识别要的「已知名单」）是正当需求，
+    但**别的地方**拿它就意味着「口径又窄回去了」。
+    """
+    offenders: list[str] = []
+    for base in ("application", "engine", "interfaces", "infrastructure", "domain"):
+        for path in sorted((ROOT / base).rglob("*.py")):
+            rel = path.relative_to(ROOT).as_posix()
+            if rel in _BIBLE_HALF_CALLERS:
+                continue
+            for lineno in _calls_to(path, "bible_character_names"):
+                offenders.append("%s:%d" % (rel, lineno))
+    assert not offenders, (
+        "这些地方在读「Bible 那一半」⇒ 口径又窄回 Bible 了：\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 # ======================================================================

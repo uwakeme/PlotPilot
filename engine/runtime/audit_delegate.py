@@ -155,6 +155,65 @@ SETTING_DRIFT_ISSUE_TYPE = "setting_drift"
 #: ⚠ 与设定漂移**分开**（不同 type 前缀）⇒ 面板按 type 过滤时不会把两者混为一谈。
 MEMORY_UPDATE_ISSUE_TYPE = "memory_update"
 
+#: 「未登记角色」条目的 type 前缀（第 95 批）。
+#:
+#: ⚠ 同样与前两者**分开** ⇒ 面板上「设定漂移 / 记忆回写 / 未登记角色」可分辨。
+UNREGISTERED_CHARACTER_ISSUE_TYPE = "unregistered_character"
+
+
+def _merge_unregistered_character_issue(
+    existing: list[dict[str, Any]] | None,
+    result: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """把「本章新出现、但不在 Bible 角色表」的角色并进审计 issues 列表（第 95 批）。
+
+    降级纪律（同 A1 / 同记忆回写）：**没扫出来** ⇒ 追加一条**可见**的「未评估」条目
+    ⇒ 面板上不会把「没查」读成「没有新角色」。
+
+    ⚠ **不自动写 Bible**：Bible 是**设定真源** ⇒ 让模型改它，错了就污染事实锁
+    与审计基准 ⇒ 这里只**提示**，登记由作者在世界观工作台做。
+    """
+    items = [
+        dict(item)
+        for item in (existing or [])
+        if not str((item or {}).get("type") or "").startswith(UNREGISTERED_CHARACTER_ISSUE_TYPE)
+    ]
+    if not result:
+        return items
+    if not result.get("assessed"):
+        items.append(
+            {
+                "type": f"{UNREGISTERED_CHARACTER_ISSUE_TYPE}_unassessed",
+                "severity": "info",
+                "category": "character",
+                "description": "未登记角色扫描未完成：%s" % (result.get("reason") or "未评估"),
+                "suggestion": "",
+            }
+        )
+        return items
+    names = [str(n).strip() for n in (result.get("names") or []) if str(n).strip()]
+    if not names:
+        # 本章没有新角色 ⇒ **一条都不加**（此时 issues 为空才真的意味着「没有」）
+        return items
+    items.append(
+        {
+            "type": UNREGISTERED_CHARACTER_ISSUE_TYPE,
+            "severity": "info",
+            "category": "character",
+            "description": (
+                "本章出现未登记进 Bible 角色表的新角色：%s —— 他们不在事实锁"
+                "（角色设定 / 身份锁 / 关系锁）里，也不在设定漂移审计的基准里"
+                "⇒ 这些人设漂移审不出来"
+                % "、".join(names)
+            ),
+            "suggestion": (
+                "建议到世界观工作台（角色 / 选角）里登记他们的设定；"
+                "登记后生成侧与审计侧会同时补齐"
+            ),
+        }
+    )
+    return items
+
 
 def _merge_memory_update_issue(
     existing: list[dict[str, Any]] | None,
@@ -858,6 +917,28 @@ async def run_chapter_audit(host: "DaemonHostProtocol", novel: Novel) -> None:
     )
     novel.last_audit_issues = _merge_setting_drift_issues(
         novel.last_audit_issues, setting_drift_result
+    )
+
+    # 🔍 未登记角色扫描（第 95 批）：本章**首次**出现、但不在 Bible 角色表里的角色。
+    # ⚠ 为什么要有：白名单放宽到 49 个名字（第 92 批）后，这些角色**能写**，
+    #   但事实锁的「角色设定 / 身份锁 / 关系锁」与审计基准仍只覆盖 Bible 那几个
+    #   ⇒ 这些人的人设漂移**审计根本看不见**（生产实证：近 25 次 A1 的 issue
+    #   全是 Bible 角色或地点，**没有一个**是非 Bible 角色的 ⇒ 结构性的）。
+    # ⚠ **不自动写 Bible**（用户 2026-11-04 拍板）⇒ 只**提示**，登记由作者做。
+    # ⚠ 超时 / 失败 ⇒ 降级（不崩）+ 写一条**可见**的「未评估」条目。
+    unregistered_result = await host._call_with_timeout(
+        host._run_unregistered_character_scan(
+            novel.novel_id.value,
+            chapter_num,
+            getattr(chapter, "outline", "") or "",
+        ),
+        timeout=60.0,
+        novel_id=novel.novel_id.value,
+        label="unregistered_character_scan",
+        timeout_default={"assessed": False, "reason": "扫描超时", "names": []},
+    )
+    novel.last_audit_issues = _merge_unregistered_character_issue(
+        novel.last_audit_issues, unregistered_result
     )
 
     # 🧠 记忆状态回写（第 29 批）：把本章的**已完成节拍 / 已揭露线索**落库。

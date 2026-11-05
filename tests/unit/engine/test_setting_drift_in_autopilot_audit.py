@@ -233,6 +233,7 @@ class _FakeHost:
         self.similarity_below_threshold = similarity_below_threshold
         self.setting_drift_calls: list[tuple] = []
         self.memory_update_calls: list[tuple] = []
+        self.unregistered_scan_calls: list[tuple] = []
         self.events: list[tuple] = []
         self.shared_updates: list[dict] = []
         self.chapter_repository = _FakeChapterRepository(_FakeChapter())
@@ -292,6 +293,15 @@ class _FakeHost:
         """第 29 批：章后记忆状态回写（这个替身只喂数据，不做副作用）。"""
         self.memory_update_calls.append((novel_id, number, content))
         return {"updated": True, "reason": "", "new_beats": 0, "new_clues": 0}
+
+    async def _run_unregistered_character_scan(self, novel_id, number, outline=""):
+        """第 95 批：未登记角色扫描（这个替身只喂数据，不做副作用）。
+
+        ⚠ 宿主能力面的一部分 ⇒ 替身**必须**实现它，
+        否则章后流程一走到这里就 AttributeError。
+        """
+        self.unregistered_scan_calls.append((novel_id, number, outline))
+        return {"assessed": True, "names": [], "rejected": []}
 
     def _count_completed_chapters(self, novel_id) -> int:
         return 3
