@@ -268,8 +268,16 @@ class ExportService:
             if not content.strip():
                 doc.add_paragraph("（无正文）")
                 continue
-            for line in content.splitlines():
-                doc.add_paragraph(line)
+            # ⚠ 第 96 批（生产实测）：正文是「**一句一段 + 空行分隔**」的排版
+            #   （生产书 111 万字 = 118316 行，其中一半是空行；中位行长 4 字）
+            #   ⇒ 逐行 ``add_paragraph`` 要 **163 秒**（1.38ms/段）
+            #   ⇒ 600 章的书导出 docx 会被前端 120 秒超时打断 ⇒ **根本导不出来**。
+            # ⇒ 改成「**每章一段**」：段落数 118316 → 600 ⇒ 约 1 秒。
+            # ⚠ 换行**必须保留**（句间空行就是这本书的排版）
+            #   ⇒ 靠 python-docx 的 ``run.text`` 把 "\n" 转成真正的 ``<w:br/>``
+            #   （直接写 "\n" 进 ``<w:t>`` 会被 Word 吞成空格 ⇒ 排版丢失）。
+            para = doc.add_paragraph()
+            para.add_run(content)
 
         buf = io.BytesIO()
         doc.save(buf)
