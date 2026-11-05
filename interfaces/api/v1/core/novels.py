@@ -148,7 +148,8 @@ async def create_novel(
     1. 调用 POST /bible/novels/{novel_id}/generate 触发 Bible 生成
     2. 轮询 GET /bible/novels/{novel_id}/bible/status 检查生成状态
     3. 引导用户确认 Bible
-    4. 用户手动触发规划（通过 POST /novels/{novel_id}/structure/plan 接口）
+    4. 用户手动触发规划（通过 POST /planning/novels/{novel_id}/macro/generate 接口；
+       若要按题材建默认结构树，见 POST /novels/{novel_id}/structure/create-default）
 
     Args:
         request: 创建小说请求

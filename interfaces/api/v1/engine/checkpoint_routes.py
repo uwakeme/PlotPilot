@@ -8,7 +8,9 @@
 - GET  /novels/{novel_id}/checkpoints/head     → 当前HEAD
 
 - POST /novels/{novel_id}/guardrail/check      → 六维度质检(advise)
-- POST /novels/{novel_id}/guardrail/enforce    → 六维度质检(enforce)
+- GET  /novels/{novel_id}/chapters/{chapter_number}/guardrail-snapshot → 章节质检快照
+  ⚠ 第 97 批：这里原先还列了 ``/guardrail/enforce`` ⇒ **那个路由从来没实现**（照文档调会 404）
+  ⇒ 已删掉，并由 test_api_docstring_routes_exist.py 钉住（docstring 里的路径必须真实存在）。
 
 - GET  /novels/{novel_id}/story-phase          → 获取故事阶段
 - PUT  /novels/{novel_id}/story-phase          → 更新故事阶段
